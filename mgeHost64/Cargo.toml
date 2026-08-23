@@ -1,0 +1,39 @@
+[package]
+name = "mgeHost64"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+mimalloc = { version = "0.1", features = ["v3"] }
+tracing = { version = "0.1", features = ["release_max_level_info"] }
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytemuck = { version = "1.24", features = ["derive"] }
+hashbrown = { version = "0.16" }
+glam = { version = "0.30.10" }
+thiserror = "2.0"
+la-arena = "0.3.1"
+mge-config = { path = "../mge-config" }
+distantland = { path = "../distantland" }
+arc-swap = "1.9"
+
+[dev-dependencies]
+distantland_test_support = { path = "../distantland/crates/test-support" }
+
+[dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+]
+
+[lints]
+workspace = true

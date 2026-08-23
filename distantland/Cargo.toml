@@ -1,0 +1,51 @@
+[package]
+name = "distantland"
+version = "0.1.0"
+edition = "2024"
+default-run = "distantland"
+
+[features]
+trace_tracy = ["distantland_diagnostics/trace_tracy"]
+
+[dependencies]
+anyhow.workspace = true
+distantland_diagnostics = { path = "crates/diagnostics" }
+distantland_formats = { path = "crates/formats" }
+distantland_foundation = { path = "crates/foundation" }
+distantland_job = { path = "crates/job" }
+distantland_statics = { path = "crates/statics" }
+distantland_terrain = { path = "crates/terrain" }
+distantland_texture = { path = "crates/texture" }
+distantland_usage = { path = "crates/usage" }
+distantland_vfs = { path = "crates/vfs" }
+bytes_io.workspace = true
+tes3.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+hashbrown.workspace = true
+itertools.workspace = true
+half.workspace = true
+rayon.workspace = true
+indexmap.workspace = true
+serde.workspace = true
+serde_ignored = "0.1"
+serde_path_to_error = "0.1"
+toml = "1.1"
+toml_edit = { version = "0.25", features = ["serde"] }
+tracing.workspace = true
+uncased = "0.9"
+mimalloc = { version = "0.1", features = ["v3"] }
+libmimalloc-sys = "0.1"
+memmap2.workspace = true
+meshopt.workspace = true
+blake3.workspace = true
+clap = { version = "4.5", features = ["cargo"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+dedent = "0.1.1"
+serde_json = "1.0"
+tempfile.workspace = true
+distantland_test_support = { path = "crates/test-support" }

@@ -4,6 +4,7 @@ return {
 
     ["MsgLoaded"] = "Конфигурация загруженa.",
     ["MsgSaved"] = "Конфигурация сохранена.",
+    ["MsgSaveFailed"] = "Не удалось сохранить. Если файл mgeXE.toml был изменён вне игры, нажмите «Загрузка», затем снова «Сохранить».",
     ["Load"] = "Загрузка",
     ["Save"] = "Сохранить",
     ["Close"] = "Закрыть",
@@ -52,6 +53,16 @@ return {
 	["belowWaterFogEnd"] = "Под водой Граница",
 	["interiorFogStart"] = "В помещениях Начало",
 	["interiorFogEnd"] = "В помещениях Граница",
+
+	["horizonCulling"] = "Отсечение по горизонту рельефа",
+	["horizonHeightBias"] = "Смещение высоты горизонта",
+	["horizonObjectBias"] = "Смещение объектов горизонта",
+	["horizonNearExclude"] = "Ближнее исключение горизонта",
+	["horizonRingStep"] = "Шаг колец горизонта",
+	["horizonMaxRange"] = "Макс. дальность горизонта",
+	["horizonBins"] = "Азимутальные секторы горизонта",
+	["horizonSampleSpacing"] = "Шаг выборки горизонта",
+	["horizonAdaptiveGate"] = "Адаптивное отсечение",
 
 	["WaveHeight"] = "Высота волн",
 	["CausticsStrength"] = "Каустика яркости",

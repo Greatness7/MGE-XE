@@ -1,0 +1,28 @@
+[package]
+name = "distantland_usage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+bstr.workspace = true
+bytes_io.workspace = true
+glam.workspace = true
+hashbrown.workspace = true
+itertools.workspace = true
+rayon.workspace = true
+serde.workspace = true
+smallvec.workspace = true
+tes3.workspace = true
+distantland_formats = { path = "../formats" }
+distantland_foundation = { path = "../foundation" }
+distantland_vfs = { path = "../vfs" }
+tracing.workspace = true
+uncased = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

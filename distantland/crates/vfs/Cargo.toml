@@ -1,0 +1,26 @@
+[package]
+name = "distantland_vfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+atoi.workspace = true
+bstr.workspace = true
+hashbrown.workspace = true
+indexmap.workspace = true
+rayon.workspace = true
+str-utils.workspace = true
+tes3.workspace = true
+distantland_foundation = { path = "../foundation" }
+tracing.workspace = true
+
+[target."cfg(windows)".dependencies]
+winreg.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+distantland_texture = { path = "../texture" }
+
+[lints]
+workspace = true

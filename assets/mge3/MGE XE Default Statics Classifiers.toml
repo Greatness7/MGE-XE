@@ -1,0 +1,157 @@
+# MGE XE default distant-land overrides
+#
+# This file is enabled by default for new generation jobs. It uses the same
+# [tools.mge-xe.distantland] schema as mod-provided `-metadata.toml` files, but
+# is a global override source rather than metadata associated with one plugin.
+# Later files in the configured override list replace earlier scalar values;
+# metadata shipped beside active plugins is applied after this file.
+#
+# IDs and mesh paths are case-insensitive. Mesh paths are relative to the
+# virtual `Meshes` directory; either slash style and optional `Meshes` or
+# `Data Files` prefixes are normalized by the generator.
+
+[tools.mge-xe.distantland]
+# Object IDs excluded from distant statics. The chargen objects are temporary
+# scene pieces; the Firemoth boats are controlled dynamically below.
+exclude_objects = [
+    "chargen boat",
+    "chargen_cabindoor",
+    "chargen_ship_trapdoor",
+    "chargen_lantern_03_sway",
+    "chargen_plank",
+    "fm_boat_dock",
+    "fm_boat_island",
+]
+
+# Other global filters supported by this table include:
+# include_objects = ["object_id"]
+# include_interiors = ["Interior Cell Name"]
+# exclude_interiors = ["Interior Cell Name"]
+
+# Dynamic visibility groups associate a reference's script or unique object ID
+# with a runtime condition. Journal/global ranges use inclusive [low, high]
+# endpoints; multiple ranges are ORed, with at most eight ranges per group.
+
+# Morrowind main quest and Great House strongholds
+dynamic_visibility = [
+    { kind = "journal", script = "GhostfenceScript", journal = "C3_DestroyDagoth", ranges = [[0, 20]] },
+    { kind = "global", script = "Strong1", global = "Stronghold", ranges = [[1, 10]] },
+    { kind = "global", script = "Strong1_Complete", global = "Stronghold", ranges = [[2, 10]] },
+    { kind = "global", script = "Strong1_Construct", global = "Stronghold", ranges = [[1, 1]] },
+    { kind = "global", script = "Strong1_Only", global = "Stronghold", ranges = [[2, 2]] },
+    { kind = "global", script = "Strong2", global = "Stronghold", ranges = [[3, 10]] },
+    { kind = "global", script = "Strong2_Complete", global = "Stronghold", ranges = [[4, 10]] },
+    { kind = "global", script = "Strong2_Construct", global = "Stronghold", ranges = [[3, 3]] },
+    { kind = "global", script = "Strong2_Not", global = "Stronghold", ranges = [[0, 3]] },
+    { kind = "global", script = "Strong2_Only", global = "Stronghold", ranges = [[4, 4]] },
+    { kind = "global", script = "Strong3", global = "Stronghold", ranges = [[5, 10]] },
+    { kind = "global", script = "Strong3_Complete", global = "Stronghold", ranges = [[6, 10]] },
+    { kind = "global", script = "Strong3_Construct", global = "Stronghold", ranges = [[5, 5]] },
+    { kind = "global", script = "Strong3_Not", global = "Stronghold", ranges = [[0, 5]] },
+    { kind = "global", script = "Strong3_Only", global = "Stronghold", ranges = [[4, 4]] },
+    { kind = "global", script = "StrongZero", global = "Stronghold", ranges = [[0, 0]] },
+
+    # Unique-object groups use `object` as the controlling reference. Any
+    # `linked_objects` share its enabled state; the list may be omitted.
+    { kind = "unique_object", object = "ex_de_scaffold_01_Boe", linked_objects = ["ex_de_scaffold_02_boe", "ex_de_scaffold_03_boe", "ex_de_scaffold_01a_boe", "ex_de_scaffold_02a_Boe", "ex_de_scaffold_02b_Boe", "ex_de_scaffold_02c_Boe", "ex_de_scaffold_03a_Boe",] },
+    { kind = "unique_object", object = "Ex_DAE_Boethiah_fixed", linked_objects = ["Ex_DAE_r_platform_01_boe"] },
+    { kind = "unique_object", object = "terrain_rock_wg_UNIQUE" },
+
+    # Siege at Firemoth
+    { kind = "unique_object", object = "fm_boat_dock" },
+    { kind = "unique_object", object = "fm_boat_island" },
+
+    # Tribunal
+    { kind = "global", script = "fab_attack_disable", global = "FabAttack", ranges = [[0, 0]] },
+    { kind = "global", script = "fab_attack_enable", global = "FabAttack", ranges = [[1, 1]] },
+    { kind = "journal", script = "fab_attack_enable2", journal = "TR_Bamz", ranges = [[1, 1000]] },
+    { kind = "global", script = "treedeadScript", global = "MournWeather", ranges = [[7, 7]] },
+    { kind = "global", script = "treeliveScript", global = "MournWeather", ranges = [[0, 6], [8, 10]] },
+
+    # Bloodmoon colony construction
+    { kind = "global", script = "Colony_D_1_I", global = "ColonyState", ranges = [[0, 1]] },
+    { kind = "global", script = "Colony_D_1_F", global = "ColonyState", ranges = [[0, 3]] },
+    { kind = "global", script = "Colony_D_1_Mine", global = "ColonyState", ranges = [[1, 1]] },
+    { kind = "global", script = "Colony_D_2_F", global = "ColonyState", ranges = [[0, 10]] },
+    { kind = "global", script = "Colony_D_3_F", global = "ColonyState", ranges = [[0, 20]] },
+    { kind = "global", script = "Colony_E_1_M", global = "ColonyState", ranges = [[1, 3]] },
+    { kind = "global", script = "Colony_E_1_F", global = "ColonyState", ranges = [[3, 100]] },
+    { kind = "global", script = "Colony_E_1_Mine", global = "ColonyState", ranges = [[2, 100]] },
+    { kind = "global", script = "Colony_E_2_M", global = "ColonyState", ranges = [[3, 10]] },
+    { kind = "global", script = "Colony_E_2_F", global = "ColonyState", ranges = [[10, 100]] },
+    { kind = "global", script = "Colony_E_3_M", global = "ColonyState", ranges = [[12, 20]] },
+    { kind = "global", script = "Colony_E_3_F", global = "ColonyState", ranges = [[20, 100]] },
+    { kind = "global", script = "Colony_E_4_M", global = "ColonyState", ranges = [[22, 30]] },
+    { kind = "global", script = "Colony_E_4_F", global = "ColonyState", ranges = [[30, 100]] },
+    { kind = "global", script = "Colony_first_boat", global = "ColonyState", ranges = [[3, 100]] },
+    { kind = "global", script = "ColonyFactor1_D", global = "ColonyState", ranges = [[0, 30], [32, 34], [35, 100]] },
+    { kind = "global", script = "ColonyFactor1_Mid", global = "ColonyState", ranges = [[31, 31]] },
+    { kind = "global", script = "ColonyFactor1_Final", global = "ColonyState", ranges = [[34, 34]] },
+    { kind = "global", script = "ColonyFactor2_D", global = "ColonyState", ranges = [[0, 32], [33, 35], [36, 100]] },
+    { kind = "global", script = "ColonyFactor2_Mid", global = "ColonyState", ranges = [[32, 32]] },
+    { kind = "global", script = "ColonyFactor2_Final", global = "ColonyState", ranges = [[35, 35]] },
+    { kind = "global", script = "ColonyFactor3_D", global = "ColonyState", ranges = [[0, 33]] },
+    { kind = "global", script = "ColonyFactor3_Mid", global = "ColonyState", ranges = [[33, 33]] },
+    { kind = "global", script = "ColonyFactor3_Final", global = "ColonyState", ranges = [[36, 36]] },
+
+    # Bloodmoon colony quests and services
+    { kind = "journal", script = "ColonyMineBoulder1", journal = "CO_8", ranges = [[0, 10]] },
+    { kind = "journal", script = "ColonyMineBoulder2", journal = "CO_10", ranges = [[0, 10]] },
+    { kind = "journal", script = "ColonyRoot1", journal = "CO_10", ranges = [[0, 120]] },
+    { kind = "journal", script = "ColonyRoot1a", journal = "CO_10", ranges = [[0, 120]] },
+    { kind = "journal", script = "ColonyRoot2", journal = "CO_10", ranges = [[120, 120]] },
+    { kind = "journal", script = "ColonyShipwreck", journal = "CO_3", ranges = [[10, 1000]] },
+    { kind = "global", script = "ColonyDock", global = "ColonyService", ranges = [[5, 100]] },
+    { kind = "global", script = "ColonyServSmith", global = "ColonyService", ranges = [[5, 5]] },
+    { kind = "global", script = "ColonyServSmithConst", global = "ColonyService", ranges = [[3, 3], [5, 5]] },
+    { kind = "global", script = "ColonyServSmithDisable", global = "ColonyService", ranges = [[0, 3], [4, 4], [6, 6]] },
+    { kind = "global", script = "ColonyServTrader", global = "ColonyService", ranges = [[6, 6]] },
+    { kind = "global", script = "ColonyServTraderConst", global = "ColonyService", ranges = [[4, 4]] },
+    { kind = "global", script = "ColonyServTraderDisable", global = "ColonyService", ranges = [[0, 4], [5, 5]] },
+
+    # Bloodmoon fort and standing-stone quests
+    { kind = "journal", script = "fortDisableScript", journal = "BM_Smugglers", ranges = [[0, 93]] },
+    { kind = "journal", script = "fortEnableScript", journal = "BM_Smugglers", ranges = [[93, 1000]] },
+    { kind = "journal", script = "glendoor2Script", journal = "BM_Wind", ranges = [[10, 1000]] },
+    { kind = "journal", script = "glendoorScript", journal = "BM_Wind", ranges = [[0, 10]] },
+    { kind = "journal", script = "karstcavdoorScript", journal = "BM_FrostGiant1", ranges = [[0, 30]] },
+    { kind = "journal", script = "musicdoor2Script", journal = "BM_Earth", ranges = [[10, 1000]] },
+    { kind = "journal", script = "musicdoorScript", journal = "BM_Earth", ranges = [[0, 10]] },
+    { kind = "journal", script = "penumbradoorScript", journal = "BM_Sun", ranges = [[0, 10]] },
+    { kind = "journal", script = "skaalaradoorScript", journal = "BM_Ceremony1", ranges = [[0, 10]] },
+    { kind = "journal", script = "stahldoorScript", journal = "BM_Water", ranges = [[0, 10]] },
+    { kind = "journal", script = "stoneUlfgarScript", journal = "BM_BrodirGrove", ranges = [[90, 1000]] },
+]
+
+statics = {
+    # Each key is a mesh path. `type` may be auto, near, far, very_far, grass,
+    # tree, or building. Other available fields are `ignore`, `ignore_script`,
+    # `reduction` (0-100), and `grass_density` (0-100 for grass).
+
+    # Morrowind
+    'f\active_blight_large.nif' = { ignore = true },
+    'i\in_akulakhan00.nif' = { ignore = true },
+    'i\in_dagoth_bridge00.nif' = { ignore = true },
+    'x\ex_vivec_b_gap_t_01.nif' = { type = "very_far" },
+    'x\ex_vivec_b_wb_gap_01.nif' = { type = "very_far" },
+    'x\ex_vivec_b_gap_b_01.nif' = { type = "very_far" },
+    'x\ex_vivec_p_water_01.nif' = { ignore = true },
+
+    # Tribunal
+    'x\ex_mh_almalexia_whole.nif' = { type = "far" },
+    'x\ex_mh_pav_steps.nif' = { type = "far" },
+    'x\ex_mh_pav_top.nif' = { type = "far" },
+    'l\ex_mh_streetlamp_01.nif' = { type = "far" },
+    'f\flora_tree_mh_01.nif' = { type = "far" },
+    'f\flora_tree_mh_02.nif' = { type = "far" },
+
+    # Bloodmoon. `ignore_script` keeps the standing stones visible without treating
+    # their attached scripts as ordinary dynamic-disable controllers.
+    'f\terrain_bm_icelayer_01.nif' = { type = "far" },
+    'f\act_bm_stone_beast_01.nif' = { type = "far", ignore_script = true },
+    'f\act_bm_stone_earth_01.nif' = { type = "far", ignore_script = true },
+    'f\act_bm_stone_sun_01.nif' = { type = "far", ignore_script = true },
+    'f\act_bm_stone_tree_01.nif' = { type = "far", ignore_script = true },
+    'f\act_bm_stone_water_01.nif' = { type = "far", ignore_script = true },
+    'f\act_bm_stone_wind_01.nif' = { type = "far", ignore_script = true },
+}

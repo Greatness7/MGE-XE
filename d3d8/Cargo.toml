@@ -1,0 +1,32 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "d3d8"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# Morrowind is 32-bit, so this crate is only ever valid at i686. Pinning the
+# target here rather than relying on `--target` keeps `cargo check --workspace`
+# from feeding the C++ to the x64 cl.exe. See BUILD.md.
+forced-target = "i686-pc-windows-msvc"
+
+[lib]
+name = "d3d8"
+crate-type = ["cdylib"]
+
+[features]
+# Compile the C++ with MSVC whole-program optimization (/GL + /LTCG). Cargo's
+# own `lto`/`codegen-units` never reach this code, so this is the only way the
+# `max-perf` profile means anything for d3d8.dll. Slow to link; `xtask` turns it
+# on only for `--max-perf`. Kept a feature because `PROFILE` resolves to
+# "release" for every release-inheriting profile and so cannot distinguish them.
+max-perf = []
+
+[dependencies]
+mge-config = { path = "../mge-config" }
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

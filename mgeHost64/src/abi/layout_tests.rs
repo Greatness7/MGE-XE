@@ -1,0 +1,68 @@
+use super::*;
+use std::mem::{align_of, offset_of, size_of};
+
+#[test]
+fn abi_layout_matches_cpp_contract() {
+    assert_eq!(size_of::<RenderMesh>(), 88);
+    assert_eq!(size_of::<ViewFrustum>(), 96);
+    assert_eq!(size_of::<AllocVecParameters>(), 36);
+    assert_eq!(size_of::<FreeVecParameters>(), 8);
+    assert_eq!(size_of::<DynVisFlag>(), 4);
+    assert_eq!(size_of::<LandscapeBuffers>(), 8);
+    assert_eq!(size_of::<HorizonFootprint>(), 56);
+    assert_eq!(size_of::<DistantStaticParameters>(), 20);
+    assert_eq!(size_of::<InitLandscapeParameters>(), 12);
+    assert_eq!(size_of::<QueryOutputStatusParameters>(), 4);
+    assert_eq!(size_of::<GetMeshesParameters>(), 132);
+    assert_eq!(size_of::<SetHorizonConfigParameters>(), 36);
+    assert_eq!(size_of::<SetWorldSpaceParameters>(), 68);
+    // GetMeshesParameters is the union's largest member (132 bytes + 4-byte command tag).
+    assert_eq!(size_of::<Parameters>(), 136);
+    assert_eq!(size_of::<DistantSubset>(), 128);
+    assert_eq!(size_of::<DistantStatic>(), 52);
+    assert_eq!(size_of::<VecShare>(), 64);
+    assert_eq!(size_of::<TerrainVertex>(), SIZE_OF_TERRAIN_VERT as usize);
+    assert_eq!(size_of::<TerrainFileHeader>(), TERRAIN_HEADER_SIZE);
+    assert_eq!(size_of::<TerrainMeshHeader>(), TERRAIN_MESH_HEADER_SIZE);
+    assert_eq!(align_of::<VecShare>(), 4);
+    assert_eq!(offset_of!(RenderMesh, tex), 4);
+    assert_eq!(offset_of!(RenderMesh, transform), 8);
+    assert_eq!(offset_of!(HorizonFootprint, footprint_xy), 8);
+    assert_eq!(offset_of!(DistantSubset, horizon_footprint), 64);
+    assert_eq!(offset_of!(DistantSubset, far_faces), 120);
+    assert_eq!(offset_of!(DistantSubset, very_far_faces), 124);
+    assert_eq!(offset_of!(GetMeshesParameters, view_frustum), 8);
+    assert_eq!(offset_of!(GetMeshesParameters, view_sphere), 108);
+    assert_eq!(offset_of!(GetMeshesParameters, near_static_end), 124);
+    assert_eq!(offset_of!(GetMeshesParameters, far_static_end), 128);
+    assert_eq!(offset_of!(DistantStaticParameters, far_static_min_size), 8);
+    assert_eq!(offset_of!(DistantStaticParameters, very_far_static_min_size), 12);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, enabled), 0);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, bias_z), 4);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, object_bias_z), 8);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, near_units), 12);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, ring_step), 16);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, max_range), 20);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, bins), 24);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, sample_spacing), 28);
+    assert_eq!(offset_of!(SetHorizonConfigParameters, adaptive_gate), 32);
+    assert_eq!(offset_of!(VecShare, size), 0);
+    assert_eq!(offset_of!(VecShare, committed_bytes), 4);
+    assert_eq!(offset_of!(VecShare, client_process), 8);
+    assert_eq!(offset_of!(VecShare, users64), 40);
+    assert_eq!(offset_of!(VecShare, users32), 44);
+    assert_eq!(offset_of!(VecShare, shared_mem32), 48);
+    assert_eq!(offset_of!(VecShare, reading32), 60);
+    assert_eq!(offset_of!(VecShare, reading64), 61);
+    assert_eq!(offset_of!(TerrainVertex, normal), 12);
+    assert_eq!(offset_of!(TerrainVertex, color), 16);
+    assert_eq!(offset_of!(TerrainFileHeader, version), 8);
+    assert_eq!(offset_of!(TerrainFileHeader, vertex_stride), 104);
+    assert_eq!(offset_of!(TerrainFileHeader, file_index_format), 108);
+    assert_eq!(offset_of!(TerrainFileHeader, mesh_count), 112);
+    assert_eq!(offset_of!(TerrainMeshHeader, bounding_sphere_center), 4);
+    assert_eq!(offset_of!(TerrainMeshHeader, vertex_count), 40);
+    assert_eq!(offset_of!(TerrainMeshHeader, triangle_count), 44);
+    assert_eq!(offset_of!(SetWorldSpaceParameters, cellname), 0);
+    assert_eq!(offset_of!(SetWorldSpaceParameters, cell_found), 64);
+}

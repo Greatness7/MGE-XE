@@ -1,5 +1,19 @@
-/.vs/
-/packages/
-/bin/
-*.vcxproj.user
-*.csproj.user
+# Build output
+**/target/
+**/bin/
+/dist/
+
+# Editors and tooling
+**/.vscode/
+compile_commands.json
+
+# clangd index
+/.cache/
+
+# Local-only working files
+mge-xe-local.toml
+ignore/
+scripts/
+/default_job.toml
+/Data Files
+/vtune_*

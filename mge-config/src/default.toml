@@ -1,0 +1,257 @@
+# MGE XE configuration
+# Values omitted from a user file use these schema defaults.
+# Increment only for an intentionally incompatible schema revision.
+schema_version = 2
+
+# Display-device values are applied by the GUI/registry owner unless noted.
+[graphics]
+# Multisample level: none, x2, x4, or x8.
+anti_aliasing = "none"
+# Depth/stencil format requested from Direct3D.
+z_buffer_format = "d24s8"
+# Presentation interval: immediate, one, two, three, or four.
+vsync = "immediate"
+# Requested Hz; 0 lets Direct3D choose the default.
+refresh_rate = 0
+# Use a borderless window instead of decorated windowed mode.
+borderless = true
+# Texture anisotropy: off, x2, x4, x8, or x16.
+anisotropy = "x8"
+# Enable alpha-tested edge multisampling where supported.
+transparency_antialiasing = true
+
+# Renderer-wide settings. Time values are milliseconds unless stated.
+[render]
+# Horizontal field of view in degrees, clamped to 5..150.
+fov = 75.0
+# depth_pixel, depth_vertex, or range_vertex.
+fog_mode = "range_vertex"
+# Apply the configured post-processing shader chain.
+enable_shaders = false
+# Rebuild skinned meshes with an indexed bone palette, cutting the number of
+# partition draws per actor. Requires the matching custom DXVK d3d9.dll; MGE XE
+# falls back to stock skinning when it is absent. Read once at process start, so
+# changing it takes effect after a full game restart.
+indexed_skinning = false
+# HDR adaptation time in seconds, clamped to 0.01..30.
+hdr_reaction_time = 2.0
+# Draw MGE XE's FPS counter.
+fps_counter = false
+# Show MGE XE status messages.
+messages = true
+# Status-message lifetime, clamped to 1000..10000 ms.
+message_timeout_ms = 2000
+# bmp, jpeg, dds, png, or tga.
+screenshot_format = "png"
+# Empty means the Morrowind root.
+screenshot_directory = ""
+# Filename prefix; at most 31 runtime bytes.
+screenshot_name = "Morrowind"
+# timestamp, ordinal, character_ordinal, or character_game_time_ordinal.
+screenshot_suffix = "timestamp"
+# UI scale, clamped to 0.5..5.
+ui_scale = 1.0
+# Window placement alignment: left, center, or right.
+window_align_x = "center"
+window_align_y = "center"
+
+# Startup gates and live runtime behavior.
+[runtime]
+# Disable MGE XE and use the system proxy path.
+disabled = false
+# Disable internal MWSE integration.
+mwse_disabled = false
+# Run only the D3D8-to-D3D9 proxy.
+proxy_only = false
+# Skip intro movies.
+skip_intro = true
+# Cache menu backgrounds.
+menu_caching = false
+# Enable the custom third-person camera offsets.
+custom_camera = false
+# Camera offsets; X/Z clamp to ±250 and Y to ±2500.
+camera_x = 0.0
+camera_y = -160.0
+camera_z = 0.0
+# Hide the crosshair automatically when appropriate.
+crosshair_autohide = false
+
+# Core distant-land switches and distances in exterior cells.
+[distant_land]
+# A fresh configuration deliberately starts with distant land disabled.
+enabled = false
+# Regenerate automatically when the saved generation job requires it.
+automatic_rebuild = false
+# Read the scene's real depth buffer instead of redrawing geometry to approximate
+# it. Removes about half the depth pass, and fixes objects vanishing from
+# distant-land scenes when they use multi-texturing effects such as darkmaps with
+# transparency. Falls back to the old path wherever it cannot be used safely.
+native_depth_capture = true
+# Submit supported Morrowind per-pixel-lighting draws directly to DXVK. Also
+# required for expanded_light_limit to reach per-pixel-lit objects.
+native_ppl_packets = true
+# Raise the engine's per-node local light limit from 8 to 32. Requires a
+# renderer that reports the expanded limit; ignored otherwise. With per-pixel
+# lighting this also needs native_ppl_packets set to true.
+expanded_light_limit = false
+# A fresh configuration deliberately starts with distant statics disabled.
+statics = false
+# Permit replacement water even when distant land is disabled.
+water_without_land = true
+# Render generated grass.
+render_grass = true
+# Overall and static-band distances, clamped to the schema ranges.
+draw_distance = 5.0
+near_static_end = 2.0
+far_static_end = 4.0
+very_far_static_end = 5.0
+# Minimum model sizes used when classifying far static tiers.
+far_static_min_size = 600.0
+very_far_static_min_size = 800.0
+# Enable fixed-function replacement lighting and select its scope.
+per_pixel_lighting = false
+per_pixel_mode = "always"
+
+# Water reflection, simulation, and effect strengths.
+[distant_land.water]
+reflect_land = true
+reflect_near_statics = true
+# The approved reset intentionally enables interior reflections.
+reflect_interiors = true
+reflect_sky = true
+dynamic_ripples = false
+blur_reflections = false
+# Wave and caustics percentages, clamped to 0..250 and 0..100.
+wave_height = 50
+caustics_intensity = 50
+
+# Fog modes and start/end distances in exterior cells.
+[distant_land.fog]
+exponential = true
+atmosphere_scattering = true
+above_water_start = 2.0
+above_water_end = 5.0
+below_water_start = -0.5
+below_water_end = 0.3
+interior_start = 0.0
+interior_end = 2.0
+
+# Sun-shadow controls.
+[distant_land.shadows]
+enabled = true
+# Runtime-supported map size, clamped to 1024..2048.
+map_resolution = 2048
+
+# Host-side terrain horizon culling. Distances here are world units.
+[distant_land.horizon]
+culling = true
+height_bias = 512.0
+object_bias = 256.0
+near_exclude = 2048.0
+ring_step = 4096.0
+max_range = 49152.0
+azimuth_bins = 512
+sample_spacing = 512.0
+adaptive_gate = true
+rebuild_eye_threshold = 16.0
+hierarchical_march = true
+
+# Each weather table defines wind ratio, fog-distance ratio, and fog offset.
+[distant_land.weather.clear]
+wind = 0.1
+fog_ratio = 1.0
+fog_offset = 0.0
+[distant_land.weather.cloudy]
+wind = 0.2
+fog_ratio = 0.9
+fog_offset = 0.0
+[distant_land.weather.foggy]
+wind = 0.0
+fog_ratio = 0.2
+fog_offset = 30.0
+[distant_land.weather.overcast]
+wind = 0.2
+fog_ratio = 0.7
+fog_offset = 0.0
+[distant_land.weather.rain]
+wind = 0.3
+fog_ratio = 0.5
+fog_offset = 10.0
+[distant_land.weather.thunderstorm]
+wind = 0.5
+fog_ratio = 0.5
+fog_offset = 20.0
+[distant_land.weather.ashstorm]
+wind = 0.8
+fog_ratio = 0.25
+fog_offset = 45.0
+[distant_land.weather.blight]
+wind = 0.9
+fog_ratio = 0.25
+fog_offset = 50.0
+[distant_land.weather.snow]
+wind = 0.0
+fog_ratio = 0.5
+fog_offset = 40.0
+[distant_land.weather.blizzard]
+wind = 0.9
+fog_ratio = 0.16
+fog_offset = 100.0
+
+# Per-pixel sun and ambient multipliers for each weather.
+[lighting.weather.clear]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.cloudy]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.foggy]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.overcast]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.rain]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.thunderstorm]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.ashstorm]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.blight]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.snow]
+sun = 1.0
+ambient = 1.0
+[lighting.weather.blizzard]
+sun = 1.0
+ambient = 1.0
+
+# Ordered post-processing shader names.
+[shaders]
+chain = []
+
+# Input data is structured TOML; the shared crate renders legacy runtime buffers.
+[input]
+# Sparse arrays use an explicit `index`; omitted slots remain unused.
+macros = []
+triggers = []
+# Source-to-target DirectInput scan-code map.
+remap = {}
+
+# GUI-only presentation and derived-value controls.
+[gui]
+# Use the best supported system language, or set en, fr, pl, or ru explicitly.
+language = "auto"
+# Derive horizontal FOV from the selected aspect ratio.
+match_fov_to_aspect_ratio = true
+# Recalculate concrete static/fog distances when related controls change.
+auto_distances = true
+# 0 derives from draw distance; 1 derives from above-water fog end; 2 is 1 with
+# every static tier held at the fog end so statics fade out instead of popping.
+auto_distance_mode = 0
+# Exponential fog distance multiplier, clamped to 2.5..5.
+exponential_distance_multiplier = 4.0

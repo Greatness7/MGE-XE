@@ -1,0 +1,97 @@
+[workspace]
+members = ["d3d8", "d3d8/crates/*", "dinput8", "mge-config", "MGEXEgui", "mgeHost64", "distantland", "distantland/crates/*", "xtask"]
+default-members = ["MGEXEgui", "mgeHost64", "xtask"]
+resolver = "3"
+
+# The product version. MGEXEgui, mgeHost64 and xtask inherit it and read it back
+# through `env!("CARGO_PKG_VERSION")`. The only other copy is
+# `d3d8/cpp/mge/mgeversion.h`, which cannot read Cargo metadata. `d3d8` and
+# `dinput8` stay at 0.1.0: nothing reads their version and bumping it forces a
+# full C++ rebuild.
+[workspace.package]
+version = "0.20.0"
+
+# Inherited by members with `<dep>.workspace = true`. Every `distantland/*` crate
+# depends on this table; MGE-XE's own members migrate onto it as they need to.
+[workspace.dependencies]
+anyhow = "1.0"
+atoi = "3.1"
+blake3 = { version = "1.8", features = ["rayon", "mmap"] }
+bstr = "1.12"
+bytemuck = { version = "1.24", features = ["derive", "extern_crate_alloc", "min_const_generics", "must_cast"] }
+fast_image_resize = "6.0"
+glam = { version = "0.30", features = ["bytemuck", "approx"] }
+half = { version = "2.7", features = ["bytemuck", "nightly"] }
+hashbrown = { version = "0.16", features = ["nightly", "rayon"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "rayon", "tga"] }
+image_dds = { version = "0.7", default-features = false, features = ["ddsfile", "image"] }
+indexmap = { version = "2.13", features = ["rayon"] }
+intel_tex_2 = "0.5"
+itertools = "0.14"
+memmap2 = "0.9"
+meshopt = { git = "https://github.com/gwihlidal/meshopt-rs.git", rev = "3c8c9126cd98e70f34c6d9c54d02f41af6749406" }
+rayon = "1.10"
+rkyv = { version = "0.8", features = ["hashbrown-0_16", "indexmap-2"] }
+serde = { version = "1.0", features = ["derive"] }
+smallvec = { version = "1.15", features = ["const_generics", "const_new", "may_dangle", "specialization", "union"] }
+str-utils = "0.3"
+tempfile = "3"
+tes3 = { git = "https://github.com/Greatness7/tes3.git", features = ["nightly", "simd", "bsa", "esp", "nif"] }
+tracing = { version = "0.1", features = ["release_max_level_info"] }
+winreg = "0.55"
+bytes_io = { git = "https://github.com/Greatness7/tes3.git", features = ["nightly", "simd", "glam"] }
+
+# The repo's only clippy allow-list. Every member carries `[lints] workspace = true`.
+[workspace.lints.clippy]
+unnecessary_sort_by = "allow"
+new_without_default = "allow"
+field_reassign_with_default = "allow"
+explicit_counter_loop = "allow"
+len_without_is_empty = "allow"
+large_enum_variant = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+# Cargo honours profiles only in the workspace root, so members' own
+# `[profile.*]` sections would be ignored. Fat LTO lives in `max-perf` instead of
+# here, to keep ordinary release builds linking quickly.
+[profile.release]
+lto = "thin"
+panic = "abort"
+strip = true
+debug = false
+
+# Release speed, but keeps symbols so a profiler can attribute samples.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true
+
+[profile.profiling.build-override]
+debug = false
+
+# Keeps the DLL's PDB, which is how crashes get diagnosed.
+[profile.release-dll]
+inherits = "release"
+panic = "abort"
+debug = true
+strip = false
+
+# One codegen unit and fat LTO across the graph, several times slower to build,
+# so it is opt-in through `cargo xtask build --max-perf`. It reaches only the Rust
+# binaries; `d3d8.dll` is mostly C++ built by `cc`, and the `d3d8/max-perf`
+# feature is its equivalent. See BUILD.md.
+[profile.max-perf]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+strip = true
+debug = false
+
+# The release/release-dll split again. Stripping buys no speed, and `d3d8.pdb` is
+# how crashes get diagnosed.
+[profile.max-perf-dll]
+inherits = "max-perf"
+panic = "abort"
+debug = true
+strip = false

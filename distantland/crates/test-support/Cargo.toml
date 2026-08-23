@@ -1,0 +1,30 @@
+[package]
+name = "distantland_test_support"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+glam.workspace = true
+half.workspace = true
+hashbrown.workspace = true
+image.workspace = true
+image_dds.workspace = true
+indexmap.workspace = true
+itertools.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+tes3.workspace = true
+distantland_formats = { path = "../formats" }
+distantland_foundation = { path = "../foundation" }
+distantland_job = { path = "../job" }
+distantland_statics = { path = "../statics" }
+distantland_texture = { path = "../texture" }
+distantland_vfs = { path = "../vfs" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

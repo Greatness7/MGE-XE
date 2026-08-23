@@ -1,0 +1,20 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "config-contract-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# The contract it verifies is d3d8.dll's 32-bit ABI, so an x64 build would check
+# the wrong layouts while appearing to pass. See the note in d3d8/Cargo.toml.
+forced-target = "i686-pc-windows-msvc"
+
+[[bin]]
+name = "config-contract-test"
+path = "src/main.rs"
+
+[dependencies]
+mge-config = { path = "../../../mge-config", features = ["contract-test"] }
+
+[build-dependencies]
+cc = "1"

@@ -1,6 +1,40 @@
 local this = {}
 local autoSetDistances = true
 
+-- Terrain horizon-culling tuning is exposed directly by d3d8.dll as plain C exports, because
+-- MWSE's `mge` bindings live in a separate repository and cannot surface new tunables without a
+-- new MWSE release. Bind them through LuaJIT's FFI. If an older d3d8.dll without the exports is
+-- loaded, leave horizonFfi nil and the horizon controls are hidden (graceful degradation).
+local ffi = require("ffi")
+
+-- cdef is global to the LuaJIT state; tolerate a redefine on module reload.
+pcall(ffi.cdef, [[
+	float MGE_HorizonGetParam(int id);
+	void MGE_HorizonSetParam(int id, float value);
+]])
+
+local horizonFfi = nil
+do
+	local ok, lib = pcall(ffi.load, "d3d8")
+	-- Probe one export so a partial/old DLL fails here rather than mid-menu.
+	if ok and pcall(function() lib.MGE_HorizonGetParam(0) end) then
+		horizonFfi = lib
+	end
+end
+
+-- Canonical horizon parameter ids, shared with apiffi.cpp and mgeHost64. See docs/architecture/horizon-culling.md §10.2.
+local horizonId = {
+	culling = 0,
+	heightBias = 1,
+	objectBias = 2,
+	nearExclude = 3,
+	ringStep = 4,
+	maxRange = 5,
+	bins = 6,
+	sampleSpacing = 7,
+	adaptiveGate = 8,
+}
+
 -- Custom components
 local function createPane(menu, id)
 	local p = menu:createBlock{id = id}
@@ -235,6 +269,70 @@ local function createAutoSetToggle(parent, text, onChange)
 	return b
 end
 
+-- On/Off toggle backed by an FFI horizon parameter (the C++ setter clamps; we re-read to display).
+local function createFfiToggle(parent, id, labelKey, onChange)
+	local block = parent:createBlock{}
+	block.widthProportional = 1.0
+	block.autoHeight = true
+	block.childAlignY = 0.5
+
+	local label = block:createLabel{text = this.i18n(labelKey)}
+	label.minWidth = 240
+	label.borderRight = 10
+
+	local function getter()
+		return (horizonFfi.MGE_HorizonGetParam(id) ~= 0) and this.i18n("On") or this.i18n("Off")
+	end
+
+	local b = createThinButton(block, getter())
+	b:register("mouseClick", function(e)
+		local on = horizonFfi.MGE_HorizonGetParam(id) ~= 0
+		horizonFfi.MGE_HorizonSetParam(id, on and 0 or 1)
+		b.text = getter()
+		if onChange then onChange() end
+	end)
+
+	block:registerBefore("update", function(e) b.text = getter() end)
+	return block
+end
+
+-- Four-button world-unit editor backed by an FFI horizon parameter. Clamping happens in the C++
+-- setter, so the displayed value is whatever the setter accepted (re-read after each change).
+local function createFfiWorldEdit(parent, id, labelKey, smallDelta, largeDelta)
+	local block = parent:createBlock{}
+	block.widthProportional = 1.0
+	block.autoHeight = true
+	block.childAlignY = 0.5
+
+	local function getter()
+		return string.format("%.0f", horizonFfi.MGE_HorizonGetParam(id))
+	end
+
+	local label = block:createLabel{text = this.i18n(labelKey)}
+	label.minWidth = 240
+
+	local valueLabel = createRightAlignedLabel(block, getter(), 40)
+	valueLabel.borderRight = 10
+
+	local function modify(d)
+		horizonFfi.MGE_HorizonSetParam(id, horizonFfi.MGE_HorizonGetParam(id) + d)
+		valueLabel.text = getter()
+		block:getTopLevelMenu():updateLayout()
+	end
+
+	local decrLarge = createThinButton(block, '-1')
+	local decrSmall = createThinButton(block, '-')
+	local incrSmall = createThinButton(block, '+')
+	local incrLarge = createThinButton(block, '+1')
+	decrLarge:register("mouseClick", function(e) modify(-largeDelta) end)
+	decrSmall:register("mouseClick", function(e) modify(-smallDelta) end)
+	incrSmall:register("mouseClick", function(e) modify(smallDelta) end)
+	incrLarge:register("mouseClick", function(e) modify(largeDelta) end)
+
+	block:registerBefore("update", function(e) valueLabel.text = getter() end)
+	return block
+end
+
 local function fixWorldRenderUpdate()
 	-- Some updates don't appear until the next frame due to logic ordering.
 	-- Temporarily turn off paused world rendering until next frame.
@@ -442,6 +540,34 @@ function this.run()
 
 		-- Update render distance labels.
 		section:triggerEvent("update")
+
+		-- Dynamic Horizon Culling Defaults
+		if horizonFfi then
+			local maxRangeCells = math.min(drawDist * 0.75, 30.0)
+			local maxRange = maxRangeCells * 8192.0
+			local ringStep = 4096.0
+			if maxRange > (12.0 * 8192.0) then
+				ringStep = 8192.0
+			end
+			local bins = 512.0
+			local queryBudget = 48000.0
+			local sampleSpacing = (maxRange * bins) / queryBudget
+
+			local hierarchicalOn = horizonFfi.MGE_HorizonGetParam(9) ~= 0
+			if hierarchicalOn then
+				sampleSpacing = math.min(1024.0, sampleSpacing)
+			end
+
+			horizonFfi.MGE_HorizonSetParam(horizonId.maxRange, maxRange)
+			horizonFfi.MGE_HorizonSetParam(horizonId.ringStep, ringStep)
+			horizonFfi.MGE_HorizonSetParam(horizonId.bins, bins)
+			horizonFfi.MGE_HorizonSetParam(horizonId.sampleSpacing, sampleSpacing)
+
+			local horizonSection = menu:findChild("HorizonSettings")
+			if horizonSection then
+				horizonSection:triggerEvent("update")
+			end
+		end
 	end
 
 	section = createGroup(pane, "RenderDistances")
@@ -470,6 +596,23 @@ function this.run()
 		function(newValue)
 			mge.reloadDistantLand()
 		end)
+
+	-- Terrain horizon culling (only shown when the loaded d3d8.dll exports the FFI tuning hooks).
+	if horizonFfi then
+		section = createGroup(pane, "HorizonSettings")
+		createFfiToggle(section, horizonId.culling, "horizonCulling")
+		createFfiToggle(section, horizonId.adaptiveGate, "horizonAdaptiveGate")
+		createSpacer(section)
+		createFfiWorldEdit(section, horizonId.heightBias, "horizonHeightBias", 64, 256)
+		createFfiWorldEdit(section, horizonId.objectBias, "horizonObjectBias", 32, 128)
+		createSpacer(section)
+		createFfiWorldEdit(section, horizonId.nearExclude, "horizonNearExclude", 128, 8192)
+		createFfiWorldEdit(section, horizonId.ringStep, "horizonRingStep", 128, 8192)
+		createFfiWorldEdit(section, horizonId.maxRange, "horizonMaxRange", 128, 8192)
+		createSpacer(section)
+		createFfiWorldEdit(section, horizonId.bins, "horizonBins", 64, 256)
+		createFfiWorldEdit(section, horizonId.sampleSpacing, "horizonSampleSpacing", 64, 256)
+	end
 
 	-- Water pane
 	pane = createPane(menu, "PaneWater")
@@ -598,8 +741,8 @@ function this.run()
 	-- Bottom bar. Save, load, close.
 	element = section:createButton{text = i18n("Save")}
 	element:register("mouseClick", function(e)
-		mge.saveConfig()
-		tes3.messageBox{message = i18n("MsgSaved")}
+		local success = pcall(mge.saveConfig)
+		tes3.messageBox{message = i18n(success and "MsgSaved" or "MsgSaveFailed")}
 	end)
 	element = section:createButton{text = i18n("Load")}
 	element:register("mouseClick", function(e)

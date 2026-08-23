@@ -1,0 +1,31 @@
+[package]
+name = "distantland_terrain"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+hashbrown.workspace = true
+image.workspace = true
+image_dds.workspace = true
+itertools.workspace = true
+meshopt.workspace = true
+rayon.workspace = true
+smallvec.workspace = true
+tes3.workspace = true
+distantland_formats = { path = "../formats" }
+distantland_foundation = { path = "../foundation" }
+distantland_texture = { path = "../texture" }
+distantland_usage = { path = "../usage" }
+distantland_vfs = { path = "../vfs" }
+tracing.workspace = true
+
+[dev-dependencies]
+intel_tex_2.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

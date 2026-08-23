@@ -1,0 +1,827 @@
+_version = 1
+
+[language]
+name = "Français"
+automatic = "Automatique (système)"
+
+[application]
+title = "Morrowind Graphics Extender XE"
+
+[about]
+title = "À propos de MGE XE"
+version = "%{version_string} (%{version_number})"
+description = "Utilitaire de configuration natif en Rust, créé avec egui."
+schema = "Schéma de configuration %{version}"
+license = "MGE XE est un logiciel gratuit et open source."
+project_home = "Page du projet"
+
+[common.actions]
+browse = "Parcourir…"
+cancel = "Annuler"
+clear = "Effacer"
+clear_all = "Tout effacer"
+close = "Fermer"
+continue = "Continuer"
+default = "Défaut"
+move_down = "Descendre"
+move_up = "Monter"
+new = "Nouveau…"
+ok = "OK"
+open = "Ouvrir…"
+add = "Ajouter…"
+remove = "Retirer"
+reset = "Réinitialiser"
+save = "Enregistrer"
+save_as = "Enregistrer sous…"
+save_as_plain = "Enregistrer sous"
+select_all = "Tout sélectionner"
+
+[common.choices]
+off = "Désactivé"
+on = "Activé"
+no = "Non"
+yes = "Oui"
+
+[weather]
+clear = "Clair"
+cloudy = "Nuageux"
+foggy = "Brumeux"
+overcast = "Couvert"
+rain = "Pluvieux"
+thunderstorm = "Orage"
+ashstorm = "Tempête de cendres"
+blight = "Tempête du Fléau"
+snow = "Neigeux"
+blizzard = "Tempête de neige"
+
+[distant]
+enabled = "Utiliser les paysages distants"
+auto_rebuild = "Reconstruit automatiquement les paysages distants obsolètes au démarrage du jeu."
+
+enabled_tip = "Affiche le terrain et les objets au-delà de la distance de vue normale de Morrowind."
+auto_rebuild_tip = "Régénère les paysages distants au démarrage lorsque la tâche enregistrée ne correspond plus au contenu installé."
+
+[distant.blocked]
+format = "Les données générées utilisent le format %{version}, incompatible avec cette version de MGE XE. Exécutez d’abord le générateur de paysages distants."
+format_missing_one = "Les données générées utilisent le format %{version}, incompatible avec cette version de MGE XE. Un élément requis est manquant, notamment %{items}. Exécutez d’abord le générateur de paysages distants."
+format_missing_other = "Les données générées utilisent le format %{version}, incompatible avec cette version de MGE XE. %{count} éléments requis sont manquants, notamment %{items}. Exécutez d’abord le générateur de paysages distants."
+not_found = "Aucune donnée de paysages distants n’a été trouvée. Exécutez d’abord le générateur de paysages distants."
+not_found_missing_one = "Aucune donnée de paysages distants n’a été trouvée. Un élément requis est manquant, notamment %{items}. Exécutez d’abord le générateur de paysages distants."
+not_found_missing_other = "Aucune donnée de paysages distants n’a été trouvée. %{count} éléments requis sont manquants, notamment %{items}. Exécutez d’abord le générateur de paysages distants."
+missing_one = "Un élément requis pour les paysages distants est manquant, notamment %{items}. Exécutez d’abord le générateur de paysages distants."
+missing_other = "%{count} éléments requis pour les paysages distants sont manquants, notamment %{items}. Exécutez d’abord le générateur de paysages distants."
+
+[distant.draw_distance]
+title = "Distance d’affichage"
+generator = "Générateur de paysages distants…"
+cells = "Distance d’affichage en cellules"
+
+generator_tip = "Ouvre le générateur qui crée les fichiers requis par les paysages distants."
+distance_tip = "Définit la distance maximale, en cellules extérieures, d'affichage du terrain et des objets distants."
+
+[distant.water]
+title = "Eau"
+reflections = "Réflexions"
+sky = "Ciel"
+landscape = "Paysages"
+blur_reflections = "Réflexions floutées"
+nearby_statics = "Objets statiques proches"
+interiors = "Intérieurs"
+dynamic_ripples = "Vagues dynamiques"
+wave_height = "Hauteur des vagues"
+caustics = "Luminosité des caustiques"
+
+sky_tip = "Inclut le ciel dans les reflets de l'eau."
+landscape_tip = "Inclut le paysage distant dans les reflets de l'eau."
+blur_reflections_tip = "Applique un flou aux reflets de l'eau."
+nearby_statics_tip = "Inclut les statiques proches dans les reflets. Nécessite les reflets du paysage et des statiques distants générés."
+interiors_tip = "Active les reflets dans les intérieurs distants générés. Nécessite des statiques générés avec des intérieurs contenant de l'eau."
+dynamic_ripples_tip = "Active la simulation dynamique des ondulations et permet de régler la hauteur des vagues."
+wave_height_tip = "Définit la hauteur des vagues en unités de Morrowind. Disponible lorsque les ondulations dynamiques sont activées."
+caustics_tip = "Définit l'intensité des caustiques sous-marines. 0 % désactive l'effet ; la valeur par défaut est 50 %."
+
+[distant.lighting]
+title = "Éclairage et ombres"
+solar_shadows = "Ombres solaires dynamiques"
+medium_detail = "Détail moyen"
+high_detail = "Détail élevé"
+per_pixel = "Shader d'éclairage par pixel"
+always = "Toujours"
+interiors_only = "Intérieurs uniquement"
+settings = "Paramètres d’éclairage…"
+dialog_title = "Réglages de l'éclairage par pixel"
+sun_multiplier = "Luminosité du soleil"
+ambient_multiplier = "Luminosité ambiante"
+reset_tip = "Réinitialise tous les réglages de l'éclairage."
+
+solar_shadows_tip = "Active les ombres dynamiques projetées par le soleil."
+shadow_detail_tip = "Sélectionne une carte d'ombres solaires de 1024 ou 2048 pixels. Disponible lorsque les ombres solaires sont activées."
+per_pixel_tip = "Utilise un éclairage par pixel basé sur des shaders pour les objets de Morrowind."
+mode_tip = "Choisit si l'éclairage par pixel s'applique partout ou seulement dans les intérieurs."
+settings_tip = "Modifie les multiplicateurs de luminosité du soleil et de l'ambiance par météo utilisés par l'éclairage par pixel."
+sun_multiplier_tip = "Multiplie la luminosité du soleil pour chaque météo lorsque l'éclairage par pixel est actif."
+ambient_multiplier_tip = "Multiplie la luminosité ambiante pour chaque météo lorsque l'éclairage par pixel est actif."
+save_tip = "Applique tous les paramètres d'éclairage et ferme la fenêtre."
+cancel_tip = "Ferme la fenêtre sans appliquer les modifications d'éclairage."
+
+[distant.automatic]
+title = "Distances automatiques"
+enabled = "Réglage automatique des autres distances"
+by_draw_distance = "Selon la distance d’affichage"
+by_fog_end = "Selon la fin du brouillard au-dessus de l’eau"
+by_no_pop = "Limité par le brouillard (sans apparition brusque)"
+
+enabled_tip = "Calcule le brouillard et les distances de fin des statiques depuis la distance de base. Les tailles minimales restent manuelles."
+by_draw_distance_tip = "Utilise la distance d'affichage en cellules comme base et calcule les autres distances."
+by_fog_end_tip = "Utilise la fin du brouillard hors de l'eau comme base et donne la même valeur à la distance d'affichage."
+by_no_pop_tip = "Comme « Selon la fin du brouillard au-dessus de l'eau », mais dessine tous les niveaux de statiques jusqu'à la fin du brouillard : ils s'estompent dans le brouillard au lieu de disparaître à une limite de niveau. Coûteux en performances."
+
+[distant.statics]
+title = "Objets statiques distants"
+enabled = "Activer"
+end_distance = "Distance finale"
+minimum_size = "Taille minimale"
+near = "Proche"
+far = "Loin"
+very_far = "Très loin"
+
+enabled_tip = "Affiche les objets distants générés, comme les arbres et les bâtiments."
+near_tip = "Définit la fin du niveau proche en cellules. Sa taille minimale vient des données générées et exige une régénération."
+far_tip = "Définit la fin du niveau lointain en cellules et la taille minimale des modèles en unités du jeu."
+very_far_tip = "Définit la fin du niveau très lointain en cellules et la taille minimale des modèles en unités du jeu."
+
+[distant.fog]
+title = "Brouillard"
+start = "Débute à"
+end = "Finit à"
+above_water = "Brouillard hors de l'eau"
+below_water = "Brouillard sous l'eau"
+interiors = "Brouillard en intérieur"
+exponential = "Brouillard (exponentiel) de haute qualité"
+scattering = "Diffusion atmosphérique"
+weather_settings = "Paramètres météo…"
+
+above_water_tip = "Définit le début et la fin du brouillard par temps clair hors de l'eau, en cellules extérieures."
+below_water_tip = "Définit le brouillard sous l'eau, en cellules. Un début négatif se trouve derrière le point de vue."
+interiors_tip = "Définit le brouillard des intérieurs distants générés. Nécessite des distances manuelles et les statiques distants."
+exponential_tip = "Utilise la formule exponentielle de brouillard des paysages distants, plus dense avec la distance."
+scattering_tip = "Ajoute la diffusion atmosphérique au ciel et au terrain distant. Nécessite le brouillard exponentiel."
+weather_settings_tip = "Modifie les facteurs de vent, de portée du brouillard et de décalage pour chaque météo."
+
+[distant.weather]
+title = "Configuration climatique des paysages distants"
+wind_factor = "Facteur vitesse vent"
+wind_factor_tip = "Le facteur de vent affecte la vitesse à laquelle l'herbe bouge, pour chaque type de météo, en fonction de la vitesse du vent."
+fog_range_factor = "Facteur portée brouill."
+fog_range_factor_tip = "Définit le facteur de brouillard pour chaque type de météo de Morrowind. Il est multiplié par la distance standard du brouillard au-dessus de l’eau. La valeur autorisée va de 0,001 à 2,0."
+fog_offset = "Décalage brouill."
+fog_offset_tip = "Définit le pourcentage de profondeur du brouillard déplacé derrière le joueur pour chaque type de météo. Une valeur plus élevée rapproche le brouillard du joueur, puis le déplace devant lui. Cet effet peut simuler davantage de brume ou de voile atmosphérique. La valeur autorisée va de 0 % à 200 %."
+reset_tip = "Réinitialise tous les paramètres météorologiques à leur valeur par défaut."
+save_tip = "Enregistre tous les paramètres météorologiques et ferme la fenêtre."
+cancel_tip = "Ferme la fenêtre sans enregistrer les paramètres modifiés."
+
+[input.mge]
+disable_mge = "Désactiver MGE dans le jeu"
+disable_mwse = "Désactiver le support de MWSE"
+proxy_only = "proxy D3D8To9 uniquement"
+skip_intro = "Passer la vidéo d'introduction"
+pause_menus = "Suspendre le rendu dans les menus"
+crosshair_autohide = "Masquage auto. du curseur"
+messages = "Messages à l'écran"
+message_duration = "Durée du message"
+
+disable_mge_tip = "Désactive le rendu et les fonctions de MGE XE tout en conservant le mode d'affichage configuré."
+disable_mwse_tip = "Désactive l'intégration MWSE intégrée à MGE XE et ses commandes d'extension."
+proxy_only_tip = "Utilise la traduction D3D8 vers D3D9 sans paysages distants, shaders de post-traitement ni autres effets MGE."
+skip_intro_tip = "Ignore les deux vidéos d'ouverture au démarrage de Morrowind."
+pause_menus_tip = "Met en cache l'arrière-plan des menus au lieu de rendre continuellement le jeu derrière eux."
+crosshair_autohide_tip = "Masque le réticule jusqu'à ce que vous visiez un objet, lanciez un sort ou utilisiez un projectile."
+messages_tip = "Affiche les notifications d'état de MGE XE lorsque les fonctions graphiques changent."
+message_duration_tip = "Définit la durée d'affichage des messages d'état, en millisecondes. Disponible lorsque les messages sont activés."
+
+[input.morrowind]
+yes_to_all = "Autoriser oui à tous"
+thread_loading = "Chargement des cellules dans un nouveau thread"
+subtitles = "Afficher les sous-titres"
+show_fps = "Afficher le compteur de FPS de Morrowind"
+screenshots = "Permettre les captures d'écran"
+actor_shadows = "Ombres d'acteur très détaillées"
+disable_audio = "Désactiver le son"
+hit_fader = "Écran rouge lors des dégâts reçus"
+fps_limit = "Limite de fréquence d'images"
+
+yes_to_all_tip = "Ajoute un choix Oui pour tout aux confirmations compatibles. Écrit AllowYesToAll dans Morrowind.ini."
+thread_loading_tip = "Permet à Morrowind de charger les cellules dans un thread séparé. Écrit la valeur inversée DontThreadLoad."
+subtitles_tip = "Affiche les dialogues parlés sous forme de sous-titres via Morrowind.ini."
+show_fps_tip = "Active le compteur de FPS intégré à Morrowind, indépendant de l'option de MGE XE."
+screenshots_tip = "Active le réglage de capture de Morrowind. Les captures MGE XE se configurent dans l'onglet Graphismes."
+actor_shadows_tip = "Active les ombres détaillées des acteurs de Morrowind."
+disable_audio_tip = "Désactive la majorité des sons de Morrowind ; la musique reste active."
+hit_fader_tip = "Affiche le voile rouge de Morrowind lorsque le personnage subit des dégâts."
+
+[input.camera]
+title = "Caméra"
+custom = "Caméra personnalisée à la troisième personne"
+x_offset = "Déplac. via X"
+y_offset = "Déplac. via Y"
+z_offset = "Déplac. via Z"
+
+custom_tip = "Remplace les décalages par défaut de la caméra à la troisième personne au démarrage du jeu."
+x_offset_tip = "Déplace la caméra horizontalement : une valeur négative va à gauche, une valeur positive à droite."
+y_offset_tip = "Déplace la caméra dans l'axe de la vue. Une valeur plus négative l'éloigne derrière le personnage."
+z_offset_tip = "Déplace la caméra verticalement : une valeur négative descend, une valeur positive monte."
+
+[input.lighting]
+title = "Atténuation de la lumière"
+constant = "Constante"
+linear = "Linéaire"
+quadratic = "Quadratique"
+hint = "Écrit à Morrowind.ini ; affecte les lumières natives du moteur."
+
+constant_tip = "Coefficient constant dans lumière = 1 / (quadratique × distance² + linéaire × distance + constant). Valeur par défaut : 0."
+linear_tip = "Coefficient de distance linéaire de l'atténuation native de la lumière. Valeur par défaut de Morrowind : 3."
+quadratic_tip = "Coefficient de distance au carré de l'atténuation native de la lumière. Valeur par défaut de Morrowind : 0."
+
+[input.card]
+title = "Entrée"
+macro_editor = "Éditeur de macros…"
+key_remapper = "Réaffectation des touches…"
+
+macro_editor_tip = "Associe fonctions MGE XE, séquences de touches et déclencheurs temporisés au clavier ou à la souris."
+key_remapper_tip = "Réaffecte les touches DirectInput. Survolez une touche pour voir son mappage actuel."
+
+[input.macro]
+title = "Éditeur de macros"
+editing_macro = "Modification de la macro 0x%{index}"
+editing_trigger = "Modification du déclencheur %{index}"
+clear_console = "Effacer la commande\nde console"
+macro_type = "Type de macro"
+function = "Fonction"
+trigger_placeholder = "-- déclencheur"
+trigger = "Déclencheur"
+trigger_delay = "Délai déclench."
+command_length = "Longueur commande"
+command_description = "Description commande"
+key_input_type = "Type d’entrée de touche"
+tap = "Appui"
+down = "Enfoncée"
+up = "Relâchée"
+trigger_enabled = "Déclencheur activé"
+
+[input.macro.types]
+unused = "Inutilisé"
+console1 = "Console1"
+console2 = "Console2"
+hammer1 = "Hammer1"
+hammer2 = "Hammer2"
+unhammer = "Unhammer"
+ahammer1 = "AHammer1"
+ahammer2 = "AHammer2"
+aunhammer = "AUnhammer"
+press1 = "Press1"
+press2 = "Press2"
+unpress = "Unpress"
+start_trigger = "Lancer le déclencheur"
+end_trigger = "Arrêter le déclencheur"
+function = "Fonction"
+
+[input.functions]
+screenshot = "Prendre une capture d'écran"
+toggle_shaders = "(Dés)activer les shaders"
+toggle_fps = "Basculer le compteur FPS"
+toggle_crosshair = "(Dés)activer le viseur"
+toggle_zoom = "(Dés)activer le zoom"
+reset_zoom = "Réinitialiser le zoom"
+increase_zoom = "Augmenter le zoom"
+decrease_zoom = "Diminuer le zoom"
+toggle_messages = "(Dés)activer les messages"
+last_message = "Afficher le dernier message"
+increase_view = "Augmenter la portée de la vue"
+decrease_view = "Réduire la portée de la vue"
+next_music = "Piste de musique suivante"
+disable_music = "Désactiver la musique"
+toggle_distant = "(Dés)activer les paysages distants"
+toggle_shadows = "(Dés)activer les ombres"
+toggle_grass = "(Dés)activer l'herbe"
+toggle_blending = "Intégration de MW/MGE"
+toggle_lighting = "(Dés)activer le mode d'éclairage"
+toggle_transparency_aa = "(Dés)activer la transparence AA"
+increase_fov = "Augmenter FOV"
+decrease_fov = "Diminuer FOV"
+haggle_plus_1 = "Marchander +1"
+haggle_plus_10 = "Marchander +10"
+haggle_plus_100 = "Marchander +100"
+haggle_plus_1000 = "Marchander +1000"
+haggle_plus_10000 = "Marchander +10000"
+haggle_minus_1 = "Marchander -1"
+haggle_minus_10 = "Marchander -10"
+haggle_minus_100 = "Marchander -100"
+haggle_minus_1000 = "Marchander -1000"
+haggle_minus_10000 = "Marchander -10000"
+camera_forward = "Avancer la caméra à la 3e personne"
+camera_back = "Reculer la caméra à la 3e personne"
+camera_left = "Déplacer la caméra à gauche"
+camera_right = "Déplacer la caméra à droite"
+camera_down = "Déplacer la caméra vers le bas"
+camera_up = "Déplacer la caméra vers le haut"
+
+[input.remap]
+title = "Réaffectation des touches"
+capture_title = "Veuillez appuyer sur une touche"
+replacement_for = "Remplacement pour %{key}"
+
+[graphics.choices]
+none = "Aucun"
+2x = "2x"
+4x = "4x"
+8x = "8x"
+16x = "16x"
+x2 = "x2"
+x3 = "x3"
+x4 = "x4"
+
+[graphics.display]
+title = "Affichage"
+resolution = "Résolution"
+resolution_value = "%{width} × %{height}"
+aspect_ratio = "Format d'affichage"
+select_resolution = "Choisir la résolution du jeu"
+refresh_value = "%{rate} Hz"
+default = "Par défaut"
+refresh_rate = "Taux de rafraîchissement"
+antialiasing = "Niveau d'anticrénelage"
+anisotropic_filtering = "Niveau de filtrage anisotrope"
+vsync = "Synchronisation verticale"
+windowed = "Mode fenêtré"
+borderless = "Sans bordure"
+window_location = "Emplacement de la fenêtre"
+
+resolution_tip = "Affiche la résolution d'écran ou la taille de fenêtre configurée pour Morrowind."
+aspect_ratio_tip = "Affiche le format d'image calculé depuis la résolution configurée."
+select_resolution_tip = "Change la résolution de Morrowind. Les tailles arbitraires sont disponibles en mode fenêtré."
+refresh_rate_tip = "Définit la fréquence du moniteur en plein écran. Sans effet en mode fenêtré ; Par défaut laisse Direct3D choisir."
+antialiasing_tip = "Lisse les bords polygonaux en augmentant le niveau de multi-échantillonnage."
+anisotropic_filtering_tip = "Améliore la netteté des textures vues sous un angle rasant."
+vsync_tip = "Synchronise l'affichage avec le moniteur. x2, x3 et x4 affichent à la moitié, au tiers ou au quart de sa fréquence."
+windowed_tip = "Lance Morrowind dans une fenêtre au lieu du plein écran exclusif."
+borderless_tip = "Supprime les bordures afin que le mode fenêtré remplisse l'écran comme le plein écran."
+window_location_tip = "Choisit le bord ou le coin de l'écran auquel la fenêtre de Morrowind est ancrée."
+
+[graphics.renderer]
+title = "Image"
+enable_shaders = "Activer les shaders"
+shader_setup = "Configurer les shaders…"
+display_fps = "Afficher les FPS"
+auto_fov = "FOV Auto"
+horizontal_fov = "FOV horizontal"
+fps_limiter = "Limiteur de FPS"
+ui_scaling = "Échelle de l'interface"
+fog_mode = "Mode de brouillard"
+
+enable_shaders_tip = "Applique la chaîne de shaders de post-traitement. Elle peut aussi être activée en jeu par une macro."
+shader_setup_tip = "Ouvre les paramètres de la chaîne active et de qualité des effets."
+display_fps_tip = "Affiche le compteur de FPS de MGE XE, indépendant de celui de Morrowind et des messages à l'écran."
+auto_fov_tip = "Calcule le FOV horizontal selon le format actuel tout en conservant la vue 4:3 d'origine de Morrowind."
+horizontal_fov_tip = "Définit le champ de vision horizontal en degrés. La valeur par défaut est 75° en 4:3 ; désactivé avec FOV auto."
+fps_limiter_tip = "Définit la fréquence maximale interne de Morrowind via Morrowind.ini."
+ui_scaling_tip = "Ajuste l'échelle des menus et de l'interface de Morrowind. La valeur par défaut est 1.0."
+fog_mode_tip = "Choisit le calcul du brouillard. Range vertex est le plus précis ; depth pixel privilégie la compatibilité."
+
+[graphics.fog_mode]
+depth_pixel = "Depth pixel (Rapide)"
+depth_vertex = "Depth vertex"
+range_vertex = "Range vertex (Meilleur)"
+
+[graphics.screenshots]
+title = "Captures d'écran"
+file_prefix = "Préfixe du nom de fichier"
+format = "Format"
+file_format = "Format du nom de fichier"
+output_directory = "Répertoire de sortie"
+directory_hint = "- Dossier Morrowind/Screenshots -"
+hint = "Les captures d’écran peuvent être prises en jeu avec la touche PrintScreen.\nL’interface est normalement masquée. Utilisez Shift+PrintScreen pour inclure l’interface dans la capture."
+
+file_prefix_tip = "Définit le préfixe placé au début de chaque capture MGE XE."
+format_tip = "Sélectionne le format d'image des captures MGE XE."
+file_format_tip = "Choisit les champs d'horodatage, de séquence, de personnage et de temps de jeu ajoutés après le préfixe."
+output_directory_tip = "Définit où sont enregistrées les captures MGE XE. Une valeur vide utilise le dossier Morrowind/Screenshots."
+clear_directory_tip = "Efface le répertoire personnalisé et restaure le dossier Morrowind/Screenshots par défaut."
+
+[graphics.screenshots.suffix]
+timestamp = "Horodatage"
+ordinal = "Numéro séquentiel"
+character_ordinal = "Nom du personnage, numéro séquentiel"
+character_time_ordinal = "Nom du personnage, heure du jeu, numéro séquentiel"
+
+[graphics.resolution]
+title = "Sélectionnez la résolution du jeu"
+screen_width = "Largeur de l'écran"
+screen_height = "Hauteur de l'écran"
+windowed_only = "Les résolutions arbitraires ne peuvent être sélectionnées qu'en mode fenêtré."
+
+[shaders.setup]
+title = "Régler les shaders actifs"
+options = "Options de shaders"
+quality_preset = "Qualité prédéf."
+exposure_time = "Temps réaction d'expo"
+seconds = "s"
+modding_collapse = "<<< Modding"
+modding_expand = "Modding >>>"
+available = "Shaders disponibles"
+active = "Shaders actifs"
+editor = "Éditeur"
+double_click_hint = "Double-cliquez pour ajouter ou retirer un shader de la liste active. Respectez l'ordre des shaders : le premier shader en haut de la liste sera chargé en premier, et le dernier, à la fin de la liste, sera chargé en dernier, mais il agira sur tous les shaders précédemment chargés."
+
+quality_preset_tip = "Remplace la chaîne active par le préréglage choisi. Les modifications manuelles apparaissent comme Personnalisé."
+exposure_time_tip = "Définit le nombre approximatif de secondes nécessaires au HDR pour adapter l'exposition à un changement de luminosité."
+
+[shaders.effects]
+hdr = "HDR"
+ssao = "SSAO"
+bloom = "Bloom"
+sunshafts = "Rayons de soleil"
+depth_of_field = "Profondeur de champ"
+underwater_sunshafts = "Rayons de soleil sous l’eau"
+interior_caustics = "Caustiques intérieures"
+
+hdr_tip = "Adapte l'exposition de la caméra pour simuler l'ajustement de l'œil entre les environnements clairs et sombres."
+ssao_tip = "Ajoute une occlusion ambiante en espace écran : de petites ombres de contact dérivées de l'image rendue."
+bloom_tip = "Ajoute un halo autour des parties très lumineuses. Fin et Doux sélectionnent différents shaders."
+sunshafts_tip = "Ajoute des rayons visibles autour du soleil."
+depth_of_field_tip = "Ajoute un effet de mise au point qui floute les zones éloignées de la région focalisée."
+underwater_sunshafts_tip = "Ajoute des rayons solaires réfractés lorsque la caméra est sous l'eau."
+interior_caustics_tip = "Ajoute des caustiques lumineuses aux surfaces sous-marines dans les intérieurs."
+
+[shaders.quality]
+fine = "Fin"
+medium = "Moyen"
+high = "Élevé"
+soft = "Tamisé"
+
+[shaders.presets]
+lowest = "Très faible"
+low = "Faible"
+medium = "Moyenne"
+high = "Haute"
+very_high = "Très haute"
+custom = "Personnalisée"
+
+[shaders.editor]
+title = "%{name}%{mark} - Éditeur de shaders"
+new_file = "Nouveau fichier"
+edit_flags = "Éditer les réglages de shader"
+modified = "Modifié"
+save_prompt = "Enregistrer le fichier actuel de shader ?"
+
+[shaders.editor.menu]
+file = "Fichier"
+edit = "Édition"
+show_in_explorer = "Afficher dans l'Explorateur"
+exit = "Quitter"
+undo = "Annuler"
+redo = "Rétablir"
+cut = "Couper"
+copy = "Copier"
+paste = "Coller"
+select_all = "Sélectionner tout"
+
+[shaders.flags]
+title = "Indicateurs de shader"
+interiors = "Désactivé dans les intérieurs"
+exteriors = "Désactivé en extérieur"
+interior_exteriors = "Désactivé dans les intérieurs se comportant comme des extérieurs (comme Mournhold)"
+underwater = "Désactivé sous l'eau"
+above_water = "Désactivé au-dessus de l'eau"
+sun_visible = "Désactivé lorsque le soleil est visible"
+sun_hidden = "Désactivé lorsque le soleil n'est pas visible (c.-à-d. opacité du soleil nulle)"
+
+[shaders.file]
+effect = "Effet shader"
+effect_fx = "Fichier d'effet shader (fx)"
+
+[shaders.messages]
+open_failed = "Impossible d'ouvrir le shader : %{error}"
+explorer_failed = "Impossible d'ouvrir l'Explorateur : %{error}"
+save_failed = "Impossible d'enregistrer le shader : %{error}"
+choose_name = "choisissez un nom de fichier avec Enregistrer sous avant de sauvegarder ce shader"
+saved = "%{name} enregistré."
+saved_shader = "Shader %{name} enregistré."
+chain_applied = "Chaîne de shader appliquée."
+flags_set = "Indicateurs d’exécution définis sur %{flags}."
+
+[generator]
+title = "Générateur de paysages distants MGE XE"
+
+[generator.tabs]
+plugins = "Plugins"
+landscape = "Terrain"
+statics = "Objets statiques"
+grass = "Herbe"
+advanced = "Avancé"
+
+[generator.actions]
+save_generate = "Enregistrer et générer…"
+force_rebuild = "Forcer la reconstruction"
+back_to_settings = "Retour aux paramètres"
+
+force_rebuild_tip = "Régénère toutes les sorties même si les fichiers existants et la tâche enregistrée semblent à jour."
+
+[generator.precheck]
+found_title = "Paysages distants existants détectés"
+blocked_title = "Impossible de générer les paysages distants"
+old_or_corrupt = "Des fichiers de paysages distants existent déjà, mais ils sont incomplets, corrompus ou proviennent d’une ancienne version de MGE. Ils seront remplacés si la génération réussit.\n\nVoulez-vous continuer ?"
+different_version = "Des fichiers de paysages distants existent déjà, mais ils proviennent d’une autre version de MGE. Ils seront remplacés si la génération réussit.\n\nVoulez-vous continuer ?"
+newer_format = "Les paysages distants existants utilisent un format plus récent. Mettez MGE-XE à jour avant de lancer la génération ; cette version ne les remplacera pas."
+
+[generator.generating]
+title = "Génération des paysages distants"
+hint = "Cette opération peut prendre plusieurs minutes. La fenêtre ne peut pas être fermée avant la fin."
+
+[generator.finished]
+title = "Paysages distants générés"
+message = "Les nouveaux paysages distants sont actifs. Vous pouvez fermer cette fenêtre."
+warnings = "%{count} avertissement(s) :"
+memory_title = "Mémoire GPU estimée des paysages distants"
+memory_static_geometry = "Géométrie statique"
+memory_static_textures = "Textures statiques"
+memory_terrain_geometry = "Géométrie du terrain"
+memory_terrain_textures = "Textures du terrain"
+memory_high = "Utilisation mémoire élevée par rapport à votre GPU de %{vram}. Il pourrait manquer de mémoire pendant le jeu."
+memory_very_high = "Utilisation mémoire très élevée par rapport à votre GPU de %{vram}. Il pourrait manquer de mémoire pendant le jeu ou lors des changements de cellule."
+memory_high_generic = "Utilisation mémoire élevée. Votre GPU pourrait manquer de mémoire pendant le jeu."
+memory_very_high_generic = "Utilisation mémoire très élevée. Votre GPU pourrait manquer de mémoire pendant le jeu ou lors des changements de cellule."
+memory_note = "L'utilisation réelle de la VRAM sera plus élevée, car cette estimation exclut le jeu, les cibles de rendu, la surcharge du pilote et la fragmentation des allocations."
+memory_unavailable = "Estimation de mémoire indisponible. Forcez une reconstruction pour créer un rapport de génération à jour."
+
+[generator.failed]
+title = "La génération a échoué"
+
+[generator.messages]
+worker_stopped = "Le processus de génération s’est arrêté de manière inattendue."
+generated = "Paysages distants générés et activés."
+output_in_use = "Les fichiers de paysages distants sont utilisés. Fermez d’abord Morrowind, puis relancez la génération."
+settings_save_blocked = "Les paramètres n'ont pas pu être enregistrés, la génération n'a donc pas démarré : %{error}"
+invalid_settings = "Ces paramètres ne permettent pas de générer les paysages distants : %{error}"
+job_read_failed = "Impossible de lire la table [generation] dans mgeXE.toml. Corrigez le fichier TOML avant d’enregistrer : %{error}"
+job_save_blocked_invalid = "Corrigez le TOML invalide dans mgeXE.toml avant d’enregistrer [generation]."
+legacy_job_notice = "Un ancien fichier distantland-job.json a été trouvé. Resélectionnez et enregistrez les paramètres de génération pour les déplacer dans mgeXE.toml."
+legacy_cleanup_failed = "Les nouveaux paramètres ont été enregistrés, mais l’ancien fichier de tâche n’a pas pu être supprimé : %{error}"
+plugin_sync_failed = "La liste des plugins n'a pas pu être lue depuis Morrowind.ini ; rien n'a été enregistré : %{error}"
+
+[generator.stages]
+starting = "Démarrage…"
+initialize_vfs = "Initialisation du générateur"
+parse_overrides = "Analyse des remplacements statiques"
+parse_plugins = "Analyse des plugins"
+generate_statics = "Collecte des objets statiques distants"
+analyze_texture_density = "Analyse de la densité des textures"
+create_texture_atlas = "Création de l’atlas de textures"
+compute_unit_diff = "Calcul des changements incrémentiels"
+optimize_meshes = "Optimisation des maillages"
+convert_statics = "Conversion de maillages statiques"
+write_version = "Écriture du fichier de version"
+write_usage = "Écriture des données d'utilisation"
+write_statics = "Écriture des maillages statiques"
+write_terrain = "Écriture du paquet de terrain"
+write_generation_report = "Écriture du rapport de génération"
+
+[generator.units]
+texels = "texels"
+mib = "MiB"
+
+[generator.quality]
+ultra_high = "Ultra élevée"
+very_high = "Très élevée"
+high = "Élevée"
+medium = "Moyenne"
+low = "Faible"
+
+[generator.landscape]
+generate = "Générer un terrain"
+terrain = "Terrain"
+max_texture = "Taille maximale de la texture du terrain"
+max_texture_hint = "Dimension maximale pour les tuiles individuelles dans l'atlas."
+max_atlas = "Taille maximale de l'atlas de terrain"
+max_atlas_hint = "Dimension maximale de l'atlas complet des textures (valeur plus élevée = plus de performances). Recommandé : %{max}."
+detail = "Détail du terrain"
+detail_hint = "Des préréglages plus élevés donnent des grilles plus fines au détriment de la taille du maillage."
+
+generate_tip = "Inclut les maillages et textures du terrain distant. Le désactiver conserve les options de terrain."
+
+[generator.plugins]
+select = "Sélectionnez les plugins à utiliser pour les paysages distants"
+selected_count = "%{selected} sur %{total} sélectionnés"
+none_found = "Aucun plugin trouvé dans les répertoires de données."
+use_load_order = "Utiliser l'ordre de chargement actuel"
+sort_view = "Trier la vue"
+sort_name = "par nom"
+sort_type = "par type"
+sort_load_order = "par ordre de chargement"
+in_grass_list = "sélectionné comme herbe"
+looks_like_grass = "(herbe)"
+looks_like_grass_tip = "Ce plugin place de l'herbe en grande quantité. Le couvre-sol appartient à l'onglet Herbe : dans l'ordre de chargement, la plupart de ses placements sont perdus."
+
+auto_sync = "Synchroniser avec l'ordre de chargement"
+auto_sync_tip = "Relire la liste des plugins depuis Morrowind.ini à chaque génération des paysages distants, y compris lors des reconstructions automatiques au démarrage du jeu. Laissez cette option activée et un mod nouvellement installé sera pris en compte tout seul. Désactivez-la pour conserver la sélection ci-dessus telle quelle."
+
+sort_tip = "Change uniquement l'affichage de cette liste. L'ordre enregistré suit toujours l'ordre de chargement."
+
+[generator.dirs]
+button = "Répertoires de données…"
+title = "Répertoires de données"
+hint = "Recherche également les plugins, archives, maillages et textures hors de Data Files. Les entrées les plus basses sont prioritaires."
+none = "Aucun répertoire supplémentaire."
+add_title = "Ajouter un répertoire de données"
+no_plugins = "Aucun plugin directement dans ce dossier. Les sous-dossiers ne sont pas parcourus : s'il contient des variantes, ajoutez plutôt celle que vous utilisez. Les maillages et textures restent pris en compte."
+
+[generator.statics]
+detail = "Détails"
+min_size = "Taille minimale des objets statiques"
+min_size_hint = "Unités du jeu. Une valeur plus faible inclut davantage d’objets statiques."
+textures = "Limites de textures"
+max_atlas = "Taille maximale de l'atlas"
+max_atlas_hint = "Dimension maximale d’une page de l’atlas des objets statiques (limite sûre pour le GPU). Recommandé : %{max}."
+max_texture_short = "Petit côté maximal des textures"
+max_texture_short_hint = "Plus grand petit côté admis dans un atlas statique ; la limite qui régit les textures ordinaires."
+max_texture_long = "Grand côté maximal des textures"
+max_texture_long_hint = "Plus grand grand côté admis. Augmentez-le au-delà du petit côté pour préserver les atlas préfabriqués."
+grass_density = "% de densité d'herbe"
+include = "Inclure"
+large_interiors = "Inclure de grands intérieurs"
+behaves_exterior = "Inclure les intérieurs se comportant comme les extérieurs"
+interiors_water = "Inclure les intérieurs avec de l'eau"
+load_time_hint = "Augmente le temps de chargement."
+activators = "Inclure des activateurs"
+misc = "Inclure divers objets"
+mesh = "Simplification du maillage"
+target_error = "Erreur cible des objets statiques"
+target_error_hint = "Budget d’erreur relatif au rayon de la boîte englobante (0,01 = 1 %)."
+normals_weight = "Poids de conservation des normales"
+normals_weight_hint = "Plus élevé = préserve davantage les normales d’ombrage."
+colors_weight = "Poids de conservation des couleurs"
+colors_weight_hint = "Plus élevé = préserve davantage la peinture des sommets."
+use_overrides = "Utiliser des listes d’objets statiques qui remplacent les paramètres ci-dessus"
+override_lists = "Listes de remplacement"
+no_overrides = "Aucun fichier de remplacement."
+add_override = "Ajouter un fichier de remplacement…"
+add_override_title = "Ajouter un fichier de remplacement"
+override_filter = "Fichiers de remplacement"
+all_files = "Tous les fichiers"
+duplicate_override = "%{path} est déjà dans la liste."
+remove_selected = "Supprimer la sélection"
+edit_list = "Modifier la liste"
+edit_list_hint = "Ouvrez le fichier sélectionné dans son éditeur enregistré"
+
+grass_density_hint = "Pourcentage des instances d'herbe générées à conserver."
+activators_tip = "Inclut les objets activateurs parmi les statiques distants."
+misc_tip = "Inclut les objets divers parmi les statiques distants."
+use_overrides_tip = "Applique les fichiers de remplacement dans l'ordre lors du classement et de la génération des statiques distants."
+
+[generator.grass]
+select = "Sélectionnez les plugins d'herbe ou de couvre-sol"
+selected_count = "%{selected} sur %{total} sélectionnés"
+hint = "Réservés au générateur : ils ne sont pas ajoutés à l'ordre de chargement du jeu. Seules leurs herbes placées en extérieur sont utilisées, selon le « % densité d'herbe » de l'onglet Objets statiques."
+none_found = "Aucun plugin d'herbe trouvé. Si votre couvre-sol est hors de Data Files, ajoutez son dossier via « Répertoires de données… »."
+in_load_order = "dans l'ordre de chargement"
+scanning = "Recherche des plugins d'herbe…"
+rescan = "Réanalyser"
+sort_tip = "Change uniquement l'affichage de cette liste. Les plugins d'herbe sont toujours enregistrés maîtres en premier."
+standard_usage = "Usage standard : cochez le couvre-sol souhaité, puis enregistrez et générez."
+
+[generator.advanced]
+build_options = "Options de construction"
+texture_dedupe = "Déduplication de texture"
+texture_dedupe_hint = "Regroupe les textures identiques avant la création des atlas."
+door_multiplier = "Multiplicateur de taille de porte"
+door_multiplier_hint = "Conserve les portes distantes dans le groupe de rendu du bâtiment. ≥ 1,0."
+merge_radius = "Rayon de fusion des objets statiques"
+merge_radius_hint = "Étendue maximale des objets statiques fusionnés dans un même lot, en unités du jeu."
+merge_error = "Multiplicateur d'erreur de fusion"
+merge_error_hint = "Limite de simplification supplémentaire lors de la fusion. 1,0 = désactivée ; ≥ 1,0."
+control_map = "Carte de contrôle"
+max_control_size = "Taille maximale de la carte de contrôle"
+max_control_size_hint = "Largeur ou hauteur maximale des cartes de contrôle. Recommandé : %{max}."
+control_memory = "Limite de mémoire de la carte de contrôle"
+control_memory_hint = "Arrête la génération si la taille estimée des textures de contrôle du terrain dépasse cette limite."
+terrain_mesh = "Simplification du maillage de terrain"
+smoothed_normals = "Normales lissées"
+smoothed_normals_hint = "Poids pour les normales lissées."
+vertex_colors = "Couleurs des sommets"
+vertex_colors_hint = "Poids pour les couleurs des sommets."
+texture_sizing = "Dimensionnement de texture statique"
+sizing_mode = "Mode"
+sizing_mode_hint = "Mesure la densité de texels des objets statiques afin de réduire les textures distantes trop détaillées."
+protected_density = "Densité protégée"
+protected_density_hint = "Nombre de texels par unité du jeu à préserver. Requis (> 0), sauf si le mode est désactivé."
+min_texture_size = "Taille minimale des textures"
+min_texture_size_hint = "Taille minimale de la plus grande dimension sélectionnée ; n’agrandit jamais une source plus petite."
+max_mip_reduction = "Réduction maximale du mip"
+max_mip_reduction_hint = "Nombre maximal de divisions par deux supplémentaires par rapport à la résolution source d’une texture. 0–6."
+exact = "Exact"
+report_only = "Rapport uniquement"
+downscale_opaque = "Réduire les textures opaques"
+downscale = "Réduire toutes les textures"
+
+[tabs]
+config = "Configuration"
+distant_land = "Paysages distants"
+graphics = "Graphismes"
+in_game = "En jeu"
+instructions = "Instructions"
+
+[config]
+language = "Langue"
+file_filter = "Configuration MGE"
+
+[config.help]
+title = "Aide"
+documentation = "Documentation en ligne"
+about = "À propos"
+
+[config.logs]
+title = "Journaux"
+reload = "Recharger"
+reveal = "Afficher dans le dossier"
+empty = "Ce fichier journal est vide."
+
+[config.import_export]
+title = "Importation et exportation"
+save = "Enregistrer les paramètres"
+reload = "Recharger depuis le disque"
+import = "Importer mgeXE.toml…"
+export = "Exporter mgeXE.toml…"
+hint = "Le rechargement ignore les modifications non enregistrées. L'import et l'export utilisent mgeXE.toml. Les clés inconnues et les commentaires sont conservés."
+
+[config.reset]
+title = "Réinitialiser"
+clear_unknown = "Supprimez également les entrées mgeXE.toml inconnues/obsolètes"
+restore = "Restaurer les valeurs par défaut"
+hint = "Les préférences Morrowind.ini et les paramètres [generation] sont conservés ; les autres paramètres MGE XE sont réinitialisés."
+
+clear_unknown_tip = "Supprime les entrées inconnues et obsolètes de mgeXE.toml, sauf les paramètres [generation] conservés."
+
+[instructions.getting_started]
+title = "Commencer"
+graphics = "1. Choisissez les options d'affichage et de qualité d'image dans l'onglet Graphiques."
+generate = "2. Générez les paysages distants depuis l’onglet Paysages distants et attendez la fin de l’opération."
+adjust = "3. Ajustez le rendu distant, le brouillard, l'eau et l'éclairage selon vos goûts."
+save = "4. Enregistrez les paramètres, lancez Morrowind et réglez à l'aide du rechargement en direct MGE XE."
+
+[instructions.shaders]
+title = "Shaders"
+management = "L'utilitaire de configuration gère la chaîne active et peut modifier la source et les indicateurs du shader."
+runtime = "La compilation et l'aperçu s'effectuent désormais dans Morrowind. Les messages d'exécution signalent les erreurs du compilateur et le rechargement en direct donne un aperçu précis dans le moteur."
+
+[instructions.troubleshooting]
+title = "Dépannage"
+location = "• Conservez cet utilitaire dans le répertoire Morrowind à côté de Morrowind.exe."
+close_game = "• Fermez Morrowind avant de modifier les paramètres ou de régénérer les paysages distants."
+logs = "• Examinez mgeXE.log et mgeHost64.log lorsqu'une fonctionnalité d'exécution échoue."
+regenerate = "• Régénérez les paysages distants après toute modification du contenu du monde installé."
+
+[startup]
+failed = "Échec de la configuration MGE XE : %{error}"
+dialog_title = "Configuration MGE XE"
+morrowind_running = "Morrowind est en cours d'exécution. Fermez le jeu avant de modifier les paramètres du MGE XE."
+working_directory = "Impossible d'utiliser %{path} comme répertoire de travail : %{error}"
+already_open = "L'utilitaire de configuration MGE XE est déjà ouvert."
+could_not_start = "Impossible de démarrer l'utilitaire de configuration : %{error}"
+root_argument_missing = "--morrowind-root nécessite un répertoire"
+unknown_argument = "Argument inconnu : %{argument}"
+locate_executable = "Impossible de localiser MGEXEgui.exe : %{error}"
+executable_parent_missing = "MGEXEgui.exe n'a pas de répertoire parent"
+invalid_root = "%{path} n'est pas un répertoire Morrowind/MGE XE complet. Manquant : %{missing}"
+
+[feedback]
+information = "Information"
+success = "Succès"
+warning = "Avertissement"
+error = "Erreur"
+
+[messages]
+settings_loaded = "Paramètres chargés. Les modifications sont enregistrées à la sortie."
+settings_saved = "Paramètres enregistrés."
+morrowind_running = "Morrowind est en cours d'exécution. Fermez le jeu avant de modifier les paramètres de MGE XE."
+config_save_failed = "Impossible d'enregistrer la configuration : %{error}"
+registry_save_failed = "Les fichiers de configuration ont été enregistrés, mais les paramètres du registre Morrowind n'ont pas pu être écrits : %{error}"
+dismiss = "Cliquer pour fermer"
+log_read_failed = "Impossible de lire %{path} : %{error}"
+documentation_open_failed = "Impossible d'ouvrir la documentation : %{error}"
+defaults_restored = "Paramètres par défaut restaurés."
+reset_failed = "Échec de la réinitialisation : %{error}"
+config_reloaded = "Configuration rechargée à partir du disque."
+reload_failed = "Échec du rechargement : %{error}"
+config_imported = "Importé %{path}"
+import_failed = "Échec de l'importation : %{error}"
+import_source_failed = "impossible d'importer %{path} : %{error}"
+config_exported = "%{path} exporté"
+export_failed = "Échec de l'exportation : %{error}"
+file_missing = "%{path} est manquant"
+file_missing_invalid = "le fichier est manquant ou invalide"
+morrowind_ini_missing_owned = "%{path} est manquant ; MGE XE ne créera pas de fichier INI appartenant au jeu"
+display_mode_applied = "Mode d'affichage appliqué. Enregistrez les paramètres pour écrire le registre."
+weather_applied = "Paramètres météo appliqués."
+lighting_applied = "Paramètres d'éclairage appliqués."
+
+[tests]
+named_interpolation = "Valeur %{value}"

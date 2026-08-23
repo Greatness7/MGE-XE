@@ -8,7 +8,9 @@
 //------------------------------------------------------------
 // Engine parameters
 
-// Number of cascades that are rendered (this is hardcoded)
+// Number of cascades that are rendered. Do not change this in a core mod: it must match
+// DistantLand::kShadowCascades, which sizes the atlas and the per-cascade matrices, and
+// nothing checks that the two agree.
 static const int shadowCascades = 2;
 
 // Shadow atlas texture scaling factor

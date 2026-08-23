@@ -1,0 +1,24 @@
+[package]
+name = "mge-config"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+contract-test = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_ignored = "0.1"
+serde_path_to_error = "0.1"
+thiserror = "2"
+toml_edit = { version = "0.25.13", features = ["serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[lints]
+workspace = true

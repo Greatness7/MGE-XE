@@ -4,6 +4,7 @@ return {
 
     ["MsgLoaded"] = "Configuration chargée.",
     ["MsgSaved"] = "Configuration enregistrée.",
+    ["MsgSaveFailed"] = "Impossible d'enregistrer. Si mgeXE.toml a été modifié hors du jeu, cliquez sur Charger, puis à nouveau sur Enregistrer.",
     ["Load"] = "Charger",
     ["Save"] = "Enregistrer",
     ["Close"] = "Fermer",
@@ -52,6 +53,16 @@ return {
 	["belowWaterFogEnd"] = "Brouillard sous l'eau finit à",
 	["interiorFogStart"] = "Brouillard en intérieur débute à",
 	["interiorFogEnd"] = "Brouillard en intérieur finit à",
+
+	["horizonCulling"] = "Élimination par l'horizon du terrain",
+	["horizonHeightBias"] = "Biais de hauteur de l'horizon",
+	["horizonObjectBias"] = "Biais d'objet de l'horizon",
+	["horizonNearExclude"] = "Exclusion proche de l'horizon",
+	["horizonRingStep"] = "Pas des anneaux de l'horizon",
+	["horizonMaxRange"] = "Portée maximale de l'horizon",
+	["horizonBins"] = "Secteurs azimutaux de l'horizon",
+	["horizonSampleSpacing"] = "Espacement d'échantillonnage de l'horizon",
+	["horizonAdaptiveGate"] = "Élimination adaptative",
 
 	["WaveHeight"] = "Hauteur des vagues",
 	["CausticsStrength"] = "Intensité caustique",

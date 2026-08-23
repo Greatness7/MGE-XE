@@ -1,0 +1,172 @@
+# Fires on a version tag and produces the archive users download. Not per-push CI,
+# because the --max-perf build (fat LTO, /GL /LTCG) only makes sense once per
+# release. workflow_dispatch runs it without cutting a throwaway tag.
+#
+# Nothing is cached, so a release artifact always comes off a cold machine.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  release:
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `xtask dist` names the archive from Cargo metadata, not from the tag, so
+      # tagging v0.20.2 without bumping would ship MGE-XE-G7-v0.20.0.7z. The
+      # CHANGELOG section is checked here rather than at the release step, where
+      # finding it missing would waste the whole 35-minute build.
+      - name: Check the tag against the source versions and CHANGELOG
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $want = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($want -notmatch '^\d+\.\d+\.\d+$') {
+              throw "tag '$env:GITHUB_REF_NAME' is not v<major>.<minor>.<build>"
+          }
+          $maj, $min, $bld = $want.Split('.')
+
+          $manifest = Get-Content Cargo.toml -Raw
+          $cargoVer = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+
+          $header = Get-Content d3d8/cpp/mge/mgeversion.h -Raw
+          $xeString = [regex]::Match($header, '#define XE_VERSION_STRING\s+"([^"]+)"').Groups[1].Value
+          $hMinor = [regex]::Match($header, '#define MGE_MINOR_VERSION\s+(\d+)').Groups[1].Value
+          $hBuild = [regex]::Match($header, '#define MGE_BUILD_VERSION\s+(\d+)').Groups[1].Value
+
+          $problems = @()
+          if ($cargoVer -ne $want) {
+              $problems += "Cargo.toml [workspace.package] version is '$cargoVer', tag wants '$want'"
+          }
+          if (-not $xeString.EndsWith("v$want")) {
+              $problems += "XE_VERSION_STRING is '$xeString', expected it to end with 'v$want'"
+          }
+          if ($hMinor -ne $min) { $problems += "MGE_MINOR_VERSION is $hMinor, tag wants $min" }
+          if ($hBuild -ne $bld) { $problems += "MGE_BUILD_VERSION is $hBuild, tag wants $bld" }
+
+          $changelog = Get-Content CHANGELOG.md -Raw
+          if ($changelog -notmatch "(?m)^##\s+v$([regex]::Escape($want))\b") {
+              $problems += "CHANGELOG.md has no '## v$want' section to draw release notes from"
+          }
+
+          if ($problems) {
+              $problems | ForEach-Object { Write-Host "::error::$_" }
+              throw "the tag does not match the source tree"
+          }
+          Write-Host "version $want consistent across Cargo.toml, mgeversion.h and CHANGELOG.md"
+
+      # Only d3d8 needs the DirectX SDK, and only for d3dx9.h/d3dx9math.h and the
+      # x86 d3dx9.lib. The June 2010 installer fails with S1023 on runners that
+      # already carry a newer VC++ 2010 redist, so build a DXSDK_DIR-shaped tree
+      # from the NuGet redistributable instead. Its d3dx9.lib is byte-identical to
+      # the SDK's, and the headers differ only by an added winapifamily guard.
+      # d3d8/build.rs checks DXSDK_DIR before its default path.
+      - name: Provision d3dx9 as DXSDK_DIR
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '9.29.952.8'
+          $zip = Join-Path $env:RUNNER_TEMP 'd3dx.zip'
+          $pkg = Join-Path $env:RUNNER_TEMP 'd3dx-pkg'
+          $sdk = Join-Path $env:RUNNER_TEMP 'dxsdk'
+
+          Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.dxsdk.d3dx/$version/microsoft.dxsdk.d3dx.$version.nupkg" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $pkg -Force
+
+          New-Item -ItemType Directory -Force -Path "$sdk\include", "$sdk\Lib\x86" | Out-Null
+          Copy-Item "$pkg\build\native\include\*" "$sdk\include\"
+          Copy-Item "$pkg\build\native\release\lib\x86\d3dx9.lib" "$sdk\Lib\x86\"
+
+          foreach ($f in "$sdk\include\d3dx9.h", "$sdk\Lib\x86\d3dx9.lib") {
+              if (-not (Test-Path $f)) { throw "d3dx9 provisioning did not produce $f" }
+          }
+          "DXSDK_DIR=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # rust-toolchain.toml pins the nightly and both targets, and `rustup show`
+      # provisions them. Do not name the channel here, or it becomes a second pin.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+          rustc --version --verbose
+          cargo --version
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # --all-targets lints test code too. BUILD.md's shorter form skips it and so
+      # misses lints that only fire on test targets.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # d3d8 and dinput8 are cdylibs whose test binary is a DLL no runner can
+      # execute, and the two contract tests are `cargo run` harnesses rather than
+      # #[test] suites. BUILD.md documents all four exclusions.
+      - name: Tests
+        run: >
+          cargo test --workspace
+          --exclude d3d8 --exclude dinput8
+          --exclude dl-contract-test --exclude config-contract-test
+
+      # Checks every C++ runtime binding against mge-config through the real FFI
+      # path, at 32-bit. dl-contract-test needs a generated distant-land root as
+      # argv[1], and a runner has none, so it does not run here.
+      - name: Config contract
+        run: cargo run -p config-contract-test
+
+      - name: Build release archive
+        run: cargo xtask dist
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: MGE-XE-G7-archive
+          path: dist/*.7z
+          if-no-files-found: error
+
+      # The notes are this version's CHANGELOG section, which the tag gate already
+      # confirmed exists. The release is published rather than drafted, so a bad
+      # archive has to be withdrawn after people can download it. The tag gate and
+      # `Config contract` replace the manual look a draft allowed.
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Deliberately one argument. PowerShell flattens an array into a single
+          # space-joined argument for a native command, so a stray second archive
+          # would reach gh as one unusable path rather than two attachments.
+          $archives = @(Get-ChildItem dist/*.7z)
+          if ($archives.Count -ne 1) {
+              throw "expected exactly one archive in dist/, found $($archives.Count)"
+          }
+
+          # Group 1 is the heading text ("v0.20.0 beta, G7 fork"), which says more
+          # than the tag does and becomes the title. Group 2 is everything up to the
+          # next `## ` heading, minus that title, which would otherwise repeat.
+          $want = $env:GITHUB_REF_NAME -replace '^v', ''
+          $pattern = "(?ms)^##\s+(v$([regex]::Escape($want))[^\r\n]*)\r?\n(.*?)(?=^##\s|\z)"
+          $section = [regex]::Match((Get-Content CHANGELOG.md -Raw), $pattern)
+          if (-not $section.Success) { throw "CHANGELOG.md has no '## v$want' section" }
+
+          $title = $section.Groups[1].Value.Trim()
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $section.Groups[2].Value.Trim() | Out-File -FilePath $notes -Encoding utf8
+
+          # --notes-file rather than --notes, because the body is kilobytes of markdown.
+          gh release create $env:GITHUB_REF_NAME --title $title --notes-file $notes $archives[0].FullName

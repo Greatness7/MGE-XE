@@ -1,0 +1,31 @@
+[alias]
+xtask = "run --package xtask --release --"
+
+# link.exe rather than rust-lld, because /GL objects can only be consumed by
+# link.exe. Getting there needed `d3d8/build.rs` to hand `DllMain`'s object to
+# the linker directly, working around an LNK2005 collision with msvcrt's
+# dll_dllmain_stub.obj. Pinned here so a fresh clone builds without setup.
+[target.i686-pc-windows-msvc]
+linker = "link.exe"
+# pentium4 is already this target's default (SSE2). Naming it explicitly
+# neutralizes a personal `-Ctarget-cpu=native` and matches the `/arch:SSE2` that
+# `d3d8/build.rs` passes to the C++ half.
+rustflags = ["-Ctarget-cpu=pentium4"]
+
+# Reaches only the x64 executables, mgeHost64.exe and MGEXEgui.exe. The baseline
+# x86-64 target is SSE2, which silently drops the `target_feature = "sse4.1"`
+# path in distantland's terrain sampler, and nothing in the tree dispatches at
+# runtime to catch it. v2 is the smallest baseline that keeps that path. v3 was
+# rejected: its AVX2/FMA only helps generation's bulk loops, not per-frame
+# culling, and it would crash ~2.8% of the Steam population.
+#
+# Cargo appends this file after ~/.cargo/config.toml, and rustc takes the last
+# `-Ctarget-cpu`, so this beats a personal `native` and CI agrees with local
+# builds. RUSTFLAGS replaces these rather than merging, which is the one-off
+# override.
+#
+# /STACK reserves 8 MiB for each exe's main thread. Nothing here recurses that
+# deeply. It stays because reserved address space costs nothing, not because
+# anything depends on it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-cpu=x86-64-v2", "-Clink-arg=/STACK:8388608"]

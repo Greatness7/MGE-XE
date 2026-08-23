@@ -13,12 +13,46 @@
 
 struct ShadowVertOut {
     float4 pos : POSITION;
-    float2 texcoords : TEXCOORD0;
-    float depth : TEXCOORD1;
+    float depth : TEXCOORD0;
 };
 
-ShadowVertOut ShadowVS(StatVertIn IN) {
+// Position only. Callers supply the stencil clip cube (WaterDecl) and distant terrain
+// (TerrainDecl), neither of which carries texcoords, so terrain casters cannot alpha test.
+ShadowVertOut ShadowVS(float4 pos : POSITION) {
     ShadowVertOut OUT;
+
+    OUT.pos = mul(pos, world);
+    OUT.pos = mul(OUT.pos, shadowViewProj[0]);
+
+    // Clamp vertices to front plane to avoid clipping and shadow loss
+    OUT.pos.z = max(0, OUT.pos.z);
+
+    // Output depth (ortho projection is linear)
+    OUT.depth = OUT.pos.z / OUT.pos.w;
+    return OUT;
+}
+
+ShadowVertOut ShadowClearVS(float4 pos : POSITION) {
+    ShadowVertOut OUT;
+
+    OUT.pos = pos;
+    OUT.depth = 1.0f;
+    return OUT;
+}
+
+float4 ShadowPS(ShadowVertOut IN) : COLOR0 {
+    return ESM_scale * IN.depth;
+}
+
+struct StaticShadowVertOut {
+    float4 pos : POSITION;
+    float2 texcoords : TEXCOORD0;
+    float depth : TEXCOORD1;
+    float4 uvBounds : TEXCOORD2;
+};
+
+StaticShadowVertOut StaticShadowVS(StatVertIn IN) {
+    StaticShadowVertOut OUT;
 
     OUT.pos = mul(IN.pos, world);
     OUT.pos = mul(OUT.pos, shadowViewProj[0]);
@@ -30,22 +64,18 @@ ShadowVertOut ShadowVS(StatVertIn IN) {
     OUT.depth = OUT.pos.z / OUT.pos.w;
 
     OUT.texcoords = IN.texcoords;
+    OUT.uvBounds = IN.uvBounds;
     return OUT;
 }
 
-ShadowVertOut ShadowClearVS(float4 pos : POSITION) {
-    ShadowVertOut OUT;
-
-    OUT.pos = pos;
-    OUT.depth = 1.0f;
-    OUT.texcoords = 0.0f;
-    return OUT;
-}
-
-float4 ShadowPS(ShadowVertOut IN) : COLOR0 {
-    // Sample alpha geometry if required
+float4 StaticShadowPS(StaticShadowVertOut IN) : COLOR0 {
+    // Sample the static's assigned atlas region if alpha testing is required
     if(hasAlpha) {
-        float a = tex2D(sampBaseTex, IN.texcoords).a;
+        float2 scale = IN.uvBounds.yw - IN.uvBounds.zx;
+        float2 dx = ddx(IN.texcoords) * scale;
+        float2 dy = ddy(IN.texcoords) * scale;
+        float2 atlasUV = IN.uvBounds.zx + frac(IN.texcoords) * scale;
+        float a = tex2Dgrad(sampBaseTex, atlasUV, dx, dy).a;
         clip(a - 180.0/255.0);
     }
 
@@ -74,28 +104,28 @@ ShadowPostOut ShadowSoftenVS(float4 pos : POSITION) {
     return OUT;
 }
 
-float4 ShadowSoftenPS(ShadowPostOut IN) : COLOR0 {
-    // Filter entire atlas
-    // Looks better without exp-space filtering, with a side effect of expanding silhouttes by about 1 pixel
-    float4 t = float4(IN.texcoords, 0, 0);
+// Filter entire atlas along one axis. The two passes below run in sequence to make a
+// separable blur. Looks better without exp-space filtering, with a side effect of
+// expanding silhouettes by about 1 pixel.
+float4 shadowSoften(float2 texcoords, float2 axis) {
+    float4 t = float4(texcoords, 0, 0);
+    float4 offset = float4(shadowRcpRes.x * axis, 0, 0);
     float d = tex2Dlod(sampDepth, t).r;
-    const float filterScale = shadowRcpRes.x;
 
-    if(!hasAlpha) {
-        d += 0.2 * tex2Dlod(sampDepth, t + float4(-1.42*filterScale, 0, 0, 0)).r;
-        d += 0.8 * tex2Dlod(sampDepth, t + float4(-0.71*filterScale, 0, 0, 0)).r;
-        d += 0.8 * tex2Dlod(sampDepth, t + float4(0.71*filterScale, 0, 0, 0)).r;
-        d += 0.2 * tex2Dlod(sampDepth, t + float4(1.42*filterScale, 0, 0, 0)).r;
-    }
-    else {
-        d += 0.2 * tex2Dlod(sampDepth, t + float4(0, -1.42*filterScale, 0, 0)).r;
-        d += 0.8 * tex2Dlod(sampDepth, t + float4(0, -0.71*filterScale, 0, 0)).r;
-        d += 0.8 * tex2Dlod(sampDepth, t + float4(0, 0.71*filterScale, 0, 0)).r;
-        d += 0.2 * tex2Dlod(sampDepth, t + float4(0, 1.42*filterScale, 0, 0)).r;
-    }
+    d += 0.2 * tex2Dlod(sampDepth, t - 1.42*offset).r;
+    d += 0.8 * tex2Dlod(sampDepth, t - 0.71*offset).r;
+    d += 0.8 * tex2Dlod(sampDepth, t + 0.71*offset).r;
+    d += 0.2 * tex2Dlod(sampDepth, t + 1.42*offset).r;
 
-    d = d / 3.0;
-    return d.xxxx;
+    return (d / 3.0).xxxx;
+}
+
+float4 ShadowSoftenHorizontalPS(ShadowPostOut IN) : COLOR0 {
+    return shadowSoften(IN.texcoords, float2(1, 0));
+}
+
+float4 ShadowSoftenVerticalPS(ShadowPostOut IN) : COLOR0 {
+    return shadowSoften(IN.texcoords, float2(0, 1));
 }
 
 //-----------------------------------------------------------------------------
@@ -154,15 +184,44 @@ technique T0 {
         PixelShader = compile ps_3_0 ShadowPS();
     }
     //------------------------------------------------------------
-    // Used to soften the shadow map
+    // Used to render distant statics into the shadow map
     Pass P3 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ColorWriteEnable = red|green|blue|alpha;
+        CullMode = CW;
+
+        StencilEnable = true;
+        StencilFunc = notequal;
+        StencilPass = keep;
+        StencilFail = keep;
+        StencilRef = 0;
+        StencilMask = 0xffffffff;
+
+        VertexShader = compile vs_3_0 StaticShadowVS();
+        PixelShader = compile ps_3_0 StaticShadowPS();
+    }
+    //------------------------------------------------------------
+    // Used to soften the shadow map, horizontal half of the separable blur
+    Pass P4 {
         ZEnable = false;
         ZWriteEnable = false;
 
         StencilEnable = false;
 
         VertexShader = compile vs_3_0 ShadowSoftenVS();
-        PixelShader = compile ps_3_0 ShadowSoftenPS();
+        PixelShader = compile ps_3_0 ShadowSoftenHorizontalPS();
+    }
+    //------------------------------------------------------------
+    // Vertical half of the separable blur
+    Pass P5 {
+        ZEnable = false;
+        ZWriteEnable = false;
+
+        StencilEnable = false;
+
+        VertexShader = compile vs_3_0 ShadowSoftenVS();
+        PixelShader = compile ps_3_0 ShadowSoftenVerticalPS();
     }
     //------------------------------------------------------------
 }

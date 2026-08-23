@@ -122,8 +122,15 @@ float4 GrassPS(GrassVertOut IN): COLOR0 {
 // Depth buffer output
 
 
-DepthVertOut DepthGrassInstVS(StatVertInstIn IN) {
-    DepthVertOut OUT;
+struct DepthGrassVertOut {
+    float4 pos : POSITION;
+    float alpha : COLOR0;
+    half2 texcoords : TEXCOORD0;
+    float depth : TEXCOORD1;
+};
+
+DepthGrassVertOut DepthGrassInstVS(StatVertInstIn IN) {
+    DepthGrassVertOut OUT;
     TransformedVert v = transformGrassVert(IN);
 
     OUT.pos = v.pos;
@@ -132,4 +139,15 @@ DepthVertOut DepthGrassInstVS(StatVertInstIn IN) {
     OUT.texcoords = IN.texcoords;
 
     return OUT;
+}
+
+float4 DepthGrassPS(DepthGrassVertOut IN) : COLOR0 {
+    clip(nearViewRange + 64.0 - IN.depth);
+
+    if(hasAlpha) {
+        float alpha = IN.alpha * tex2D(sampBaseTex, IN.texcoords).a;
+        clip(alpha - alphaRef);
+    }
+
+    return IN.depth;
 }

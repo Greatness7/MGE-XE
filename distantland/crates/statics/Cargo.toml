@@ -1,0 +1,56 @@
+[package]
+name = "distantland_statics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+atoi.workspace = true
+blake3.workspace = true
+bstr.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+half.workspace = true
+hashbrown.workspace = true
+image.workspace = true
+image_dds.workspace = true
+itertools.workspace = true
+meshopt.workspace = true
+rayon.workspace = true
+rkyv.workspace = true
+serde.workspace = true
+smallvec.workspace = true
+str-utils.workspace = true
+tes3.workspace = true
+distantland_formats = { path = "../formats" }
+distantland_foundation = { path = "../foundation" }
+distantland_texture = { path = "../texture" }
+distantland_usage = { path = "../usage" }
+distantland_vfs = { path = "../vfs" }
+toml = "1.1"
+tracing.workspace = true
+uncased = "0.9"
+
+[dependencies.minsphere]
+git = "https://github.com/Greatness7/minsphere.git"
+
+[dependencies.obvhs]
+git = "https://github.com/DGriffin91/obvhs.git"
+rev = "5cb74827ab33c0ab76e3379380344e955ecce1d3"
+features = ["parallel"]
+
+# Forked from the 0.1.0 line. Published tex-packer-core declares `image` with
+# `default-features = true` while using no codec at all, which re-enables image's
+# full default set across this workspace through feature unification. Upstream
+# 0.3.0 still carries that bug, breaks the API, and adds only a region dedupe that
+# the layout entry point we use never runs. Don't bump without re-checking all three.
+[dependencies.tex-packer-core]
+git = "https://github.com/Greatness7/tex-packer.git"
+default-features = false
+features = ["image"]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

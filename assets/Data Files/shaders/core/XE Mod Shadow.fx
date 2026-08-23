@@ -123,7 +123,59 @@ RenderShadowVertOut RenderShadowsVS(MorrowindVertIn IN) {
 }
 
 RenderShadowVertOut RenderShadowsFFEVS(MorrowindVertIn IN) {
-    return RenderShadowsBaseVS(IN);
+    RenderShadowVertOut OUT = RenderShadowsBaseVS(IN);
+
+    // Depth bias to mitigate difference between the FFE pass and this one.
+    // Native PPL draw packets transform vertices in DXVK's own shader, so FFE
+    // depth is no longer bit-identical to the transform above.
+    OUT.pos.z *= 1 - 2e-6;
+    OUT.pos.z -= clamp(0.05 / OUT.pos.w, 0, 1e-3);
+    return OUT;
+}
+
+TransformedVert transformShadowIndexedVert(MorrowindIndexedVertIn IN) {
+    TransformedVert v;
+    float4 normal = float4(IN.normal.xyz, 0);
+    v.viewpos = indexedSkin(IN.pos, IN.blendweights, IN.blendindices);
+    v.normal = normalize(indexedSkin(normal, IN.blendweights, IN.blendindices));
+    v.pos = mul(v.viewpos, proj);
+    return v;
+}
+
+RenderShadowVertOut RenderShadowsIndexedBaseVS(MorrowindIndexedVertIn IN) {
+    RenderShadowVertOut OUT;
+    TransformedVert v = transformShadowIndexedVert(IN);
+
+    OUT.pos = v.pos;
+    OUT.alpha = vertexMaterial(IN.color).a;
+    OUT.light = shadowSunEstimate(saturate(dot(v.normal.xyz, -sunVecView)));
+
+    float fogatt = pow(fogMWScalar(OUT.pos.w), 2);
+    if(isAboveSeaLevel(eyePos))
+        OUT.light *= fogatt;
+    else
+        OUT.light *= saturate(4 * fogatt);
+
+    OUT.shadow0pos = mul(v.viewpos, shadowViewProj[0]);
+    OUT.shadow1pos = mul(v.viewpos, shadowViewProj[1]);
+    OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
+    OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
+    OUT.texcoords = IN.texcoords;
+    return OUT;
+}
+
+RenderShadowVertOut RenderShadowsIndexedVS(MorrowindIndexedVertIn IN) {
+    RenderShadowVertOut OUT = RenderShadowsIndexedBaseVS(IN);
+    OUT.pos.z *= 1 - 2e-6;
+    OUT.pos.z -= clamp(0.05 / OUT.pos.w, 0, 1e-3);
+    return OUT;
+}
+
+RenderShadowVertOut RenderShadowsFFEIndexedVS(MorrowindIndexedVertIn IN) {
+    RenderShadowVertOut OUT = RenderShadowsIndexedBaseVS(IN);
+    OUT.pos.z *= 1 - 2e-6;
+    OUT.pos.z -= clamp(0.05 / OUT.pos.w, 0, 1e-3);
+    return OUT;
 }
 
 float4 RenderShadowsPS(RenderShadowVertOut IN): COLOR0 {

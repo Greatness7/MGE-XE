@@ -4,6 +4,7 @@ return {
 
     ["MsgLoaded"] = "Config loaded.",
     ["MsgSaved"] = "Config saved.",
+    ["MsgSaveFailed"] = "Could not save. If mgeXE.toml was edited outside the game, press Load, then Save again.",
     ["Load"] = "Load",
     ["Save"] = "Save",
     ["Close"] = "Close",
@@ -52,6 +53,16 @@ return {
 	["belowWaterFogEnd"] = "Below water fog end",
 	["interiorFogStart"] = "Interior fog start",
 	["interiorFogEnd"] = "Interior fog end",
+
+	["horizonCulling"] = "Terrain horizon culling",
+	["horizonHeightBias"] = "Horizon height bias",
+	["horizonObjectBias"] = "Horizon object bias",
+	["horizonNearExclude"] = "Horizon near exclude",
+	["horizonRingStep"] = "Horizon ring step",
+	["horizonMaxRange"] = "Horizon max range",
+	["horizonBins"] = "Horizon azimuth bins",
+	["horizonSampleSpacing"] = "Horizon sample spacing",
+	["horizonAdaptiveGate"] = "Adaptive culling gate",
 
 	["WaveHeight"] = "Dynamic wave height",
 	["CausticsStrength"] = "Caustics strength",

@@ -1,0 +1,25 @@
+[package]
+name = "distantland_job"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_ignored = "0.1"
+serde_path_to_error = "0.1"
+distantland_foundation = { path = "../foundation" }
+distantland_statics = { path = "../statics" }
+distantland_terrain = { path = "../terrain" }
+distantland_usage = { path = "../usage" }
+distantland_vfs = { path = "../vfs" }
+toml = "1.1"
+toml_edit = { version = "0.25", features = ["serde"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1.0"
+tempfile.workspace = true

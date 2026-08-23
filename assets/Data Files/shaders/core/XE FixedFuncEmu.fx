@@ -61,6 +61,8 @@ float3 rigidNormal(float3 normal) { return mul(float4(normal, 0), worldview).xyz
 
 float4 skinnedVertex(float4 pos, float4 weights) { return skin(pos, weights); }
 float3 skinnedNormal(float3 normal, float4 weights) { return skin(float4(normal, 0), weights).xyz; }
+float4 indexedSkinnedVertex(float4 pos, float4 weights, float4 indices) { return indexedSkin(pos, weights, indices); }
+float3 indexedSkinnedNormal(float3 normal, float4 weights, float4 indices) { return indexedSkin(float4(normal, 0), weights, indices).xyz; }
 
 // Texgens with view space inputs, normals must be normalized due to non-uniform scaling matrices
 float3 texgenNormal(float3 normal) { return normalize(normal); }

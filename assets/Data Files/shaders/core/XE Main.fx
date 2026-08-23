@@ -445,4 +445,38 @@ Technique T0 {
         PixelShader = compile ps_3_0 NullPS();
     }
     //------------------------------------------------------------
+    // Used for rendering shadows over indexed fixed function output
+    Pass P13 {
+        ZEnable = true;
+        ZWriteEnable = false;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = CW;
+
+        AlphaBlendEnable = true;
+        SrcBlend = Zero;
+        DestBlend = InvSrcColor;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 RenderShadowsIndexedVS();
+        PixelShader = compile ps_3_0 RenderShadowsPS();
+    }
+    //------------------------------------------------------------
+    // Used for rendering shadows over indexed FFE output
+    Pass P14 {
+        ZEnable = true;
+        ZWriteEnable = false;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = CW;
+
+        AlphaBlendEnable = true;
+        SrcBlend = Zero;
+        DestBlend = InvSrcColor;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 RenderShadowsFFEIndexedVS();
+        PixelShader = compile ps_3_0 RenderShadowsPS();
+    }
+    //------------------------------------------------------------
 }

@@ -1,0 +1,22 @@
+[package]
+name = "distantland_formats"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+bstr.workspace = true
+bytemuck.workspace = true
+bytes_io.workspace = true
+glam.workspace = true
+half.workspace = true
+hashbrown.workspace = true
+indexmap.workspace = true
+memmap2.workspace = true
+
+[dev-dependencies]
+itertools.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

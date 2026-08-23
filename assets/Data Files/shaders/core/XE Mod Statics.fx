@@ -7,6 +7,15 @@
 //------------------------------------------------------------
 // Common functions
 
+// Distant-static near handoff.
+// Distant statics dissolve in across a radial band that ends staticHandoff units
+// inside Morrowind's view range. The cut is finished per-pixel in StaticPS so that
+// batched whole-cell meshes are sliced cleanly through, instead of relying on a
+// vertex-granular cutoff that frays large triangles straddling the boundary.
+static const float staticHandoff = 1800;     // fully opaque at nearViewRange - staticHandoff
+static const float staticHandoffBand = 512;  // dissolve width, toward the camera
+static const float staticHandoffCull = 1024; // extra margin for the cheap per-vertex early-out
+
 TransformedVert transformStaticVert(StatVertIn IN) {
     // Transforms with implicit depth bias
     TransformedVert v;
@@ -14,6 +23,14 @@ TransformedVert transformStaticVert(StatVertIn IN) {
     v.worldpos = mul(IN.pos, world);
     v.viewpos = mul(v.worldpos, view);
     v.pos = mul(v.viewpos, proj);
+
+    // Cheap early-out: collapse geometry well inside the handoff so the player's own
+    // cell isn't rasterised only to be discarded. This sits deeper (nearer) than the
+    // per-pixel cut in StaticPS, so its vertex-granular edge is always masked by it.
+    if(length(v.viewpos) < nearViewRange - staticHandoff - staticHandoffBand - staticHandoffCull) {
+        v.pos = float4(0, 0, -10000, 0);
+    }
+
     return v;
 }
 
@@ -56,6 +73,7 @@ StatVertOut StaticExteriorVS(StatVertIn IN) {
     OUT.fog = fogColour(eyevec / dist, dist);
 
     OUT.texcoords_range = float3(texcoordsModifier(IN), dist);
+    OUT.uvBounds = IN.uvBounds;
     return OUT;
 }
 
@@ -70,6 +88,7 @@ StatVertOut StaticInteriorVS (StatVertIn IN) {
     OUT.fog = fogMWColour(dist);
 
     OUT.texcoords_range = float3(texcoordsModifier(IN), dist);
+    OUT.uvBounds = IN.uvBounds;
     return OUT;
 }
 
@@ -77,12 +96,23 @@ float4 StaticPS (StatVertOut IN): COLOR0 {
     float2 texcoords = IN.texcoords_range.xy;
     float range = IN.texcoords_range.z;
 
-    float4 result = tex2D(sampBaseTex, texcoords);
+    float2 scale = IN.uvBounds.yw - IN.uvBounds.zx;
+    float2 dx = ddx(texcoords) * scale;
+    float2 dy = ddy(texcoords) * scale;
+    float2 atlasUV = IN.uvBounds.zx + frac(texcoords) * scale;
+    float4 result = tex2Dgrad(sampBaseTex, atlasUV, dx, dy);
+
     result.rgb *= IN.color.rgb;
     result.rgb = fogApply(result.rgb, IN.fog);
 
+    // Near handoff: dissolve distant statics in across the radial band so a batched
+    // cell mesh is cut per-pixel (cleanly through the batch) at the boundary. The
+    // clip is the load-bearing cut; the coverage scale just softens the edge.
+    float dissolve = saturate((range - (nearViewRange - staticHandoff - staticHandoffBand)) / staticHandoffBand);
+    clip(dissolve - 1.0/255.0);
+
     // Alpha to coverage conversion
-    result.a = calc_coverage(result.a, 133.0/255.0, 2.0);
+    result.a = calc_coverage(result.a, 133.0/255.0, 2.0) * dissolve;
 
     return result;
 }
@@ -99,6 +129,7 @@ DepthVertOut DepthStaticVS (StatVertIn IN) {
     OUT.depth = OUT.pos.w;
     OUT.alpha = 1;
     OUT.texcoords = texcoordsModifier(IN);
+    OUT.uvBounds = IN.uvBounds;
 
     return OUT;
 }
@@ -107,8 +138,13 @@ float4 DepthStaticPS (DepthVertOut IN) : COLOR0 {
     clip(IN.depth - nearViewRange);
 
     if(hasAlpha) {
-        float alpha = tex2D(sampBaseTex, IN.texcoords).a;
+        float2 scale = IN.uvBounds.yw - IN.uvBounds.zx;
+        float2 dx = ddx(IN.texcoords) * scale;
+        float2 dy = ddy(IN.texcoords) * scale;
+        float2 atlasUV = IN.uvBounds.zx + frac(IN.texcoords) * scale;
+        float alpha = tex2Dgrad(sampBaseTex, atlasUV, dx, dy).a;
         clip(alpha - 133.0/255.0);
     }
+
     return IN.depth;
 }

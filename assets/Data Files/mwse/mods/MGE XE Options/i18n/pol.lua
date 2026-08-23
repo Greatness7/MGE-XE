@@ -4,6 +4,7 @@ return {
 
     ["MsgLoaded"] = "Konfiguracja załadowana.",
     ["MsgSaved"] = "Zapisano konfigurację.",
+    ["MsgSaveFailed"] = "Nie można zapisać. Jeśli plik mgeXE.toml został zmieniony poza grą, kliknij Załaduj, a następnie ponownie Zapisz.",
     ["Load"] = "Załaduj",
     ["Save"] = "Zapisz",
     ["Close"] = "Zamknij",
@@ -52,6 +53,16 @@ return {
 	["belowWaterFogEnd"] = "Mgła pod wodą koniec",
 	["interiorFogStart"] = "Odległa mgła wnętrz start",
 	["interiorFogEnd"] = "Odległa mgła wnętrz koniec",
+
+	["horizonCulling"] = "Usuwanie za horyzontem terenu",
+	["horizonHeightBias"] = "Przesunięcie wysokości horyzontu",
+	["horizonObjectBias"] = "Przesunięcie obiektów horyzontu",
+	["horizonNearExclude"] = "Bliskie wykluczenie horyzontu",
+	["horizonRingStep"] = "Krok pierścienia horyzontu",
+	["horizonMaxRange"] = "Maks. zasięg horyzontu",
+	["horizonBins"] = "Przedziały azymutu horyzontu",
+	["horizonSampleSpacing"] = "Odstęp próbkowania horyzontu",
+	["horizonAdaptiveGate"] = "Adaptacyjne usuwanie",
 
 	["WaveHeight"] = "Wysokość fal",
 	["CausticsStrength"] = "Jasność caustics",

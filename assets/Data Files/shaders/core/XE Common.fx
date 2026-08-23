@@ -10,8 +10,9 @@
 
 shared float2 rcpRes;
 shared float shadowRcpRes;
+shared float sourceM33, sourceM43;
 shared matrix world, view, proj;
-shared matrix vertexBlendPalette[4];
+shared matrix vertexBlendPalette[8];
 shared matrix shadowViewProj[2];
 shared bool hasAlpha, hasBones, hasVCol;
 shared float alphaRef, materialAlpha;
@@ -34,14 +35,15 @@ shared float time;
 //------------------------------------------------------------
 // Textures
 
-shared texture tex0, tex1, tex2, tex3;
+shared texture tex0, tex1, tex2, tex3, texDepthSrc;
 
-sampler sampBaseTex = sampler_state { texture = <tex0>; minfilter = anisotropic; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
+sampler sampBaseTex = sampler_state { texture = <tex0>; minfilter = anisotropic; magfilter = linear; mipfilter = linear; maxmiplevel = 0; addressu = wrap; addressv = wrap; };
 sampler sampNormals = sampler_state { texture = <tex1>; minfilter = anisotropic; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
 sampler sampDetail = sampler_state { texture = <tex2>; minfilter = anisotropic; magfilter = linear; mipfilter = linear; addressu = wrap; addressv = wrap; };
 sampler sampWater3d = sampler_state { texture = <tex1>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = wrap; addressv = wrap; addressw = wrap; };
 sampler sampDepth = sampler_state { texture = <tex3>; minfilter = linear; magfilter = linear; mipfilter = none; addressu = clamp; addressv = clamp; };
 sampler sampDepthPoint = sampler_state { texture = <tex3>; minfilter = point; magfilter = point; mipfilter = none; addressu = clamp; addressv = clamp; };
+sampler sampDepthSrc = sampler_state { texture = <texDepthSrc>; minfilter = point; magfilter = point; mipfilter = none; addressu = clamp; addressv = clamp; };
 
 
 //------------------------------------------------------------
@@ -53,6 +55,7 @@ struct StatVertIn {
     float4 normal : NORMAL;
     float4 color : COLOR0;
     float2 texcoords : TEXCOORD0;
+    float4 uvBounds : TEXCOORD1;
 };
 
 struct StatVertInstIn {
@@ -70,6 +73,7 @@ struct StatVertOut {
     centroid float4 color : COLOR0;
     centroid float4 fog : TEXCOORD0;
     float3 texcoords_range : TEXCOORD1;
+    float4 uvBounds : TEXCOORD2;
 };
 
 //------------------------------------------------------------
@@ -80,6 +84,7 @@ struct DepthVertOut {
     float alpha : COLOR0;
 	half2 texcoords : TEXCOORD0;
     float depth : TEXCOORD1;
+    float4 uvBounds : TEXCOORD2;
 };
 
 //------------------------------------------------------------
@@ -98,6 +103,15 @@ struct MorrowindVertIn {
     float4 pos : POSITION;
     float4 normal : NORMAL;
     float4 blendweights : BLENDWEIGHT;
+    float4 color : COLOR0;
+    float2 texcoords : TEXCOORD0;
+};
+
+struct MorrowindIndexedVertIn {
+    float4 pos : POSITION;
+    float4 normal : NORMAL;
+    float4 blendweights : BLENDWEIGHT;
+    float4 blendindices : BLENDINDICES;
     float4 color : COLOR0;
     float2 texcoords : TEXCOORD0;
 };
@@ -261,6 +275,16 @@ float4 skin(float4 pos, float4 blend) {
     if(vertexBlendState >= 3)
         viewpos += mul(pos, vertexBlendPalette[3]) * blend[3];
 
+    return viewpos;
+}
+
+float4 indexedSkin(float4 pos, float4 blend, float4 indices) {
+    blend[3] = 1 - (blend[0] + blend[1] + blend[2]);
+
+    float4 viewpos = mul(pos, vertexBlendPalette[(int)indices[0]]) * blend[0];
+    viewpos += mul(pos, vertexBlendPalette[(int)indices[1]]) * blend[1];
+    viewpos += mul(pos, vertexBlendPalette[(int)indices[2]]) * blend[2];
+    viewpos += mul(pos, vertexBlendPalette[(int)indices[3]]) * blend[3];
     return viewpos;
 }
 

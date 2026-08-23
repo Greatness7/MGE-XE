@@ -1,0 +1,55 @@
+[package]
+name = "MGEXEgui"
+version.workspace = true
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu"] }
+image = { version = "0.25", default-features = false, features = ["ico"] }
+mimalloc = { version = "0.1", features = ["v3"] }
+mge-config = { path = "../mge-config" }
+regex = "1.12"
+rfd = { version = "0.17.2", default-features = false, features = ["common-controls-v6"] }
+rust-i18n = "4"
+sys-locale = "0.3"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+distantland = { path = "../distantland" }
+winreg = "0.56.0"
+
+[dev-dependencies]
+distantland_test_support = { path = "../distantland/crates/test-support" }
+toml = "0.9"
+
+[dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+# For DXGI adapter/VRAM enumeration and Direct3D 9 device-cap queries
+# (windows-sys has neither module). `sysinfo` is expected to grow a safe
+# cross-platform GPU query eventually (already implemented upstream using
+# DXGI on Windows, unreleased as of 0.39.6); the VRAM half of this dependency
+# can likely be dropped in favor of that once it ships.
+[dependencies.windows]
+version = "0.62"
+default-features = false
+features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Direct3D9"]
+
+[build-dependencies]
+winres = "0.1"
+
+[lints]
+workspace = true

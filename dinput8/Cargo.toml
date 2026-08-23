@@ -1,0 +1,19 @@
+cargo-features = ["per-package-target"]
+
+[package]
+name = "dinput8"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# 32-bit only; see the note in d3d8/Cargo.toml.
+forced-target = "i686-pc-windows-msvc"
+
+[lib]
+name = "dinput8"
+crate-type = ["cdylib"]
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

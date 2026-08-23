@@ -1,0 +1,6 @@
+[toolchain]
+# Nightly is required permanently, not incidentally: `#![feature(trim_prefix_suffix)]`,
+# `half/nightly`, `hashbrown/nightly`, `smallvec` specialization + may_dangle, and the
+# `nightly` features of `tes3`/`bytes_io`. Bump this date deliberately, not by floating.
+channel = "nightly-2026-08-15"
+targets = ["i686-pc-windows-msvc", "x86_64-pc-windows-msvc"]
