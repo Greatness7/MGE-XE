@@ -28,7 +28,7 @@ decode together. Two of those three files are user-replaceable, see [Core mods](
 | `texSoftShadow` | render-target texture | `2 * res` by `res` | `D3DFMT_R16F` |
 | `surfShadowZ` | depth-stencil surface | `2 * res` by `res` | `D3DFMT_D24S8` |
 | `vbFullFrame` | vertex buffer | 4 verts, 12 bytes each | full-target quad |
-| `vbClipCube` | vertex buffer | 14 verts, 12 bytes each | unit cube strip, expanded to ±1.01 |
+| `vbClipCube` | vertex buffer | 14 verts, 12 bytes each | camera clip cube strip, xy expanded to ±1.01, z 0..1 |
 
 `res` is `Configuration.DL.ShadowResolution`, so the atlas is 2048x1024 or 4096x2048.
 Cascade count is `DistantLand::kShadowCascades` on the C++ side, which sizes the atlas and
@@ -150,8 +150,15 @@ Before any casters, `PASS_SHADOWSTENCIL` draws `vbClipCube` transformed by
 `inverseCameraProj`, which puts the camera frustum into the light's clip space. The pass
 writes no colour (`ColorWriteEnable = 0`), disables z, and sets stencil to `replace` with
 `StencilRef = 1`. Both caster passes then run `StencilFunc = notequal, StencilRef = 0`, so
-they only touch texels the camera could actually see. The cube is expanded to ±1.01 to
-leave room for rasterization and the filter kernel.
+they only touch texels the camera could actually see.
+
+The mask is dilated by `shadowStencilMarginTexels` (8, in `rendershadow.cpp`): the cube is
+drawn five times, centred and at the four corners of a square of that half-width, with the
+offset added to the translation row of the cascade view-projection so it survives the
+perspective divide as a constant clip-space shift. The cube's own ±1.01 xy expansion is in
+camera clip space and shrinks to under a texel near the eye, which left the frustum's
+near-plane corners (the bottom screen corners when looking down) within reach of the blur
+kernel's taps into the cleared "lit" atlas and flickering as the mask edge moved.
 
 Casters, in order:
 

@@ -363,7 +363,7 @@ public:
     static bool projectionIsCanonical(const D3DXMATRIX& projection);
 
     static void renderShadowMap();
-    static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
+    static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
     static void renderShadowLayer(int layer, float radius, const D3DXMATRIX* inverseCameraProj);
     static void renderShadow();
     static void renderShadowDebug();

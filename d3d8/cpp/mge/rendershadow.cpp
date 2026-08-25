@@ -13,6 +13,9 @@
 static const float shadowNearRadius = 1000.0;
 static const float shadowFarRadius = 4000.0;
 
+// Stencil mask dilation, must exceed the blur kernel reach of ~3 texels
+static const int shadowStencilMarginTexels = 8;
+
 
 
 // Renders multiple shadow map layers to channels in one texture with soft edges.
@@ -77,19 +80,32 @@ void DistantLand::renderShadowMap() {
     targetSoft->Release();
 }
 
-void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set) {
+void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set) {
     // Clip to atlas region with viewport
     const DWORD res = Configuration.DL.ShadowResolution;
     D3DVIEWPORT9 vp = { layer * res, 0, res, res, 0.0f, 1.0f };
     device->SetViewport(&vp);
 
     // Render view frustum to stencil, which limits rendering to visible texels
+    // Drawn at five clip space offsets to dilate the mask, else edge receivers blur in the cleared atlas
     effect->SetMatrix(ehWorld, inverseCameraProj);
+    const float margin = shadowStencilMarginTexels * 2.0f / res;
+    static const float offsets[5][2] = { {0, 0}, {-1, -1}, {-1, 1}, {1, -1}, {1, 1} };
     effectShadow->BeginPass(PASS_SHADOWSTENCIL);
     device->SetVertexDeclaration(WaterDecl);
     device->SetStreamSource(0, vbClipCube, 0, 12);
-    device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 12);
+    for (const auto& o : offsets) {
+        D3DXMATRIX offsetViewproj = *viewproj;
+        offsetViewproj._41 += margin * o[0];
+        offsetViewproj._42 += margin * o[1];
+        effect->SetMatrixArray(ehShadowViewproj, &offsetViewproj, 1);
+        effectShadow->CommitChanges();
+        device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 12);
+    }
     effectShadow->EndPass();
+
+    // Restore cascade transform for casters
+    effect->SetMatrixArray(ehShadowViewproj, viewproj, 1);
 
     // Render land
     effectShadow->BeginPass(PASS_RENDERSHADOWMAP);
@@ -163,7 +179,7 @@ void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* i
         ipcClient.getVisibleMeshesCoarse(visExtraSharedId, range_frustum, VIS_STATIC);
     }
 
-    renderShadowLayerGeneric(mwBridge, layer, inverseCameraProj, view, proj, visExtraShared);
+    renderShadowLayerGeneric(mwBridge, layer, inverseCameraProj, viewproj, view, proj, visExtraShared);
 }
 
 // renderShadow - Renders shadows (using blending) over Morrowind shadow receivers
