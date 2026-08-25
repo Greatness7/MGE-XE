@@ -103,7 +103,9 @@ impl AtlasPublishPlan {
     /// # Errors
     ///
     /// Returns an error if a page fails to encode, or propagates the first error `emit` returns.
-    /// An emitter error aborts before the next page's canvas is composed.
+    /// An emitter error aborts before the next page's canvas is composed. Pages already handed
+    /// to `emit` are not rolled back, so a caller whose emitter mutates publication state must
+    /// arrange its own invalidation or recovery for them.
     pub fn render_streaming(self, mut emit: impl FnMut(AtlasPageWrite) -> anyhow::Result<()>) -> anyhow::Result<()> {
         for domain in [self.opaque, self.alpha].into_iter().flatten() {
             render_domain(domain, &self.texture_dir, &mut emit)?;
