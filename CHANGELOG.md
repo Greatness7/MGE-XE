@@ -8,6 +8,8 @@
   mod lists ([#3](https://github.com/Greatness7/MGE-XE/issues/3)).
 - The configuration utility no longer fails to launch when ReShade is installed
   ([#4](https://github.com/Greatness7/MGE-XE/issues/4)).
+- The configuration utility no longer needs administrator rights to save display settings, and now
+  shows the same resolution the game and the Morrowind launcher use.
 
 ## v0.20.0 beta, G7 fork
 

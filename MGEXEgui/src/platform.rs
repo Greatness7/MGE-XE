@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, path::Path, process::Command};
+use std::{ffi::OsStr, io, path::Path, process::Command};
 
 use anyhow::{Context, Result};
 use rust_i18n::t;
@@ -19,10 +19,18 @@ use windows_sys::Win32::{
 };
 use winreg::{
     RegKey, RegValue,
-    enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WRITE, RegType::REG_BINARY},
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WRITE, RegType::REG_BINARY},
 };
 
 const REGISTRY_PATH: &str = r"Software\Bethesda Softworks\Morrowind";
+
+/// Morrowind.exe carries no application manifest, so Windows registry
+/// virtualization sends its writes to `REGISTRY_PATH` here instead and serves
+/// its reads from here first. This GUI is 64-bit, and virtualization only ever
+/// applies to 32-bit processes, so it has to walk that same view by hand:
+/// installs whose machine key is missing (Steam) or read-only (the default
+/// HKLM ACL) keep all of their display settings in this copy alone.
+const VIRTUAL_STORE_PATH: &str = r"Software\Classes\VirtualStore\MACHINE\SOFTWARE\WOW6432Node\Bethesda Softworks\Morrowind";
 
 pub struct SingleInstance {
     handle: HANDLE,
@@ -182,29 +190,53 @@ impl Default for RegistrySettings {
 
 impl RegistrySettings {
     pub fn load() -> Self {
-        let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(REGISTRY_PATH, KEY_READ | KEY_WOW64_32KEY)
-        else {
-            return Self::default();
-        };
+        // Read in the order the game resolves values: a virtualized copy shadows
+        // the machine key value by value, so a partial copy still falls through.
+        let keys = [open_virtual_store(KEY_READ).ok().flatten(), open_machine_key(KEY_READ)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let defaults = Self::default();
         Self {
-            width: key.get_value("Screen Width").unwrap_or(1280),
-            height: key.get_value("Screen Height").unwrap_or(720),
-            refresh: key.get_value("Refresh Rate").unwrap_or(0),
-            windowed: !read_reg_bool(&key, "Fullscreen").unwrap_or(true),
-            adapter: key.get_value("Adapter").unwrap_or(0),
+            width: read_reg_u32(&keys, "Screen Width").unwrap_or(defaults.width),
+            height: read_reg_u32(&keys, "Screen Height").unwrap_or(defaults.height),
+            refresh: read_reg_u32(&keys, "Refresh Rate").unwrap_or(defaults.refresh),
+            windowed: !read_reg_bool(&keys, "Fullscreen").unwrap_or(true),
+            adapter: read_reg_u32(&keys, "Adapter").unwrap_or(defaults.adapter),
         }
     }
 
     pub fn save(&self, disable_mge: bool) -> Result<()> {
-        let key = RegKey::predef(HKEY_LOCAL_MACHINE)
-            .open_subkey_with_flags(REGISTRY_PATH, KEY_READ | KEY_WRITE | KEY_WOW64_32KEY)
-            .context("open the 32-bit Morrowind registry key for writing")?;
-        key.set_value("Screen Width", &self.width)?;
-        key.set_value("Screen Height", &self.height)?;
-        key.set_value("Refresh Rate", &self.refresh)?;
-        key.set_raw_value("Fullscreen", &reg_bool(!self.windowed))?;
-        key.set_value("Adapter", &self.adapter)?;
-        key.set_raw_value("Pixelshader", &reg_bool(disable_mge))?;
+        let machine = open_machine_key(KEY_READ | KEY_WRITE);
+        let virtual_store = match machine {
+            // The machine key is writable, so only keep an existing virtualized
+            // copy in step. Creating one where the game never made one would
+            // shadow every later write to the machine key. A copy that exists
+            // but will not open is a failure, not an absent copy: writing only
+            // the machine key would leave the game reading stale values.
+            Some(_) => open_virtual_store(KEY_READ | KEY_WRITE)
+                .context("open the virtualized copy of the Morrowind display settings for writing")?,
+            // Missing or elevation-only machine key: this is exactly the case
+            // Windows virtualizes for the game, so write where the game reads.
+            None => Some(
+                RegKey::predef(HKEY_CURRENT_USER)
+                    .create_subkey_with_flags(VIRTUAL_STORE_PATH, KEY_READ | KEY_WRITE)
+                    .map(|(key, _)| key)
+                    .context("open the Morrowind display settings for writing")?,
+            ),
+        };
+
+        // Write the virtualized copy first. It is the one the game reads, so if
+        // a write fails part-way the machine key is left untouched rather than
+        // half of each.
+        for key in [virtual_store, machine].into_iter().flatten() {
+            key.set_value("Screen Width", &self.width)?;
+            key.set_value("Screen Height", &self.height)?;
+            key.set_value("Refresh Rate", &self.refresh)?;
+            key.set_raw_value("Fullscreen", &reg_bool(!self.windowed))?;
+            key.set_value("Adapter", &self.adapter)?;
+            key.set_raw_value("Pixelshader", &reg_bool(disable_mge))?;
+        }
         Ok(())
     }
 }
@@ -225,9 +257,35 @@ fn reg_bool(value: bool) -> RegValue<'static> {
 /// Read one of those flags without assuming its type: any non-zero byte counts
 /// as set, which reads a correct one-byte `REG_BINARY` and a `REG_DWORD` left
 /// behind by an earlier build of this GUI identically.
-fn read_reg_bool(key: &RegKey, name: &str) -> Option<bool> {
-    let value = key.get_raw_value(name).ok()?;
+fn read_reg_bool(keys: &[RegKey], name: &str) -> Option<bool> {
+    let value = keys.iter().find_map(|key| key.get_raw_value(name).ok())?;
     Some(value.bytes.iter().any(|byte| *byte != 0))
+}
+
+/// First key that carries the value wins, matching how the game resolves a
+/// virtualized copy against the machine key.
+fn read_reg_u32(keys: &[RegKey], name: &str) -> Option<u32> {
+    keys.iter().find_map(|key| key.get_value(name).ok())
+}
+
+/// The real machine key. `KEY_WOW64_32KEY` puts this 64-bit process on the
+/// 32-bit view the game uses, under `WOW6432Node`.
+fn open_machine_key(access: u32) -> Option<RegKey> {
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(REGISTRY_PATH, access | KEY_WOW64_32KEY)
+        .ok()
+}
+
+/// The per-user copy Windows redirects the game's writes into. Nothing under
+/// `HKEY_CURRENT_USER` is WOW64-redirected here, so the path is used as-is.
+/// Only a missing copy reads as `None`; anything else is reported, because a
+/// copy that exists and cannot be opened still shadows the machine key.
+fn open_virtual_store(access: u32) -> io::Result<Option<RegKey>> {
+    match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(VIRTUAL_STORE_PATH, access) {
+        Ok(key) => Ok(Some(key)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub struct KeyCapture {
