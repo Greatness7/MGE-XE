@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use glam::{Vec3, Vec4};
+use glam::Vec3;
 use tempfile::tempdir;
 
 use super::*;
 use crate::statics::metadata::apply_plugin_metadata_with_identity;
-use crate::terrain::texture::TerrainCell;
+use crate::terrain::texture::{TerrainCell, TerrainColors, TerrainNormals};
 use crate::test_support::{
     BASELINE_WORLD_V1, BASELINE_WORLD_V1_GRASSLIST, build_hermetic_fixture, dialogue_only_plugin, hermetic_generation_job,
 };
@@ -19,8 +19,8 @@ fn height_only_cell(grid: (i32, i32), fill: f32) -> TerrainCell<'static> {
     TerrainCell {
         grid,
         heights: Box::new([[fill; 65]; 65]),
-        normals: vec![Vec3::Z; 65 * 65],
-        colors: vec![Vec4::new(1.0, 1.0, 1.0, 0.0); 65 * 65],
+        normals: Default::default(),
+        colors: Default::default(),
         texture_indices: Box::new([[0; 16]; 16]),
         texture_table: Arc::new(IndexMap::default()),
     }
@@ -227,6 +227,51 @@ fn height_mutation_changes_only_height_hash() {
     assert_eq!(before.terrain_hash, after.terrain_hash);
     assert_eq!(before.material_hash, after.material_hash);
     assert_eq!(before.referenced_textures, after.referenced_textures);
+}
+
+#[test]
+fn compact_terrain_hashes_match_prechange_interlock() {
+    fn hash_hex(cell: &TerrainCell<'_>) -> String {
+        hash_terrain_cell(cell).iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    let absent = height_only_cell((0, 0), 0.0);
+    assert_eq!(
+        hash_hex(&absent),
+        "ef7a1701e699a1052aa6de48cf2906c8d1f39c0e0460049dca3ed853ec068a2b"
+    );
+
+    let mut present = height_only_cell((0, 0), 0.0);
+    let mut present_normals = Box::new([[[0, 0, 1]; 65]; 65]);
+    present_normals.as_flattened_mut()[0] = [-128, 1, 127];
+    present.normals = TerrainNormals::Encoded(present_normals);
+    let mut present_colors = Box::new([[[255; 3]; 65]; 65]);
+    present_colors.as_flattened_mut()[0] = [0, 128, 255];
+    present.colors = TerrainColors::Encoded(present_colors);
+    assert_eq!(
+        hash_hex(&present),
+        "7a04eb435ea78c11d2d5ed64ac0103e4676e571a16faf48b751cc893f473293c"
+    );
+
+    let mut encoded_zero = height_only_cell((0, 0), 0.0);
+    let mut zero_normals = Box::new([[[0, 0, 1]; 65]; 65]);
+    zero_normals.as_flattened_mut()[0] = [0; 3];
+    encoded_zero.normals = TerrainNormals::Encoded(zero_normals);
+    let mut zero_colors = Box::new([[[255; 3]; 65]; 65]);
+    zero_colors.as_flattened_mut()[0] = [0; 3];
+    encoded_zero.colors = TerrainColors::Encoded(zero_colors);
+    assert_eq!(
+        hash_hex(&encoded_zero),
+        "99b981dfdbd931d9dd5a39b3e6980680f7c25cd7bf69761740831fe3f35e0416"
+    );
+
+    let mut explicit_default = height_only_cell((0, 0), 0.0);
+    explicit_default.normals = TerrainNormals::Encoded(Box::new([[[0, 0, 1]; 65]; 65]));
+    explicit_default.colors = TerrainColors::Encoded(Box::new([[[255; 3]; 65]; 65]));
+    assert_eq!(
+        hash_hex(&explicit_default),
+        "ef7a1701e699a1052aa6de48cf2906c8d1f39c0e0460049dca3ed853ec068a2b"
+    );
 }
 
 #[test]

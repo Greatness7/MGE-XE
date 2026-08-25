@@ -15,7 +15,10 @@ use image::RgbaImage;
 use smallvec::SmallVec;
 use tracing::info_span;
 
-pub use crate::usage::{DEFAULT_LAND_TEXTURE, TerrainCell, TerrainCells, TerrainTextureTable, default_land_texture_key};
+pub use crate::usage::{
+    DEFAULT_LAND_TEXTURE, TerrainCell, TerrainCells, TerrainColors, TerrainNormals, TerrainTextureTable,
+    default_land_texture_key,
+};
 use crate::vfs::Vfs;
 use crate::{IndexMap, IndexSet};
 use tracing::*;

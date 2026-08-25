@@ -4,8 +4,6 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use super::*;
 use crate::IndexMap;
 
@@ -24,8 +22,8 @@ fn make_cell<'a>(grid: (i32, i32), texture: &'a str) -> crate::texture::TerrainC
     crate::texture::TerrainCell {
         grid,
         heights: Box::new([[0.0; 65]; 65]),
-        normals: vec![Vec3::Z; 65 * 65],
-        colors: vec![Vec4::new(1.0, 1.0, 1.0, 0.0); 65 * 65],
+        normals: Default::default(),
+        colors: Default::default(),
         texture_indices: Box::new([[1; 16]; 16]),
         texture_table: Arc::new(texture_table),
     }

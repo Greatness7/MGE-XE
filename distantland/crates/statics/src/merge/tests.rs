@@ -105,8 +105,8 @@ fn flat_terrain(grid: (i32, i32), height: f32) -> crate::usage::TerrainCells<'st
         crate::usage::TerrainCell {
             grid,
             heights: Box::new([[height; 65]; 65]),
-            normals: vec![Vec3::Z; 65 * 65],
-            colors: vec![Vec4::ONE; 65 * 65],
+            normals: Default::default(),
+            colors: Default::default(),
             texture_indices: Box::new([[0; 16]; 16]),
             texture_table: std::sync::Arc::default(),
         },
