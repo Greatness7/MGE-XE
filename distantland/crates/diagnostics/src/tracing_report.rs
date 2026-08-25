@@ -34,6 +34,11 @@ struct ActiveTiming {
     id: usize,
     name: String,
     started_at: Instant,
+    /// Counters sampled when the span opened, paired with a close-time sample to give the
+    /// span an interval rather than a lone endpoint. Spans that open past
+    /// [`MAX_STAGE_TIMINGS`] completions still sample here and are discarded at close;
+    /// the pipeline's stage count makes that waste negligible.
+    memory_at_start: Option<ProcessMemorySample>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +66,93 @@ pub struct StageTiming {
     pub stage: String,
     /// Elapsed wall-clock time in milliseconds.
     pub elapsed_ms: u64,
+    /// Process memory sampled when the span closed. Absent for spans still active at
+    /// snapshot time and on non-Windows targets.
+    ///
+    /// Declared last so the rendered TOML table stays valid inside
+    /// `[[trace_summary.stage_timings]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<StageMemory>,
+}
+
+/// Process-wide memory counters bracketing one pipeline stage.
+///
+/// Every value describes the whole process, not the stage in isolation, and `stage.*` spans
+/// nest, so a parent's interval contains its children's. Read the pairs as intervals:
+/// `private_bytes_at_end - private_bytes_at_start` is how much private commit the span left
+/// behind, and a rise from `peak_working_set_bytes_at_start` to `peak_working_set_bytes_at_end`
+/// says the process high-water mark grew while the span was open. Neither is an exclusive
+/// per-stage peak, and neither endpoint captures a spike that was released before the close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StageMemory {
+    /// Instantaneous private commit (`PrivateUsage`) at span close.
+    pub private_bytes_at_end: u64,
+    /// Process-lifetime working-set high-water mark (`PeakWorkingSetSize`) as of span
+    /// close. Not a per-stage peak and not a private-byte peak.
+    pub peak_working_set_bytes_at_end: u64,
+    /// `PrivateUsage` at span open. Defaulted so reports written before the open-time
+    /// sample existed still decode.
+    #[serde(default)]
+    pub private_bytes_at_start: u64,
+    /// `PeakWorkingSetSize` at span open. Defaulted so reports written before the
+    /// open-time sample existed still decode.
+    #[serde(default)]
+    pub peak_working_set_bytes_at_start: u64,
+}
+
+/// One reading of the process-wide counters, before it is paired into a [`StageMemory`].
+#[derive(Clone, Copy, Debug)]
+struct ProcessMemorySample {
+    private_bytes: u64,
+    peak_working_set_bytes: u64,
+}
+
+impl StageMemory {
+    /// Pairs an open-time and close-time sample, yielding `None` unless both succeeded.
+    fn from_endpoints(start: Option<ProcessMemorySample>, end: Option<ProcessMemorySample>) -> Option<Self> {
+        let (start, end) = (start?, end?);
+        Some(Self {
+            private_bytes_at_end: end.private_bytes,
+            peak_working_set_bytes_at_end: end.peak_working_set_bytes,
+            private_bytes_at_start: start.private_bytes,
+            peak_working_set_bytes_at_start: start.peak_working_set_bytes,
+        })
+    }
+}
+
+/// Samples process memory counters, returning `None` when unsupported or unavailable.
+#[cfg(windows)]
+fn sample_process_memory() -> Option<ProcessMemorySample> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    let cb = counters.cb;
+    let filled = unsafe {
+        // The EX layout begins with the base counters and only extends it, so the API
+        // fills this buffer in place; `cb` declares the extended length that makes
+        // `PrivateUsage` valid on return. The pseudo-handle needs no release.
+        K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+            cb,
+        )
+    };
+    (filled != 0).then_some(ProcessMemorySample {
+        private_bytes: counters.PrivateUsage as u64,
+        peak_working_set_bytes: counters.PeakWorkingSetSize as u64,
+    })
+}
+
+/// Samples process memory counters, returning `None` when unsupported or unavailable.
+#[cfg(not(windows))]
+fn sample_process_memory() -> Option<ProcessMemorySample> {
+    None
 }
 
 impl ActiveTiming {
@@ -112,6 +204,9 @@ impl TraceReportHandle {
                     timing: StageTiming {
                         stage: timing.name.clone(),
                         elapsed_ms: timing.elapsed_ms(now),
+                        // Still open, so there is no close-time endpoint to pair the
+                        // open-time sample with; a half-interval would misreport.
+                        memory: None,
                     },
                 }),
         );
@@ -162,6 +257,7 @@ where
                 id: report_id,
                 name: name.to_owned(),
                 started_at: Instant::now(),
+                memory_at_start: sample_process_memory(),
             },
         );
         drop(state);
@@ -186,11 +282,13 @@ where
         if active.name == GENERATION_SPAN_NAME {
             state.total_elapsed_ms = elapsed_ms;
         } else if state.completed.len() < MAX_STAGE_TIMINGS {
+            let memory = StageMemory::from_endpoints(active.memory_at_start, sample_process_memory());
             state.completed.push(CompletedStageTiming {
                 id: active.id,
                 timing: StageTiming {
                     stage: active.name,
                     elapsed_ms,
+                    memory,
                 },
             });
         }

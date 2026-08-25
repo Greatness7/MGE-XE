@@ -192,6 +192,7 @@ impl<'a> UsageInfo<'a> {
     /// before that merge and so cannot see grass references at all. Both fields are therefore
     /// derived from the same final reference set, and neither survives an earlier pass.
     fn calc_mesh_scale_maximums(&mut self) {
+        debug_assert!(!self.released, "mesh scale recalculation after post-fingerprint release");
         self.mesh_scale_maximums.clear();
         self.forced_meshes.clear();
         self.mesh_scale_maximums.reserve(self.objects.len());
@@ -550,6 +551,10 @@ impl<'a> UsageInfo<'a> {
     /// it. `script_disabled` is still recorded on those objects, matching the pre-merge behaviour
     /// this replaces.
     pub(crate) fn classify_script_disables(&mut self) {
+        debug_assert!(
+            !self.released,
+            "script disable classification after post-fingerprint release"
+        );
         self.script_disable.self_disabling_scripts = self.disable_scripts.len();
         self.script_disable.disable_targets_named = self.disable_targets.len();
         if self.disable_scripts.is_empty() && self.disable_targets.is_empty() {

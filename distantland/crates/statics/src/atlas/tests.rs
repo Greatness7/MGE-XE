@@ -1330,15 +1330,61 @@ fn opaque_alpha_statics(vfs: &Vfs, opaque: &str, alpha: &str) -> DistantStatics 
     statics
 }
 
+#[test]
+fn render_streaming_stops_at_the_first_emitter_error() {
+    with_temp_cwd(|temp| {
+        const ATLAS_MAX: u32 = 128;
+        let a = write_rgba_texture(temp, r"emit\one.bmp", [220, 30, 20, 255]);
+        let b = write_rgba_texture(temp, r"emit\two.bmp", [20, 80, 220, 255]);
+        let vfs = make_test_vfs(temp);
+        let paths = make_atlas_texture_dir(temp);
+
+        let mut statics = two_opaque_statics(&vfs, &a, &b);
+        let textures = AtlasTextureSet::from_distant_statics(&vfs, &statics);
+        let fingerprints = AtlasTextureSet::new(
+            collect_fingerprints(&textures.opaque, &vfs),
+            collect_fingerprints(&textures.alpha, &vfs),
+        );
+        let manager = AtlasManager::setup_with_cache_state(
+            &textures,
+            SizingPlan::uniform(TEST_MAX_TEXTURE_DIM),
+            TextureDedupeMode::Exact,
+            ATLAS_MAX,
+            fingerprints,
+            paths,
+            None,
+            &IndexSet::default(),
+        );
+        let plan = manager.plan(&vfs, &mut statics, textures).unwrap();
+        assert_eq!(
+            plan.metrics().built_page_counts.opaque,
+            2,
+            "the fixture must build more than one page for the abort to be observable"
+        );
+
+        let mut emitted = 0_usize;
+        let error = plan
+            .render_streaming(|_| {
+                emitted += 1;
+                anyhow::bail!("emitter refused page {emitted}")
+            })
+            .unwrap_err();
+
+        assert_eq!(emitted, 1, "no page may be composed after the first emitter error");
+        assert!(error.to_string().contains("emitter refused page 1"), "{error}");
+    });
+}
+
 fn publish_plan(plan: AtlasPublishPlan) -> Vec<PathBuf> {
-    plan.render()
-        .unwrap()
-        .into_iter()
-        .map(|write| {
-            fs::write(&write.path, write.bytes).unwrap();
-            write.path
-        })
-        .collect()
+    let mut written = Vec::new();
+    plan.render_streaming(|write| {
+        let AtlasPageWrite { path, bytes } = write;
+        fs::write(&path, bytes).unwrap();
+        written.push(path);
+        Ok(())
+    })
+    .unwrap();
+    written
 }
 
 fn apply_opaque_atlas(

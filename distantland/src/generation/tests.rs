@@ -282,6 +282,7 @@ fn generation_report_describes_outputs_and_serializes_without_nulls() {
             stage_timings: vec![crate::StageTiming {
                 stage: "stage.write_terrain_package".to_string(),
                 elapsed_ms: 7,
+                memory: None,
             }],
         },
         &CacheMetadata::default(),

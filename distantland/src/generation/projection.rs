@@ -770,12 +770,12 @@ fn write_canonical_texture_assignment(writer: &mut CanonicalWriter, cell: &crate
 fn hash_terrain_cell(cell: &crate::TerrainCell<'_>) -> [u8; 32] {
     let mut writer = CanonicalWriter::new();
     writer.write_str("land_terrain_v1");
-    writer.write_u64(cell.normals.len() as u64);
-    for normal in &cell.normals {
-        write_vec3_bits(&mut writer, vec3_bits(*normal));
+    writer.write_u64(cell.normals.iter().len() as u64);
+    for normal in cell.normals.iter() {
+        write_vec3_bits(&mut writer, vec3_bits(normal));
     }
-    writer.write_u64(cell.colors.len() as u64);
-    for color in &cell.colors {
+    writer.write_u64(cell.colors.iter().len() as u64);
+    for color in cell.colors.iter() {
         writer.write_f32(color.x);
         writer.write_f32(color.y);
         writer.write_f32(color.z);

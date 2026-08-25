@@ -27,8 +27,8 @@ fn make_cell_with_table<'a>(
     crate::texture::TerrainCell {
         grid,
         heights: Box::new([[0.0; 65]; 65]),
-        normals: vec![Vec3::Z; 65 * 65],
-        colors: vec![Vec4::new(1.0, 1.0, 1.0, 0.0); 65 * 65],
+        normals: Default::default(),
+        colors: Default::default(),
         texture_indices,
         texture_table: Arc::new(resolved),
     }

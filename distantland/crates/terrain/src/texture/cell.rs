@@ -91,16 +91,12 @@ pub fn sample_vertex_texture<'a>(
 mod tests {
     use super::*;
 
-    fn default_color() -> Vec4 {
-        Vec4::new(1.0, 1.0, 1.0, 0.0)
-    }
-
     fn make_default_cell() -> TerrainCell<'static> {
         TerrainCell {
             grid: (0, 0),
             heights: Box::new([[0.0; 65]; 65]),
-            normals: vec![Vec3::Z; 65 * 65],
-            colors: vec![default_color(); 65 * 65],
+            normals: TerrainNormals::Encoded(Box::new([[[0, 0, 1]; 65]; 65])),
+            colors: TerrainColors::Encoded(Box::new([[[255; 3]; 65]; 65])),
             texture_indices: Box::new([[0; 16]; 16]),
             texture_table: Arc::new(IndexMap::default()),
         }
@@ -122,7 +118,10 @@ mod tests {
     #[test]
     fn cell_with_custom_normals_is_not_default() {
         let mut cell = make_default_cell();
-        cell.normals[1] = Vec3::X;
+        let TerrainNormals::Encoded(normals) = &mut cell.normals else {
+            unreachable!();
+        };
+        normals.as_flattened_mut()[1] = [1, 0, 0];
 
         assert!(!cell.is_default());
     }
@@ -130,7 +129,10 @@ mod tests {
     #[test]
     fn cell_with_custom_colors_is_not_default() {
         let mut cell = make_default_cell();
-        cell.colors[2] = Vec4::new(0.5, 1.0, 1.0, 0.0);
+        let TerrainColors::Encoded(colors) = &mut cell.colors else {
+            unreachable!();
+        };
+        colors.as_flattened_mut()[2] = [128, 255, 255];
 
         assert!(!cell.is_default());
     }
