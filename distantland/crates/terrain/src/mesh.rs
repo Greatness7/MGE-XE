@@ -255,7 +255,7 @@ fn build_smoothed_simplifier_normals<'a>(
                 sample.normalize_or(DEFAULT_FALLBACK_NORMAL)
             };
 
-            let mut field = Vec::with_capacity(cell.normals.iter().len());
+            let mut field = Vec::with_capacity(65 * 65);
             for y in 0..65 {
                 for x in 0..65 {
                     let mut accumulated = Vec3::ZERO;

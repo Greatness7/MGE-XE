@@ -439,12 +439,16 @@ pub fn apply_merge_usage(plan: &MergePlan<'_>, usage_info: &mut UsageInfo<'_>) {
 
 /// Number of merge groups whose geometry is built before it is handed to `emit` and released.
 ///
-/// Batching bounds how much unpacked merged geometry is resident at once. An unpacked `Vertex` is
-/// 64 bytes against `PackedVertex`'s 28 and nothing pre-sizes the merged buffers, so retaining the
-/// whole run's intermediate cost roughly 12 GiB on the reference job against 3.7 GiB of packed
-/// output. The value is deliberately a fixed constant rather than a function of the thread count:
+/// Two separate costs are at work. Packing each group as it is built, instead of retaining the
+/// unpacked form for a later conversion pass, is what removes the bulk: an unpacked `Vertex` is
+/// 64 bytes against `PackedVertex`'s 28 and nothing pre-sizes the merged buffers, so the whole
+/// run's retained intermediate cost roughly 12 GiB on the reference job against 3.7 GiB of packed
+/// output. Batching then bounds the transient on top of that - at most this many groups' unpacked
+/// geometry is alive at once. Whole-process peak moved under 3% between 64 and 256 on the
+/// reference job, which says some other allocation dominated that run, not that the bound is
+/// inert. The value is deliberately a fixed constant rather than a function of the thread count:
 /// a thread-count-dependent batch would make the reported metrics vary by machine for no memory
-/// benefit. Peak is not sensitive to it - 64 measured within 3% of 256.
+/// benefit.
 const MERGE_GEOMETRY_BATCH_GROUPS: usize = 256;
 
 /// Builds merged geometry for the selected cells of a plan, packing each synthetic static as soon
@@ -614,7 +618,9 @@ fn build_merge_batches(
     }
 
     // LOD simplification is cached; this pass transforms, merges, and recomputes bounds. Groups are
-    // built a batch at a time so only one batch of unpacked merged geometry is ever resident.
+    // built a batch at a time so only one batch of unpacked merged geometry is ever resident. The
+    // span stays entered across `emit`, so production packing is reported as merge work - it used
+    // to be timed under `stage.convert_statics`, which merged records no longer pass through.
     let geometry_guard = info_span!("statics.merge_geometry", report = true).entered();
     for work_batch in work_groups.chunks(MERGE_GEOMETRY_BATCH_GROUPS) {
         let results: Vec<_> = {
