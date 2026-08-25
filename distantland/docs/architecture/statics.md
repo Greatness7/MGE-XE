@@ -33,11 +33,14 @@ crate; it has no dependency on root generation settings, storage authority, or t
 - **References** (`DistantReference`): per-cell placed instances keyed by `(ref_index, mask)`,
   with translation/rotation/scale and the owning cell. Exterior cells key by grid coordinate;
   interiors keep their cell name.
-- **Terrain cells** (`TerrainCell`): the sole decoded LAND store per exterior cell, dense
-  `65×65` heights, vertex normals/colors, and the VTEX texture-index grid resolved through
-  per-plugin LTEX tables. Height sampling for buried-static culling and terrain mesh Z uses
-  this map ([terrain.rs](../../crates/usage/src/info/terrain.rs)); the same cells feed the terrain
-  package.
+- **Terrain cells** (`TerrainCell`): the sole decoded LAND store per exterior cell. Heights remain
+  a dense `65×65` float grid; VNML normals and VCLR colors retain their packed TES3 byte arrays,
+  or a distinct default sentinel when the record is absent, and decode to vectors on access. VTEX
+  indices remain a `16×16` grid resolved through per-plugin LTEX tables. Height sampling for
+  buried-static culling and terrain mesh Z uses this map
+  ([terrain.rs](../../crates/usage/src/info/terrain.rs)); the same cells feed the terrain package.
+  Accessors reproduce the TES3 decoder's float bits because terrain fingerprints hash decoded
+  values, including the absent-record defaults.
 - Interior metadata for MGE-XE's interior inclusion rules.
 - **Mesh scale maximums**: the largest scale each mesh is placed at, so size filtering can use
   worst-case effective size.
@@ -66,6 +69,11 @@ Filtering ([filter.rs](../../crates/usage/src/info/filter.rs)) happens in two wa
 
 Reference pruning must run *after* static generation because it needs to know which meshes
 actually produced distant statics.
+
+After the static-state fingerprint is built, `UsageInfo::release_post_fingerprint_fields` drops
+the object/classification, source, interior, and script-disable inputs and report.
+Only `cells` and `terrain_cells` retain their collected data for downstream static preparation,
+`usage.data` serialization, subterrain culling, and terrain publication.
 
 ## 2. NIF extraction (`crates/statics/src/extract.rs`)
 
@@ -154,8 +162,9 @@ produces immutable render plans without holding storage authority:
   same-content provider promotion alone carry. The renderer recomposes dirty pages from every current active
   slot on a fresh canvas. Retained empty middle pages remain explicit `Carry` inventory entries.
   `AtlasPublishPlan::render_streaming` encodes only the build pages and hands each `AtlasPageWrite`
-  to the caller's emitter as it is produced, so one encoded page is resident at a time; the root
-  pipeline's emitter writes those bytes through its `PublicationWrites` ledger. Opaque pages encode as
+  to the caller's emitter as it is produced, so one encoded page is resident at a time. The fresh
+  RGBA canvas is dropped before the emitter runs; the root pipeline's emitter then writes the encoded
+  bytes through its `PublicationWrites` ledger. Opaque pages encode as
   BC1 and alpha pages as BC3, both with full mip chains via
   [crates/texture/src/dds.rs](../../crates/texture/src/dds.rs). Page names stay
   `_mge_xe_atlas{N}.dds` / `_mge_xe_atlas_alpha{N}.dds`. Publication never rereads VFS inputs.
@@ -251,12 +260,16 @@ work (fail-closed full rebuild on any disagreement):
    Once merged geometry no longer needs its member meshes,
    drop statics with no surviving exterior or interior placement. Pack only dirty surviving
    ordinary owners and emitted dirty-cell merged records (`finalize` /
-   [model/pack.rs](../../crates/statics/src/model/pack.rs)).
+   [model/pack.rs](../../crates/statics/src/model/pack.rs)). Merge groups are consumed in bounded,
+   deterministic batches; each batch drops empty results and packs its survivors before the next
+   batch is built, so unpacked merged geometry does not accumulate across the full plan.
 7. **Authoritative typed-key assembly + splice.** One current ordered record-key set drives shard
    membership, `usage.data` ordinals, and metrics. Clean-owner packed records are retained from
    decoded shards; dirty/removed records are dropped; fresh records are inserted. Usage is
    reconciled against that final set before serialization, so every reported and emitted placement
-   resolves to a packed record. Final per-shard key vectors must equal the assembly.
+   resolves to a packed record. Final per-shard key vectors must equal the assembly. Dirty ordinary
+   source statics are cloned for conversion rather than moved: if splice validation fails, the
+   fail-closed full rebuild still needs the original source set.
 8. **Publication plan.** Clean shards keep committed inventory entries unopened; dirty shards
    serialize as independent XESTAT05 v5 containers. Usage is prepared from the assembly
    ([crates/usage/src/write.rs](../../crates/usage/src/write.rs)). During publication, usage is written first and

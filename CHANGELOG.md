@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Reduced memory use while generating distant land, hopefully preventing crashes with very large
+  mod lists ([#3](https://github.com/Greatness7/MGE-XE/issues/3)).
+
 ## v0.20.0 beta, G7 fork
 
 First public release of the G7 fork, based on MGE XE 0.19.1. Requirements, installation and feature

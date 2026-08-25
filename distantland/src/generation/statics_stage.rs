@@ -463,6 +463,13 @@ pub(super) fn prepare_statics_bundle(
                 Err(reason) => break 'partial Some(reason),
             };
 
+            // This must stay a clone, not an `extract_if` move: `splice_static_shards` below can
+            // still `break 'partial` into the full rebuild, which re-runs `build_merge_geometry`
+            // under `CellFilter::All` and looks every planned member up in `distant_statics`
+            // (`debug_assert!` then `.unwrap()`). The only restore on that path,
+            // `distant_statics.extend(merged_away_statics)`, puts back records trimmed by
+            // `retain_referenced_statics` - not dirty surviving records. Moving these out would
+            // panic the fallback in release.
             let dirty_statics: DistantStatics = distant_statics
                 .iter()
                 .filter(|(key, distant_static)| !distant_static.subsets.is_empty() && owner_key_is_dirty(key, &owners))
