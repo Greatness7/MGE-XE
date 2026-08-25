@@ -128,13 +128,17 @@ impl GuiApp {
         if let Err(error) = file_results.morrowind_ini {
             errors.push(format!("Morrowind.ini: {error:#}"));
         }
-        if let Err(error) = registry_result {
-            errors.push(format!("Morrowind registry: {error:#}"));
-        }
-        if errors.is_empty() {
-            self.set_success(t!("messages.settings_saved"));
-        } else {
-            self.set_error(t!("messages.config_save_failed", error = errors.join("\n")));
+        match (errors.is_empty(), registry_result) {
+            (true, Ok(())) => self.set_success(t!("messages.settings_saved")),
+            // Every MGE setting made it to disk; only Morrowind's own display
+            // mode lives in the registry, so name the half that did not.
+            (true, Err(error)) => self.set_error(t!("messages.registry_save_failed", error = format!("{error:#}"))),
+            (false, registry_result) => {
+                if let Err(error) = registry_result {
+                    errors.push(format!("Morrowind registry: {error:#}"));
+                }
+                self.set_error(t!("messages.config_save_failed", error = errors.join("\n")));
+            }
         }
     }
 
