@@ -61,6 +61,62 @@ pub struct StageTiming {
     pub stage: String,
     /// Elapsed wall-clock time in milliseconds.
     pub elapsed_ms: u64,
+    /// Process memory sampled when the span closed. Absent for spans still active at
+    /// snapshot time and on non-Windows targets.
+    ///
+    /// Declared last so the rendered TOML table stays valid inside
+    /// `[[trace_summary.stage_timings]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<StageMemory>,
+}
+
+/// Process-wide memory counters read at the close of one pipeline stage.
+///
+/// Both values describe the whole process, not the stage in isolation. `stage.*` spans
+/// nest, so a nested sample lies inside its parent's lifetime; compare private-byte
+/// deltas between sibling stages rather than reading either field as a stage total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StageMemory {
+    /// Instantaneous private commit (`PrivateUsage`) at span close.
+    pub private_bytes_at_end: u64,
+    /// Process-lifetime working-set high-water mark (`PeakWorkingSetSize`) as of span
+    /// close. Not a per-stage peak and not a private-byte peak.
+    pub peak_working_set_bytes_at_end: u64,
+}
+
+/// Samples process memory counters, returning `None` when unsupported or unavailable.
+#[cfg(windows)]
+fn sample_stage_memory() -> Option<StageMemory> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    let cb = counters.cb;
+    let filled = unsafe {
+        // The EX layout begins with the base counters and only extends it, so the API
+        // fills this buffer in place; `cb` declares the extended length that makes
+        // `PrivateUsage` valid on return. The pseudo-handle needs no release.
+        K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+            cb,
+        )
+    };
+    (filled != 0).then_some(StageMemory {
+        private_bytes_at_end: counters.PrivateUsage as u64,
+        peak_working_set_bytes_at_end: counters.PeakWorkingSetSize as u64,
+    })
+}
+
+/// Samples process memory counters, returning `None` when unsupported or unavailable.
+#[cfg(not(windows))]
+fn sample_stage_memory() -> Option<StageMemory> {
+    None
 }
 
 impl ActiveTiming {
@@ -112,6 +168,8 @@ impl TraceReportHandle {
                     timing: StageTiming {
                         stage: timing.name.clone(),
                         elapsed_ms: timing.elapsed_ms(now),
+                        // A field named `_at_end` must not carry a mid-span sample.
+                        memory: None,
                     },
                 }),
         );
@@ -186,11 +244,13 @@ where
         if active.name == GENERATION_SPAN_NAME {
             state.total_elapsed_ms = elapsed_ms;
         } else if state.completed.len() < MAX_STAGE_TIMINGS {
+            let memory = sample_stage_memory();
             state.completed.push(CompletedStageTiming {
                 id: active.id,
                 timing: StageTiming {
                     stage: active.name,
                     elapsed_ms,
+                    memory,
                 },
             });
         }
