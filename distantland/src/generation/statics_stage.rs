@@ -436,15 +436,21 @@ pub(super) fn prepare_statics_bundle(
             drop(decode_guard);
 
             let dirty_cells = owners.dirty_cells.iter().map(|cell| (cell.x, cell.y)).collect();
-            let (partial_merge_metrics, merged_statics) = build_merge_geometry(
-                &merge_plan,
-                &CellFilter::Dirty(dirty_cells),
-                &distant_statics,
-                cfg,
-                Some(SubterrainCull::new(&usage_info.terrain_cells, subterrain_margin)),
-                vfs,
-                job.settings.door_size_multiplier,
-            );
+            let merge_span = merge_geometry_span();
+            let (partial_merge_metrics, merged_statics) = {
+                let _guard = merge_span.enter();
+                let built = build_merge_geometry(
+                    &merge_plan,
+                    &CellFilter::Dirty(dirty_cells),
+                    &distant_statics,
+                    cfg,
+                    Some(SubterrainCull::new(&usage_info.terrain_cells, subterrain_margin)),
+                    vfs,
+                    job.settings.door_size_multiplier,
+                );
+                record_merged_pack_metrics(&merge_span, &built.1);
+                built
+            };
             cache.static_shards.merge_groups_geometry_built = partial_merge_metrics.group_count;
             cache.static_shards.lod_cache_entries_built = partial_merge_metrics.lod_cache_entry_count;
             merged_away_statics = retain_referenced_statics(&mut distant_statics, usage_info);
@@ -576,10 +582,11 @@ pub(super) fn prepare_statics_bundle(
         optimized_mesh_bounds = capture_optimized_bounds(&distant_statics);
     }
     record_optimize_metrics(cache, initial_static_count, &optimized_meshes, selective_optimize);
+    // Merge geometry runs outside every `run_stage` call, so without its own `stage.*`
+    // span the merge LOD builds, subterrain culling, and packing never reach the reported timeline.
+    let merge_span = merge_geometry_span();
     let (merge_metrics, merged_statics) = {
-        // Merge geometry runs outside every `run_stage` call, so without its own `stage.*`
-        // span the merge LOD builds and subterrain culling never reach the reported timeline.
-        let _guard = info_span!("stage.build_merge_geometry", report = true).entered();
+        let _guard = merge_span.enter();
         // Every planned member's source mesh must still be present: a degraded owner-partial
         // attempt trims the meshes its merge swallowed, and the restore above is what keeps this
         // pass's lookups total.
@@ -587,7 +594,7 @@ pub(super) fn prepare_statics_bundle(
             merge_plan.member_ids().all(|id| distant_statics.contains_key(id)),
             "merge plan member missing from statics map"
         );
-        build_merge_geometry(
+        let built = build_merge_geometry(
             &merge_plan,
             &CellFilter::All,
             &distant_statics,
@@ -595,7 +602,9 @@ pub(super) fn prepare_statics_bundle(
             Some(SubterrainCull::new(&usage_info.terrain_cells, subterrain_margin)),
             vfs,
             job.settings.door_size_multiplier,
-        )
+        );
+        record_merged_pack_metrics(&merge_span, &built.1);
+        built
     };
     metrics.statics.merge_simplification = merge_metrics;
     cache.static_shards.merge_groups_geometry_built = metrics.statics.merge_simplification.group_count;
@@ -844,6 +853,31 @@ pub(super) fn publish_statics_bundle(
             })
         }
     }
+}
+
+/// Opens the merge-geometry stage span, including the fields describing what it packed.
+fn merge_geometry_span() -> Span {
+    info_span!(
+        "stage.build_merge_geometry",
+        report = true,
+        packed_merged_static_count = field::Empty,
+        packed_merged_subset_count = field::Empty,
+        packed_merged_vertex_count = field::Empty,
+        packed_merged_triangle_count = field::Empty,
+    )
+}
+
+/// Records what [`build_merge_geometry`] packed onto its own stage span.
+///
+/// Merged records are packed inside the merge pass and never reach `stage.convert_statics`, so
+/// that stage's counts describe ordinary statics alone. Reporting the merged half here keeps the
+/// two spans summing to the whole rather than leaving merged geometry unaccounted for.
+fn record_merged_pack_metrics(span: &Span, merged_statics: &crate::PackedDistantStatics) {
+    let (subset_count, vertex_count, triangle_count) = summarize_distant_statics(merged_statics);
+    record_usize(span, "packed_merged_static_count", merged_statics.len());
+    record_usize(span, "packed_merged_subset_count", subset_count);
+    record_usize(span, "packed_merged_vertex_count", vertex_count);
+    record_usize(span, "packed_merged_triangle_count", triangle_count);
 }
 
 /// Orders packed statics shard-major, then by key bytes, for stable runtime ordinals.
