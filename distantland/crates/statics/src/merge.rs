@@ -437,11 +437,26 @@ pub fn apply_merge_usage(plan: &MergePlan<'_>, usage_info: &mut UsageInfo<'_>) {
     }
 }
 
-/// Builds merged geometry for the selected cells of a plan, inserting each synthetic static into
-/// `distant_statics`, and returns the simplification metrics for the built groups.
+/// Number of merge groups whose geometry is built before it is handed to `emit` and released.
+///
+/// Batching bounds how much unpacked merged geometry is resident at once. An unpacked `Vertex` is
+/// 64 bytes against `PackedVertex`'s 28 and nothing pre-sizes the merged buffers, so retaining the
+/// whole run's intermediate cost roughly 12 GiB on the reference job against 3.7 GiB of packed
+/// output. The value is deliberately a fixed constant rather than a function of the thread count:
+/// a thread-count-dependent batch would make the reported metrics vary by machine for no memory
+/// benefit. Peak is not sensitive to it - 64 measured within 3% of 256.
+const MERGE_GEOMETRY_BATCH_GROUPS: usize = 256;
+
+/// Builds merged geometry for the selected cells of a plan, packing each synthetic static as soon
+/// as its geometry is complete, and returns the simplification metrics with the packed records.
 ///
 /// [`CellFilter::All`] reproduces the monolithic geometry pass exactly. A narrower filter builds
 /// only the requested cells' groups; the returned metrics then describe just those groups.
+///
+/// Merged records are packed here rather than in the caller's conversion stage because the unpacked
+/// form is 2.3x the size of the packed one and nothing downstream ever reads it: packing is a pure
+/// per-record function, and the final map is re-sorted into shard-major key order afterwards.
+/// Groups whose geometry came out empty are dropped rather than packed.
 ///
 /// # Panics
 ///
@@ -451,9 +466,53 @@ pub fn apply_merge_usage(plan: &MergePlan<'_>, usage_info: &mut UsageInfo<'_>) {
 pub fn build_merge_geometry(
     plan: &MergePlan<'_>,
     cells: &CellFilter,
+    distant_statics: &DistantStatics,
+    config: StaticMeshSimplifierConfig,
+    subterrain_cull: Option<SubterrainCull<'_>>,
+    vfs: &crate::Vfs,
+    door_size_multiplier: f32,
+) -> (MergeSimplificationMetrics, crate::PackedDistantStatics) {
+    let mut packed = crate::PackedDistantStatics::default();
+    let metrics = build_merge_batches(plan, cells, distant_statics, config, subterrain_cull, |batch| {
+        // Packing in parallel keeps the stage at wall-time parity; a sequential pack cost +7.6 s.
+        let batch: Vec<_> = batch
+            .into_par_iter()
+            .map(|(id, merged_static)| (id, merged_static.into_distant_static(vfs, door_size_multiplier)))
+            .collect();
+        packed.extend(batch);
+    });
+    (metrics, packed)
+}
+
+/// [`build_merge_geometry`] retaining the unpacked merged records in `distant_statics`.
+///
+/// Packing discards what the merge tests assert on - f32 vertex positions, exact bounding spheres,
+/// `horizon_footprint_eligible`, component tiling - so they build through this instead.
+#[cfg(test)]
+pub(crate) fn build_merge_geometry_unpacked(
+    plan: &MergePlan<'_>,
+    cells: &CellFilter,
     distant_statics: &mut DistantStatics,
     config: StaticMeshSimplifierConfig,
     subterrain_cull: Option<SubterrainCull<'_>>,
+) -> MergeSimplificationMetrics {
+    let mut built = Vec::new();
+    let metrics = build_merge_batches(plan, cells, distant_statics, config, subterrain_cull, |batch| {
+        built.extend(batch);
+    });
+    distant_statics.extend(built);
+    metrics
+}
+
+/// Builds the selected groups' merged geometry in batches, handing each batch's non-empty records
+/// to `emit` before the next batch is built.
+fn build_merge_batches(
+    plan: &MergePlan<'_>,
+    cells: &CellFilter,
+    distant_statics: &DistantStatics,
+    config: StaticMeshSimplifierConfig,
+    subterrain_cull: Option<SubterrainCull<'_>>,
+    mut emit: impl FnMut(Vec<(String, DistantStatic)>),
 ) -> MergeSimplificationMetrics {
     let work_groups: Vec<&MergeGroup> = plan.groups.iter().filter(|group| cells.includes(group.cell())).collect();
 
@@ -468,53 +527,50 @@ pub fn build_merge_geometry(
     let mut needed = HashSet::new();
 
     // Collect distinct `(static, error-bucket)` requests while accumulating metrics.
-    {
-        let distant_statics = &*distant_statics;
-        for group in &work_groups {
-            let group_error = config.target_error * group.group_extent;
-            group_extents.push(group.group_extent);
-            for (_, reference) in &group.members {
-                metrics.member_count += 1;
-                let key = member_lod_key(reference, group_error);
-                let absolute_error = bucket_error(key.1);
-                let ds = distant_statics.get(key.0).unwrap();
-                let mut member_needs_lod = false;
+    for group in &work_groups {
+        let group_error = config.target_error * group.group_extent;
+        group_extents.push(group.group_extent);
+        for (_, reference) in &group.members {
+            metrics.member_count += 1;
+            let key = member_lod_key(reference, group_error);
+            let absolute_error = bucket_error(key.1);
+            let ds = distant_statics.get(key.0).unwrap();
+            let mut member_needs_lod = false;
 
-                for subset in &ds.subsets {
-                    metrics.member_subset_count += 1;
-                    metrics.member_triangle_count_before_second_pass += subset.triangles.len();
+            for subset in &ds.subsets {
+                metrics.member_subset_count += 1;
+                metrics.member_triangle_count_before_second_pass += subset.triangles.len();
 
-                    if !subset.allows_simplification() {
-                        continue;
-                    }
-
-                    let extent = subset_extent(subset);
-                    if extent <= 0.0 || !extent.is_finite() {
-                        continue;
-                    }
-
-                    let target = subset.absolute_simplification_target_with_extent(config, absolute_error, extent);
-                    extent_ratios.push(group.group_extent / (extent * reference.scale.max(1e-6)));
-                    requested_targets.push(target.requested);
-                    effective_targets.push(target.effective);
-
-                    if target.requested > 1.0 {
-                        metrics.requested_relative_target_over_one_subset_count += 1;
-                        metrics.requested_relative_target_over_one_triangle_count += subset.triangles.len();
-                    }
-                    if target.capped {
-                        metrics.capped_subset_count += 1;
-                    }
-                    if target.should_simplify {
-                        metrics.second_pass_subset_count += 1;
-                        member_needs_lod = true;
-                    }
+                if !subset.allows_simplification() {
+                    continue;
                 }
 
-                if member_needs_lod {
-                    metrics.lod_cache_request_count += 1;
-                    needed.insert(key);
+                let extent = subset_extent(subset);
+                if extent <= 0.0 || !extent.is_finite() {
+                    continue;
                 }
+
+                let target = subset.absolute_simplification_target_with_extent(config, absolute_error, extent);
+                extent_ratios.push(group.group_extent / (extent * reference.scale.max(1e-6)));
+                requested_targets.push(target.requested);
+                effective_targets.push(target.effective);
+
+                if target.requested > 1.0 {
+                    metrics.requested_relative_target_over_one_subset_count += 1;
+                    metrics.requested_relative_target_over_one_triangle_count += subset.triangles.len();
+                }
+                if target.capped {
+                    metrics.capped_subset_count += 1;
+                }
+                if target.should_simplify {
+                    metrics.second_pass_subset_count += 1;
+                    member_needs_lod = true;
+                }
+            }
+
+            if member_needs_lod {
+                metrics.lod_cache_request_count += 1;
+                needed.insert(key);
             }
         }
     }
@@ -528,112 +584,110 @@ pub fn build_merge_geometry(
 
     // Build each requested `(static, error-bucket)` pair once and reuse it across groups.
     let lod_guard = info_span!("statics.merge_lod", report = true).entered();
-    let lod_cache: HashMap<(&str, i32), Vec<Subset>> = {
-        let distant_statics = &*distant_statics;
-
-        needed
-            .into_par_iter()
-            .map_init(StaticMeshContext::default, |context, (mesh_key, bucket)| {
-                let ds = distant_statics.get(mesh_key).unwrap();
-                let absolute_error = bucket_error(bucket);
-                let subsets = ds
-                    .subsets
-                    .iter()
-                    .enumerate()
-                    .map(|(subset_index, subset)| {
-                        Subset::build_merge_lod_from(subset, config, absolute_error, context, mesh_key, subset_index)
-                    })
-                    .collect();
-                ((mesh_key, bucket), subsets)
-            })
-            .collect()
-    };
+    let lod_cache: HashMap<(&str, i32), Vec<Subset>> = needed
+        .into_par_iter()
+        .map_init(StaticMeshContext::default, |context, (mesh_key, bucket)| {
+            let ds = distant_statics.get(mesh_key).unwrap();
+            let absolute_error = bucket_error(bucket);
+            let subsets = ds
+                .subsets
+                .iter()
+                .enumerate()
+                .map(|(subset_index, subset)| {
+                    Subset::build_merge_lod_from(subset, config, absolute_error, context, mesh_key, subset_index)
+                })
+                .collect();
+            ((mesh_key, bucket), subsets)
+        })
+        .collect();
     drop(lod_guard);
 
-    {
-        let distant_statics = &*distant_statics;
-        for group in &work_groups {
-            let group_error = config.target_error * group.group_extent;
-            for (_, reference) in &group.members {
-                let key = member_lod_key(reference, group_error);
-                let source = &distant_statics.get(key.0).unwrap().subsets;
-                let subsets = lod_cache.get(&key).unwrap_or(source);
-                metrics.member_triangle_count_after_second_pass +=
-                    subsets.iter().map(|subset| subset.triangles.len()).sum::<usize>();
-            }
+    for group in &work_groups {
+        let group_error = config.target_error * group.group_extent;
+        for (_, reference) in &group.members {
+            let key = member_lod_key(reference, group_error);
+            let source = &distant_statics.get(key.0).unwrap().subsets;
+            let subsets = lod_cache.get(&key).unwrap_or(source);
+            metrics.member_triangle_count_after_second_pass +=
+                subsets.iter().map(|subset| subset.triangles.len()).sum::<usize>();
         }
     }
 
-    // LOD simplification is cached; this pass transforms, merges, and recomputes bounds.
+    // LOD simplification is cached; this pass transforms, merges, and recomputes bounds. Groups are
+    // built a batch at a time so only one batch of unpacked merged geometry is ever resident.
     let geometry_guard = info_span!("statics.merge_geometry", report = true).entered();
-    let results: Vec<_> = {
-        let distant_statics = &*distant_statics;
-        let lod_cache = &lod_cache;
-        work_groups
-            .par_iter()
-            .map_init(StaticMeshContext::default, |context, group| {
-                let group_error = config.target_error * group.group_extent;
-                let group_references: Vec<_> = group.members.iter().map(|(_, reference)| reference).collect();
-                let mut culler = subterrain_cull.map(SubterrainCuller::new);
+    for work_batch in work_groups.chunks(MERGE_GEOMETRY_BATCH_GROUPS) {
+        let results: Vec<_> = {
+            let lod_cache = &lod_cache;
+            work_batch
+                .par_iter()
+                .map_init(StaticMeshContext::default, |context, group| {
+                    let group_error = config.target_error * group.group_extent;
+                    let group_references: Vec<_> = group.members.iter().map(|(_, reference)| reference).collect();
+                    let mut culler = subterrain_cull.map(SubterrainCuller::new);
 
-                let center = group_references.iter().map(|r| r.translation).sum::<Vec3>() / group_references.len() as f32;
+                    let center =
+                        group_references.iter().map(|r| r.translation).sum::<Vec3>() / group_references.len() as f32;
 
-                let mut merged_static = DistantStatic::default();
-                merged_static.static_type = StaticType::StaticAuto;
-                merged_static.max_scale = 1.0;
-                merged_static.horizon_footprint_eligible = true;
+                    let mut merged_static = DistantStatic::default();
+                    merged_static.static_type = StaticType::StaticAuto;
+                    merged_static.max_scale = 1.0;
+                    merged_static.horizon_footprint_eligible = true;
 
-                for opaque in [true, false] {
-                    for reference in &group_references {
-                        let key = member_lod_key(reference, group_error);
-                        let source_static = distant_statics.get(key.0).unwrap();
-                        let source = &source_static.subsets;
-                        let subsets = lod_cache.get(&key).unwrap_or(source);
-                        let transform = reference.get_transform();
-                        let component_center = transform.transform_point3(source_static.bounding_sphere.center) - center;
-                        merge_subsets(
-                            &mut merged_static.subsets,
-                            subsets,
-                            transform,
-                            center,
-                            opaque,
-                            component_center,
-                            source_static.bounding_sphere.radius * reference.scale,
-                            source_static.static_type,
-                            culler.as_mut(),
-                        );
+                    for opaque in [true, false] {
+                        for reference in &group_references {
+                            let key = member_lod_key(reference, group_error);
+                            let source_static = distant_statics.get(key.0).unwrap();
+                            let source = &source_static.subsets;
+                            let subsets = lod_cache.get(&key).unwrap_or(source);
+                            let transform = reference.get_transform();
+                            let component_center = transform.transform_point3(source_static.bounding_sphere.center) - center;
+                            merge_subsets(
+                                &mut merged_static.subsets,
+                                subsets,
+                                transform,
+                                center,
+                                opaque,
+                                component_center,
+                                source_static.bounding_sphere.radius * reference.scale,
+                                source_static.static_type,
+                                culler.as_mut(),
+                            );
+                        }
                     }
-                }
 
-                // Inputs are already welded and compacted; only final merge/bounds work remains.
-                // Empty subsets are discarded before packing.
-                merged_static.merge_subsets();
-                update_bounds_with_context(&mut merged_static, context);
+                    // Inputs are already welded and compacted; only final merge/bounds work remains.
+                    // Empty subsets are discarded before packing.
+                    merged_static.merge_subsets();
+                    update_bounds_with_context(&mut merged_static, context);
 
-                let cull_tally = culler.map(|culler| culler.tally()).unwrap_or_default();
-                (group.synthetic_id(), merged_static, cull_tally)
-            })
-            .collect()
-    };
-    drop(geometry_guard);
+                    let cull_tally = culler.map(|culler| culler.tally()).unwrap_or_default();
+                    (group.synthetic_id(), merged_static, cull_tally)
+                })
+                .collect()
+        };
 
-    // Insert results sequentially so the final map remains deterministic.
-    for (id, merged_static, cull_tally) in results {
-        metrics.subterrain_culled_triangle_count += cull_tally.triangles;
-        metrics.subterrain_culled_vertex_count += cull_tally.vertices;
-        metrics.merged_triangle_count += merged_static
-            .subsets
-            .iter()
-            .map(|subset| subset.triangles.len())
-            .sum::<usize>();
+        // Tally sequentially so the metrics stay independent of worker scheduling.
+        let mut built = Vec::with_capacity(results.len());
+        for (id, merged_static, cull_tally) in results {
+            metrics.subterrain_culled_triangle_count += cull_tally.triangles;
+            metrics.subterrain_culled_vertex_count += cull_tally.vertices;
+            metrics.merged_triangle_count += merged_static
+                .subsets
+                .iter()
+                .map(|subset| subset.triangles.len())
+                .sum::<usize>();
+            metrics.emitted_merged_subset_count += merged_static.subsets.len();
 
-        if !merged_static.subsets.is_empty() {
+            if merged_static.subsets.is_empty() {
+                continue;
+            }
             metrics.emitted_merged_static_count += 1;
+            built.push((id, merged_static));
         }
-        metrics.emitted_merged_subset_count += merged_static.subsets.len();
-
-        distant_statics.insert(id, merged_static);
+        emit(built);
     }
+    drop(geometry_guard);
 
     metrics
 }

@@ -1,6 +1,6 @@
 //! meshopt-backed geometry processing and reusable per-thread workspaces.
 
-use std::mem::{offset_of, size_of};
+use std::mem::{align_of, offset_of, size_of};
 use std::time::{Duration, Instant};
 
 use bytemuck::{Pod, Zeroable, must_cast_slice};
@@ -384,6 +384,9 @@ fn simplify_indices(
         assert!(offset_of!(Vertex, color) == 32);
         assert!(offset_of!(Vertex, uv_bound) == 48);
         assert!(size_of::<Vertex>() == 64);
+        // `Vec4` forces 16-byte alignment, so a nominally smaller field layout pads
+        // back to 64 bytes. Shrinking `Vertex` requires changing this first.
+        assert!(align_of::<Vertex>() == 16);
     }
     let vertex_bytes: &[u8] = bytemuck::must_cast_slice(vertices);
 
