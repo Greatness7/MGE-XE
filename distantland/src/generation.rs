@@ -657,6 +657,7 @@ fn run_generation(
         &source_info,
         &sizing_plan,
     );
+    usage_info.release_post_fingerprint_fields();
 
     let ctx = StageContext {
         job,

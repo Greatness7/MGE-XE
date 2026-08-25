@@ -335,6 +335,22 @@ impl<'a> UsageInfo<'a> {
         self.terrain_cells.sort_unstable_keys();
     }
 
+    /// Releases metadata that is dead after the static-state fingerprint has been built.
+    ///
+    /// The value intentionally enters a post-fingerprint phase: only `cells` and
+    /// `terrain_cells` retain their collected data for downstream generation and publication.
+    pub fn release_post_fingerprint_fields(&mut self) {
+        drop(std::mem::take(&mut self.reference_sources));
+        drop(std::mem::take(&mut self.objects));
+        drop(std::mem::take(&mut self.forced_meshes));
+        drop(std::mem::take(&mut self.door_meshes));
+        drop(std::mem::take(&mut self.mesh_scale_maximums));
+        drop(std::mem::take(&mut self.interior_metadata));
+        drop(std::mem::take(&mut self.disable_scripts));
+        drop(std::mem::take(&mut self.disable_targets));
+        drop(std::mem::take(&mut self.script_disable));
+    }
+
     pub fn exterior_references(&self) -> Option<&References<'a>> {
         self.cells.get("\0")
     }
