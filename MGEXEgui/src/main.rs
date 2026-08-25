@@ -69,7 +69,7 @@ fn run() -> Result<(), String> {
 
     let options = eframe::NativeOptions {
         viewport,
-        renderer: eframe::Renderer::Wgpu,
+        renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
 
