@@ -92,7 +92,7 @@ pub fn gpu_dedicated_video_memory_bytes() -> Option<u64> {
 /// Largest square texture dimension the default display adapter can create, in
 /// texels, or `None` if it could not be queried. Queried through Direct3D 9,
 /// the API the injected renderer actually uses at runtime (wrapped from D3D8),
-/// rather than the GUI's own wgpu backend, whose adapter, backend, and
+/// rather than the GUI's own rendering backend, whose adapter and
 /// requested feature limits do not necessarily match what the game's D3D9
 /// device will report.
 pub fn max_texture_dimension() -> Option<u32> {
