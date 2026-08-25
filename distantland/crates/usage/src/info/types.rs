@@ -267,6 +267,12 @@ pub struct UsageInfo<'a> {
     pub(super) disable_targets: HashSet<UString>,
     /// What the two disable rules actually did, for the generation report.
     pub script_disable: ScriptDisableReport,
+    /// Set once [`UsageInfo::release_post_fingerprint_fields`] has run.
+    ///
+    /// Every method that reads released metadata returns empty rather than failing, so a read
+    /// added after the release point would silently change output instead of breaking. This
+    /// flag exists to make the debug assertions in those methods possible.
+    pub(super) released: bool,
 }
 
 impl<'a> UsageInfo<'a> {
@@ -288,6 +294,10 @@ impl<'a> UsageInfo<'a> {
 
     /// Resolves a run-local source handle to its normalized plugin filename.
     pub fn reference_source_name(&self, source: SourceId) -> Option<&str> {
+        // A released table returns `None` for every handle. The one caller that swallows that,
+        // `reference_source_label`'s `unwrap_or("<synthetic>")`, would collapse every merge-unit
+        // sort key onto one string and silently shift fingerprints.
+        debug_assert!(!self.released, "reference source lookup after post-fingerprint release");
         self.reference_sources.name(source)
     }
 
@@ -301,6 +311,11 @@ impl<'a> UsageInfo<'a> {
     ///
     /// Panics if `other` was parsed against a different reference-source table.
     pub fn merge(&mut self, other: UsageInfo<'a>) {
+        // Both operands contribute released metadata, so guard the argument as well as the receiver.
+        debug_assert!(
+            !self.released && !other.released,
+            "merge of usage information after post-fingerprint release"
+        );
         assert!(
             self.reference_sources.is_same_table(&other.reference_sources),
             "cannot merge usage information from different reference-source tables"
@@ -339,7 +354,15 @@ impl<'a> UsageInfo<'a> {
     ///
     /// The value intentionally enters a post-fingerprint phase: only `cells` and
     /// `terrain_cells` retain their collected data for downstream generation and publication.
+    /// Methods that read the released fields carry a debug assertion against `released`, since
+    /// each of them would otherwise return empty data rather than fail.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the value has already been released.
     pub fn release_post_fingerprint_fields(&mut self) {
+        debug_assert!(!self.released, "usage information released twice");
+        self.released = true;
         drop(std::mem::take(&mut self.reference_sources));
         drop(std::mem::take(&mut self.objects));
         drop(std::mem::take(&mut self.forced_meshes));
