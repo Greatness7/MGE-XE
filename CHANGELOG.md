@@ -7,7 +7,7 @@
 - Sun shadows flickered in the bottom screen corners and at the cascade intersection. The
   caster stencil mask had under a texel of margin near the eye while the shadow blur reaches
   about three, so receivers at the frustum edge sampled the cleared atlas. The mask is now
-  dilated by 8 texels.
+  the convex hull of the frustum silhouette dilated by 8 texels on every side.
 
 ## v0.20.0 beta, G7 fork
 

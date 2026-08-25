@@ -6,6 +6,7 @@
 #include "proxydx/d3d8header.h"
 #include "support/log.h"
 
+#include <algorithm>
 #include <cmath>
 
 
@@ -15,6 +16,94 @@ static const float shadowFarRadius = 4000.0;
 
 // Stencil mask dilation, must exceed the blur kernel reach of ~3 texels
 static const int shadowStencilMarginTexels = 8;
+
+namespace {
+
+float cross2(const D3DXVECTOR2& a, const D3DXVECTOR2& b, const D3DXVECTOR2& c) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+// Andrew's monotone chain. Sorts pts, writes the counter-clockwise hull (capacity 2 * n)
+// and returns its vertex count.
+size_t convexHull(D3DXVECTOR2* pts, size_t n, D3DXVECTOR2* hull) {
+    std::sort(pts, pts + n, [](const D3DXVECTOR2& a, const D3DXVECTOR2& b) {
+        return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i) {
+        while (k >= 2 && cross2(hull[k - 2], hull[k - 1], pts[i]) <= 0) {
+            --k;
+        }
+        hull[k++] = pts[i];
+    }
+    for (size_t i = n - 1, lower = k + 1; i > 0; --i) {
+        while (k >= lower && cross2(hull[k - 2], hull[k - 1], pts[i - 1]) <= 0) {
+            --k;
+        }
+        hull[k++] = pts[i - 1];
+    }
+    return k - 1;   // Last point repeats the first
+}
+
+// The camera frustum's silhouette in light clip space, clipped to the light far plane and
+// dilated by an exact margin on every side. A Minkowski sum with the margin square, as a
+// union of translated copies leaves sharp silhouette vertices with no margin at all.
+// Returns the fan vertex count, 0 if the transform is degenerate.
+size_t buildStencilHull(const D3DXMATRIX& clipToLight, float margin, D3DXVECTOR3* fan) {
+    // Frustum corners, camera clip space to light post-projective space
+    D3DXVECTOR3 corner[8];
+    for (int i = 0; i < 8; ++i) {
+        D3DXVECTOR4 p((i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : 0.0f, 1.0f);
+        D3DXVec4Transform(&p, &p, &clipToLight);
+        if (p.w <= 0) {
+            return 0;
+        }
+        corner[i] = D3DXVECTOR3(p.x / p.w, p.y / p.w, p.z / p.w);
+    }
+
+    // Clip to the light far plane. The vertex shader clamps the near side instead of
+    // clipping it, so only z > 1 is cut. Corners in range plus crossing points of the
+    // 12 edges, then four margin square offsets of each.
+    D3DXVECTOR2 pts[80], hull[160];
+    size_t n = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (corner[i].z <= 1.0f) {
+            pts[n++] = D3DXVECTOR2(corner[i].x, corner[i].y);
+        }
+    }
+    for (int i = 0; i < 8; ++i) {
+        for (int bit = 1; bit <= 4; bit <<= 1) {
+            if (i & bit) {
+                continue;
+            }
+            const D3DXVECTOR3& a = corner[i], &b = corner[i | bit];
+            if ((a.z <= 1.0f) == (b.z <= 1.0f)) {
+                continue;
+            }
+            const float t = (1.0f - a.z) / (b.z - a.z);
+            pts[n++] = D3DXVECTOR2(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
+        }
+    }
+    for (size_t i = 0, base = n; i < base; ++i) {
+        const D3DXVECTOR2 p = pts[i];
+        pts[i] = D3DXVECTOR2(p.x - margin, p.y - margin);
+        pts[n++] = D3DXVECTOR2(p.x - margin, p.y + margin);
+        pts[n++] = D3DXVECTOR2(p.x + margin, p.y - margin);
+        pts[n++] = D3DXVECTOR2(p.x + margin, p.y + margin);
+    }
+    if (n < 3) {
+        return 0;
+    }
+
+    const size_t count = convexHull(pts, n, hull);
+    for (size_t i = 0; i < count; ++i) {
+        fan[i] = D3DXVECTOR3(hull[i].x, hull[i].y, 0.5f);
+    }
+    return count;
+}
+
+}
 
 
 
@@ -87,20 +176,24 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const 
     device->SetViewport(&vp);
 
     // Render view frustum to stencil, which limits rendering to visible texels
-    // Drawn at five clip space offsets to dilate the mask, else edge receivers blur in the cleared atlas
-    effect->SetMatrix(ehWorld, inverseCameraProj);
-    const float margin = shadowStencilMarginTexels * 2.0f / res;
-    static const float offsets[5][2] = { {0, 0}, {-1, -1}, {-1, 1}, {1, -1}, {1, 1} };
+    // Dilated so receivers at the frustum edge do not blur into the cleared atlas.
+    // The hull is already in light clip space, so both transforms are identity here.
+    // A degenerate hull falls back to masking the whole cascade, which is only slower.
+    D3DXVECTOR3 fan[80];
+    const D3DXMATRIX clipToLight = (*inverseCameraProj) * (*viewproj);
+    const size_t fanCount = buildStencilHull(clipToLight, shadowStencilMarginTexels * 2.0f / res, fan);
+
+    D3DXMATRIX identity;
+    D3DXMatrixIdentity(&identity);
+    effect->SetMatrix(ehWorld, &identity);
+    effect->SetMatrixArray(ehShadowViewproj, &identity, 1);
     effectShadow->BeginPass(PASS_SHADOWSTENCIL);
     device->SetVertexDeclaration(WaterDecl);
-    device->SetStreamSource(0, vbClipCube, 0, 12);
-    for (const auto& o : offsets) {
-        D3DXMATRIX offsetViewproj = *viewproj;
-        offsetViewproj._41 += margin * o[0];
-        offsetViewproj._42 += margin * o[1];
-        effect->SetMatrixArray(ehShadowViewproj, &offsetViewproj, 1);
-        effectShadow->CommitChanges();
-        device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 12);
+    if (fanCount >= 3) {
+        device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, fanCount - 2, fan, 12);
+    } else {
+        device->SetStreamSource(0, vbFullFrame, 0, 12);
+        device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
     }
     effectShadow->EndPass();
 
@@ -166,9 +259,6 @@ void DistantLand::renderShadowLayer(int layer, float radius, const D3DXMATRIX* i
     viewproj->_41 += quantizer * floor(dv.x / quantizer);
     viewproj->_42 += quantizer * floor(dv.y / quantizer);
     viewproj->_43 += dv.z;
-
-    effect->SetMatrixArray(ehShadowViewproj, viewproj, 1);
-    effectShadow->CommitChanges();
 
     // Cull
     ViewFrustum range_frustum(viewproj);

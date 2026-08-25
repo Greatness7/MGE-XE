@@ -28,7 +28,6 @@ decode together. Two of those three files are user-replaceable, see [Core mods](
 | `texSoftShadow` | render-target texture | `2 * res` by `res` | `D3DFMT_R16F` |
 | `surfShadowZ` | depth-stencil surface | `2 * res` by `res` | `D3DFMT_D24S8` |
 | `vbFullFrame` | vertex buffer | 4 verts, 12 bytes each | full-target quad |
-| `vbClipCube` | vertex buffer | 14 verts, 12 bytes each | camera clip cube strip, xy expanded to ±1.01, z 0..1 |
 
 `res` is `Configuration.DL.ShadowResolution`, so the atlas is 2048x1024 or 4096x2048.
 Cascade count is `DistantLand::kShadowCascades` on the C++ side, which sizes the atlas and
@@ -146,19 +145,26 @@ The viewport is `{ layer * res, 0, res, res }`, which is the only thing keeping 
 and cascade 1 apart. Both use `shadowViewProj[0]` as their transform, since the C++ side
 uploads one matrix per layer before the layer draws.
 
-Before any casters, `PASS_SHADOWSTENCIL` draws `vbClipCube` transformed by
-`inverseCameraProj`, which puts the camera frustum into the light's clip space. The pass
-writes no colour (`ColorWriteEnable = 0`), disables z, and sets stencil to `replace` with
-`StencilRef = 1`. Both caster passes then run `StencilFunc = notequal, StencilRef = 0`, so
-they only touch texels the camera could actually see.
+Before any casters, `PASS_SHADOWSTENCIL` draws the camera frustum's silhouette in light
+clip space. `buildStencilHull` (in `rendershadow.cpp`) takes the eight corners of the camera
+clip cube through `inverseCameraProj` and the cascade view-projection, divides by w, clips
+the twelve edges to the light far plane (the near side is clamped in the vertex shader, not
+clipped, so it is left alone), offsets every point by the four corners of a
+`shadowStencilMarginTexels` (8) square, and takes the convex hull. That is the Minkowski sum
+of the silhouette and the square, so the mask extends exactly 8 texels past the frustum on
+every side, at vertices as well as along edges. The hull is drawn once as a fan through
+`DrawPrimitiveUP` with `world` and `shadowViewProj[0]` both identity; a degenerate hull
+(non-positive w) falls back to masking the whole cascade. The pass writes no colour
+(`ColorWriteEnable = 0`), disables z, and sets stencil to `replace` with `StencilRef = 1`.
+Both caster passes then run `StencilFunc = notequal, StencilRef = 0`, so they only touch
+texels the camera could actually see.
 
-The mask is dilated by `shadowStencilMarginTexels` (8, in `rendershadow.cpp`): the cube is
-drawn five times, centred and at the four corners of a square of that half-width, with the
-offset added to the translation row of the cascade view-projection so it survives the
-perspective divide as a constant clip-space shift. The cube's own ±1.01 xy expansion is in
-camera clip space and shrinks to under a texel near the eye, which left the frustum's
-near-plane corners (the bottom screen corners when looking down) within reach of the blur
-kernel's taps into the cleared "lit" atlas and flickering as the mask edge moved.
+The margin exists because the blur reaches about 3 texels. Without it, receivers at the
+frustum edge blurred into the cleared "lit" atlas, and the aliased mask edge moving each
+frame made them flicker; the frustum's near-plane corners (the bottom screen corners when
+looking down) were the visible case. Drawing translated copies of the frustum is not a
+substitute: a union of copies leaves a sharp silhouette vertex with no margin at all unless
+a copy happens to lie along its bisector.
 
 Casters, in order:
 
@@ -174,7 +180,7 @@ Only statics alpha test. `StaticShadowPS` clips at `a - 180.0/255.0`, remapping 
 the static's atlas region first and sampling with `tex2Dgrad` and explicit derivatives,
 since `frac()` on the UVs would otherwise break mip selection. Terrain cannot: `ShadowVS`
 takes position only, because the two declarations bound to it, `TerrainDecl` for terrain
-and `WaterDecl` for the stencil clip cube, carry no texcoords. `ShadowPS` therefore just
+and `WaterDecl` for the stencil hull, carry no texcoords. `ShadowPS` therefore just
 encodes depth.
 
 Alpha testing is handled by `StaticShadowPS`, not `ShadowPS`. The shared `hasAlpha` flag is

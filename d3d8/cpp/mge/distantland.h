@@ -200,7 +200,7 @@ public:
 
     static IDirect3DTexture9* texShadow, *texSoftShadow;
     static IDirect3DSurface9* surfShadowZ;
-    static IDirect3DVertexBuffer9* vbFullFrame, *vbClipCube;
+    static IDirect3DVertexBuffer9* vbFullFrame;
 
     // Must match shadowCascades in "XE Mod Shadow Data.fx". That file is user-replaceable
     // through shaders/core-mods, so a stale copy silently disagrees with this value.

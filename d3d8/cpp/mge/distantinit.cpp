@@ -125,7 +125,6 @@ IDirect3DTexture9* DistantLand::texShadow;
 IDirect3DTexture9* DistantLand::texSoftShadow;
 IDirect3DSurface9* DistantLand::surfShadowZ;
 IDirect3DVertexBuffer9* DistantLand::vbFullFrame;
-IDirect3DVertexBuffer9* DistantLand::vbClipCube;
 
 D3DXMATRIX DistantLand::mwView, DistantLand::mwProj;
 D3DXMATRIX DistantLand::smView[kShadowCascades], DistantLand::smProj[kShadowCascades];
@@ -1299,11 +1298,6 @@ bool DistantLand::initShadow() {
         LOG::logline("!! Failed to create shadow processing verts");
         return false;
     }
-    hr = device->CreateVertexBuffer(14 * 12, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vbClipCube, 0);
-    if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow processing verts");
-        return false;
-    }
 
     // Used to cover an entire render target of any dimension
     D3DXVECTOR3* v;
@@ -1313,26 +1307,6 @@ bool DistantLand::initShadow() {
     v[2] = D3DXVECTOR3( 1.0f,  1.0f,  1.0f);
     v[3] = D3DXVECTOR3( 1.0f, -1.0f,  1.0f);
     vbFullFrame->Unlock();
-
-    // Used to project the view frustum in world space
-    // Slightly expanded from the unit clip cube to allow for rasterization and filtering
-    const float u = 1.01f;
-    vbClipCube->Lock(0, 0, (void**)&v, 0);
-    v[0] = D3DXVECTOR3(-u,  u, 0.0f);
-    v[1] = D3DXVECTOR3(-u, -u, 0.0f);
-    v[2] = D3DXVECTOR3( u,  u, 0.0f);
-    v[3] = D3DXVECTOR3( u, -u, 0.0f);
-    v[4] = D3DXVECTOR3( u, -u, 1.0f);
-    v[5] = D3DXVECTOR3(-u, -u, 0.0f);
-    v[6] = D3DXVECTOR3(-u, -u, 1.0f);
-    v[7] = D3DXVECTOR3(-u,  u, 0.0f);
-    v[8] = D3DXVECTOR3(-u,  u, 1.0f);
-    v[9] = D3DXVECTOR3( u,  u, 0.0f);
-    v[10] = D3DXVECTOR3( u,  u, 1.0f);
-    v[11] = D3DXVECTOR3( u, -u, 1.0f);
-    v[12] = D3DXVECTOR3(-u,  u, 1.0f);
-    v[13] = D3DXVECTOR3(-u, -u, 1.0f);
-    vbClipCube->Unlock();
 
     return true;
 }
@@ -1774,7 +1748,6 @@ void DistantLand::release() {
     safeRelease(ibWater);
     safeRelease(vbGrassInstances);
     safeRelease(vbFullFrame);
-    safeRelease(vbClipCube);
 
     ProxyDevice::setDepthStencilSubstitute(nullptr, nullptr);
     if (nativeDepthBackend == NativeDepthBackend::IntzMainDsv && surfAutoDepthStencil) {
