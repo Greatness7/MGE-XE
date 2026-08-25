@@ -6,6 +6,8 @@
 
 - Reduced memory use while generating distant land, hopefully preventing crashes with very large
   mod lists ([#3](https://github.com/Greatness7/MGE-XE/issues/3)).
+- The configuration utility no longer fails to launch when ReShade is installed
+  ([#4](https://github.com/Greatness7/MGE-XE/issues/4)).
 
 ## v0.20.0 beta, G7 fork
 

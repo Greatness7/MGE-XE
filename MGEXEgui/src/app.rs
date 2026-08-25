@@ -301,7 +301,7 @@ impl eframe::App for GuiApp {
         self.show_status_toast(ui.ctx());
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if platform::morrowind_is_running() {
             return;
         }
