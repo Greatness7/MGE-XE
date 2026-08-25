@@ -94,13 +94,21 @@ impl AtlasPublishPlan {
             .collect()
     }
 
-    /// Renders pages marked `Build` without mutating the output tree.
-    pub fn render(self) -> anyhow::Result<Vec<AtlasPageWrite>> {
-        let mut pages = Vec::new();
+    /// Renders pages marked `Build` without mutating the output tree, handing each encoded page
+    /// to `emit` as it is produced.
+    ///
+    /// Pages are streamed rather than collected so at most one encoded page is resident at a time.
+    /// `emit` is called in the fixed page order of the opaque family followed by the alpha family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a page fails to encode, or propagates the first error `emit` returns.
+    /// An emitter error aborts before the next page's canvas is composed.
+    pub fn render_streaming(self, mut emit: impl FnMut(AtlasPageWrite) -> anyhow::Result<()>) -> anyhow::Result<()> {
         for domain in [self.opaque, self.alpha].into_iter().flatten() {
-            pages.extend(render_domain(domain, &self.texture_dir)?);
+            render_domain(domain, &self.texture_dir, &mut emit)?;
         }
-        Ok(pages)
+        Ok(())
     }
 }
 
@@ -487,13 +495,16 @@ fn page_rgba_bytes(page: &Page) -> u64 {
     u64::from(page.width) * u64::from(page.height) * 4
 }
 
-fn render_domain(plan: AtlasDomainPublishPlan, texture_dir: &Path) -> anyhow::Result<Vec<AtlasPageWrite>> {
+fn render_domain(
+    plan: AtlasDomainPublishPlan,
+    texture_dir: &Path,
+    emit: &mut impl FnMut(AtlasPageWrite) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let d3d_format = if plan.prefix == OPAQUE_ATLAS_PREFIX {
         D3DFormat::DXT1
     } else {
         D3DFormat::DXT5
     };
-    let mut writes = Vec::new();
     for page in plan.pages {
         let AtlasPagePublishPlan::Build(page) = page else {
             continue;
@@ -501,10 +512,13 @@ fn render_domain(plan: AtlasDomainPublishPlan, texture_dir: &Path) -> anyhow::Re
         let canvas = compose_planned_page(&plan.images, &page);
         let bytes =
             encode_d3d_bcn_dds_with_mips(&canvas, d3d_format).context("failed to encode planned static atlas DDS page")?;
-        writes.push(AtlasPageWrite {
+        // The canvas is the largest single allocation here - a 16384x8192 page is 512 MiB of RGBA.
+        // Free it before the emitter writes, so publication holds the encoded bytes alone.
+        drop(canvas);
+        emit(AtlasPageWrite {
             path: atlas_page_path(texture_dir, plan.prefix, page.id),
             bytes,
-        });
+        })?;
     }
-    Ok(writes)
+    Ok(())
 }

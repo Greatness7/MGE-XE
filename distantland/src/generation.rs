@@ -29,11 +29,11 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use tracing::{Span, field, info, info_span};
 
-use crate::statics::atlas::AtlasPublishPlan;
 use crate::statics::atlas::sizing::{
     SizingPlan, TextureAxisCaps, analyze_static_texture_usage, collect_static_texture_source_info,
     fingerprints_from_source_info, merge_dedupe_alias_requirements, plan_static_texture_resolutions,
 };
+use crate::statics::atlas::{AtlasPageWrite, AtlasPublishPlan};
 use crate::statics::metadata::{
     apply_override_source_with_identity, apply_plugin_metadata_with_identity, discover_plugin_metadata,
 };
@@ -949,11 +949,14 @@ fn run_generation(
         estimated_peak_bytes = atlas.metrics().publication_peak_bytes,
     );
     let _atlas_publish_guard = atlas_publish_span.enter();
-    let atlas_written = atlas
-        .render()?
-        .into_iter()
-        .map(|page| writes.write_durable(&page.path, page.bytes, storage::durable::SyncClass::Payload))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Streamed rather than collected: each page is written and dropped before the next is encoded,
+    // so publication never holds every encoded atlas page at once.
+    let mut atlas_written = Vec::new();
+    atlas.render_streaming(|page| {
+        let AtlasPageWrite { path, bytes } = page;
+        atlas_written.push(writes.write_durable(&path, bytes, storage::durable::SyncClass::Payload)?);
+        Ok(())
+    })?;
     drop(_atlas_publish_guard);
     let mut atlas_inventory: Vec<_> = atlas_carried_paths
         .iter()

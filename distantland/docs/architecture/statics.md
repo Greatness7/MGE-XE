@@ -153,8 +153,9 @@ produces immutable render plans without holding storage authority:
   or `Build`. A page builds for a new slot or changed active placement/visible content; removal and
   same-content provider promotion alone carry. The renderer recomposes dirty pages from every current active
   slot on a fresh canvas. Retained empty middle pages remain explicit `Carry` inventory entries.
-  `AtlasPublishPlan::render` returns encoded `AtlasPageWrite` values for only the build paths; the
-  root pipeline writes those bytes through its `PublicationWrites` ledger. Opaque pages encode as
+  `AtlasPublishPlan::render_streaming` encodes only the build pages and hands each `AtlasPageWrite`
+  to the caller's emitter as it is produced, so one encoded page is resident at a time; the root
+  pipeline's emitter writes those bytes through its `PublicationWrites` ledger. Opaque pages encode as
   BC1 and alpha pages as BC3, both with full mip chains via
   [crates/texture/src/dds.rs](../../crates/texture/src/dds.rs). Page names stay
   `_mge_xe_atlas{N}.dds` / `_mge_xe_atlas_alpha{N}.dds`. Publication never rereads VFS inputs.
