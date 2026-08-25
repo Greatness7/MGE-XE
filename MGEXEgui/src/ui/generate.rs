@@ -155,7 +155,7 @@ impl GeneratorState {
         // Kicked here rather than when the Grass tab is first shown: the Plugins
         // tab annotates rows from the same result, and it is the tab that opens.
         let mut grass_scan = GrassScan::default();
-        grass_scan.start(universe.plugin_paths());
+        grass_scan.start(universe.plugin_paths(), universe.data_dirs());
 
         Self {
             job: job.clone(),

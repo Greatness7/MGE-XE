@@ -134,9 +134,12 @@ pub(super) fn dialog(ui: &mut Ui, generator: &mut GeneratorState) {
 
     if save {
         generator.universe.set_extra_dirs(editor.dirs);
-        // The universe just changed shape, so the classification has to catch up
-        // with it. Cached verdicts survive; only new files are read.
-        generator.grass_scan.start(generator.universe.plugin_paths());
+        // Rescan, not `start`: changed precedence can stale a cached verdict for
+        // a plugin whose own file never changed, by moving which file supplies
+        // one of its masters.
+        generator
+            .grass_scan
+            .rescan(generator.universe.plugin_paths(), generator.universe.data_dirs());
     } else if !close {
         generator.dirs_editor = Some(editor);
     }

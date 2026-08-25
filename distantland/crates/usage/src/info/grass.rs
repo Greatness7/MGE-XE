@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use bytes_io::Reader;
-use tes3::esp::{Cell, Plugin, Static, TES3Object};
+use tes3::esp::{Cell, Header, Plugin, Static, TES3Object};
 
 use super::filter::grass_density_for_object;
 use super::*;
@@ -18,53 +20,222 @@ use distantland_foundation::identity::FileIdentity;
 /// few decorative grass meshes. Real groundcover passes this within its first cell or two.
 const GRASS_PLUGIN_INSTANCE_THRESHOLD: u64 = 50;
 
+/// Records outside `TES3`/`STAT`/`CELL` a plugin may carry and still be considered groundcover.
+///
+/// Sampled, not derived: across a 22-plugin install the worst real groundcover file carried 1 and
+/// the nearest content mod 342. Deliberately loose, because Gate B still rejects small content mods
+/// and the headroom covers CS-dirtied `GMST` tails. A grass/terrain hybrid exceeds it and is
+/// rejected without its placements ever being examined.
+const GRASS_PLUGIN_FOREIGN_RECORD_TOLERANCE: usize = 100;
+
+/// Buffer size for [`RecordWalk`].
+///
+/// The master prefetch seeks far more than it reads, so a large buffer keeps those seeks in memory:
+/// 64 KiB ran the test install's four masters in ~38 ms against ~62 ms at the 8 KiB default.
+const RECORD_WALK_BUFFER: usize = 64 * 1024;
+
 /// Classifies `path` as a dedicated groundcover plugin for GUI suggestions.
 ///
+/// `data_dirs` is the layered data-directory list, lowest priority first. Prefer
+/// [`classify_grass_plugins`] for more than one path: it shares the master prefetch across the
+/// batch.
+pub fn is_grass_plugin(path: &Path, data_dirs: &[PathBuf]) -> bool {
+    let paths = [path.to_path_buf()];
+    classify_grass_plugins(&paths, data_dirs)[0]
+}
+
+/// Classifies a whole plugin list, one `bool` per input path.
+///
 /// Meshes under the conventional `grass\` directory count as grass. Generation remains
-/// authoritative: it additionally applies VFS resolution and the job's normal static overrides,
-/// so it can disagree with this answer.
+/// authoritative: it additionally applies VFS resolution and the job's normal static overrides, so
+/// it can disagree with this answer.
 ///
-/// Only `STAT` and `CELL` are decoded, matching the record set OpenMW accepts from a groundcover
-/// file, and they are decoded one record at a time. That matters because the GUI runs this across
-/// a whole install in parallel: a plugin defining a single `grass\` mesh passes Gate A, and
-/// landmass mods that do so carry enormous `CELL` payloads. A cell's compact on-disk references
-/// expand several-fold once materialized, so holding a whole decoded plugin per worker is what
-/// exhausted memory on a large install.
+/// Three gates, ordered so the expensive ones see as few files as possible:
 ///
-/// Gate B stops at the first reference past the threshold, so a plugin whose records are damaged
-/// only after that point now classifies as groundcover where eager parsing reported a failure.
-/// That is the right trade for a suggestion the user reviews anyway.
+/// - **Gate 0** counts records outside `TES3`/`STAT`/`CELL` and rejects past
+///   [`GRASS_PLUGIN_FOREIGN_RECORD_TOLERANCE`], streaming and without decoding.
+/// - **Gate A** requires a grass static to be available: defined by the plugin, or by one of its
+///   masters. Groundcover written against a landmass mod commonly defines none of its own.
+/// - **Gate B** requires more than [`GRASS_PLUGIN_INSTANCE_THRESHOLD`] surviving exterior
+///   placements of one.
 ///
-/// # Errors
+/// Gate A's union is conservative rather than override resolution: a later non-grass `STAT` sharing
+/// an id with a master's grass `STAT` should shadow it, but `MAST` order gives plugin-relative
+/// indices, not the global load order. That biases toward false positives, which are cheap here.
 ///
-/// Returns an error if `path` cannot be read or parsed as a TES3 plugin.
-pub fn is_grass_plugin(path: &Path) -> Result<bool> {
+/// A plugin that cannot be read or parsed classifies as `false`, as does one whose declared master
+/// is missing, unreadable, or malformed. An unresolvable master means its grass statics are
+/// unknown, not absent, and it fails only the plugins that declare it.
+///
+/// Verdicts depend on `data_dirs`, so a caller caching them must invalidate on any change to that
+/// list, not only on a changed plugin file.
+pub fn classify_grass_plugins(paths: &[PathBuf], data_dirs: &[PathBuf]) -> Vec<bool> {
+    let mut verdicts = vec![false; paths.len()];
+
+    // Phase 1: Gate 0. The only pass that sees every file, so it must not read them whole.
+    let survivors: Vec<usize> = paths
+        .par_iter()
+        .enumerate()
+        .filter(|(_, path)| within_foreign_record_tolerance(path).unwrap_or(false))
+        .map(|(index, _)| index)
+        .collect();
+
+    // Phase 2: declared masters, then each distinct master's grass ids, sequential. A survivor
+    // whose own `TES3` record will not read is not a loadable plugin.
+    let survivors: Vec<(usize, Vec<String>)> = survivors
+        .into_iter()
+        .filter_map(|index| Some((index, declared_masters(&paths[index])?)))
+        .collect();
+    if survivors.is_empty() {
+        return verdicts;
+    }
+
+    let by_name = index_data_dirs(data_dirs);
+    let mut prefetched: HashMap<PathBuf, Option<HashSet<UString>>> = HashMap::new();
+    for (_, masters) in &survivors {
+        for name in masters {
+            let Some(resolved) = by_name.get(&name.to_ascii_lowercase()) else {
+                continue;
+            };
+            if !prefetched.contains_key(resolved) {
+                prefetched.insert(resolved.clone(), master_grass_ids(resolved).ok());
+            }
+        }
+    }
+
+    // Phase 3: Gates A and B. A survivor unions only the masters it declares. One flattened set
+    // would lend a master's grass ids to plugins that never named it.
+    let classified: Vec<(usize, bool)> = survivors
+        .par_iter()
+        .map(|(index, masters)| {
+            let mut master_ids = Vec::with_capacity(masters.len());
+            for name in masters {
+                match by_name
+                    .get(&name.to_ascii_lowercase())
+                    .and_then(|resolved| prefetched.get(resolved))
+                {
+                    Some(Some(ids)) => master_ids.push(ids),
+                    _ => return (*index, false),
+                }
+            }
+            (*index, grass_gates(&paths[*index], &master_ids).unwrap_or(false))
+        })
+        .collect();
+    for (index, verdict) in classified {
+        verdicts[index] = verdict;
+    }
+
+    verdicts
+}
+
+/// Gate 0: whether `path` carries few enough records outside `TES3`/`STAT`/`CELL` to be groundcover.
+///
+/// Returns as soon as the tolerance is exceeded, which for a content mod is within a few kilobytes.
+fn within_foreign_record_tolerance(path: &Path) -> Result<bool> {
+    let mut walk = RecordWalk::open(path)?;
+    let mut foreign = 0usize;
+    while let Some(frame) = walk.next_frame()? {
+        if !matches!(&frame.tag, b"TES3" | b"STAT" | b"CELL") {
+            foreign += 1;
+            if foreign > GRASS_PLUGIN_FOREIGN_RECORD_TOLERANCE {
+                return Ok(false);
+            }
+        }
+        walk.skip_body(&frame)?;
+    }
+    Ok(true)
+}
+
+/// The master filenames a plugin declares, read from its `TES3` record alone.
+///
+/// `None` means the record is missing or malformed, which makes the plugin unloadable.
+fn declared_masters(path: &Path) -> Option<Vec<String>> {
+    let header = Header::from_path(path).ok()?;
+    Some(header.masters.into_iter().map(|(name, _)| name).collect())
+}
+
+/// Indexes the data directories by lowercased filename, for resolving bare master names.
+///
+/// `data_dirs` is lowest priority first, so the last directory holding a name wins, matching
+/// `scan_universe` and bare-name VFS lookup. Enumerating rather than probing `dir.join(name)`
+/// avoids depending on the platform's filename case rules.
+fn index_data_dirs(data_dirs: &[PathBuf]) -> HashMap<String, PathBuf> {
+    let mut by_name = HashMap::new();
+    for dir in data_dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().map(|name| name.to_string_lossy().to_ascii_lowercase()) else {
+                continue;
+            };
+            by_name.insert(name, path);
+        }
+    }
+    by_name
+}
+
+/// The grass static ids a master defines, streaming its `STAT` records.
+///
+/// Not `Plugin::load_path_filtered`: that reads the file whole and retains every decoded record,
+/// which on a 227 MB master is ~80 MB of avoidable peak, and it stops framing silently on damage.
+fn master_grass_ids(path: &Path) -> Result<HashSet<UString>> {
+    let mut walk = RecordWalk::open(path)?;
+    let mut ids = HashSet::new();
+    while let Some(frame) = walk.next_frame()? {
+        if &frame.tag != b"STAT" {
+            walk.skip_body(&frame)?;
+            continue;
+        }
+        let bytes = walk.read_record(&frame)?;
+        let Ok(TES3Object::Static(object)) = Reader::new(&bytes).load::<TES3Object>() else {
+            bail!("Failed to parse static in grass plugin master {}", path.display());
+        };
+        if is_grass_mesh(&object.mesh) {
+            ids.insert(UString::new(object.id));
+        }
+    }
+    Ok(ids)
+}
+
+/// Gates A and B over one Gate 0 survivor, given the grass ids of the masters it declares.
+///
+/// Only `STAT` and `CELL` are decoded, one record at a time. A cell's on-disk references expand
+/// several-fold once materialized, and this runs across a whole install in parallel, so holding a
+/// whole decoded plugin per worker is what exhausted memory on a large install.
+///
+/// Gate B stops at the first reference past the threshold, so damage later in the file does not
+/// prevent a verdict.
+fn grass_gates(path: &Path, master_grass_ids: &[&HashSet<UString>]) -> Result<bool> {
     let Ok(bytes) = std::fs::read(path) else {
         bail!("Failed to read grass plugin {}", path.display());
     };
     let (stat_ranges, cell_ranges) = grass_record_ranges(&bytes);
 
-    // Gate A: the plugin must define grass statics at all. Statics are small, and the set is the
-    // only thing that outlives this loop.
+    // Gate A: a grass static must be available, from the plugin itself or from its masters.
     let mut grass_object_ids: HashSet<UString> = HashSet::new();
     for range in stat_ranges {
         let Ok(TES3Object::Static(object)) = Reader::new(&bytes[range]).load::<TES3Object>() else {
             bail!("Failed to parse grass plugin {}", path.display());
         };
-        if normalize(&object.mesh).starts_with("grass\\") {
+        if is_grass_mesh(&object.mesh) {
             grass_object_ids.insert(UString::new(object.id));
         }
+    }
+    for ids in master_grass_ids {
+        grass_object_ids.extend(ids.iter().cloned());
     }
     if grass_object_ids.is_empty() {
         return Ok(false);
     }
 
-    // Gate B: it must place them in bulk. Each cell is dropped before the next is decoded, so peak
-    // cost is the file plus one cell rather than the whole decoded plugin.
+    // Gate B: bulk placement. Each cell is dropped before the next is decoded, bounding peak at
+    // the file plus one cell.
     //
-    // Deliberately coarser than `load_grass_plugins`, which resolves master-addressed and deleted
-    // references across the whole grass list. This sees one file with no list context, so it counts
-    // only unambiguous new placements. That is enough to tell groundcover apart from an ordinary mod.
+    // `mast_index` is not consulted: it names the source of the reference, not of the base object's
+    // definition, so filtering on it would drop the overrides and moved placements groundcover
+    // legitimately carries. Without list context, `deleted` is the only reference state available.
     let mut count: u64 = 0;
     for range in cell_ranges {
         let Ok(TES3Object::Cell(cell)) = Reader::new(&bytes[range]).load::<TES3Object>() else {
@@ -73,8 +244,8 @@ pub fn is_grass_plugin(path: &Path) -> Result<bool> {
         if cell.is_interior() {
             continue;
         }
-        for ((mast_index, _), reference) in &cell.references {
-            if *mast_index != 0 || reference.deleted.is_some() {
+        for reference in cell.references.values() {
+            if reference.deleted.is_some() {
                 continue;
             }
             if grass_object_ids.contains(reference.id.as_uncased()) {
@@ -87,6 +258,90 @@ pub fn is_grass_plugin(path: &Path) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+/// Whether a mesh path is under the conventional `grass\` directory.
+fn is_grass_mesh(mesh: &str) -> bool {
+    normalize(mesh).starts_with("grass\\")
+}
+
+/// One record's framing, with its [`RecordWalk`] positioned at the start of its body.
+struct RecordFrame {
+    tag: [u8; 4],
+    /// The `(tag, len)` prefix as read, so the record can be reassembled for decoding.
+    prefix: [u8; 8],
+    /// Bytes following the prefix: the declared length plus 8.
+    body_len: u64,
+}
+
+/// Streaming walk over a plugin's top-level record framing.
+///
+/// [`record_headers`] needs the whole file in memory; this reads only what it uses, which is what
+/// lets Gate 0 reject a plugin after one buffer fill.
+///
+/// The offset is tracked here and every declared extent checked against the file length, because
+/// `File::seek` past the end succeeds silently where `Reader::skip` refuses. Without that a
+/// truncated final record reads as a clean end of file.
+struct RecordWalk {
+    reader: BufReader<File>,
+    /// Offset of the next record's prefix.
+    offset: u64,
+    length: u64,
+}
+
+impl RecordWalk {
+    fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path).with_context(|| format!("Failed to open plugin {}", path.display()))?;
+        let length = file
+            .metadata()
+            .with_context(|| format!("Failed to stat plugin {}", path.display()))?
+            .len();
+        Ok(Self {
+            reader: BufReader::with_capacity(RECORD_WALK_BUFFER, file),
+            offset: 0,
+            length,
+        })
+    }
+
+    /// Reads the next record's framing, or `None` at a clean end of file.
+    fn next_frame(&mut self) -> Result<Option<RecordFrame>> {
+        if self.offset == self.length {
+            return Ok(None);
+        }
+        ensure!(self.length - self.offset >= 8, "Truncated record header");
+        let mut prefix = [0u8; 8];
+        self.reader.read_exact(&mut prefix)?;
+
+        let tag = [prefix[0], prefix[1], prefix[2], prefix[3]];
+        // Every top-level record is an 8-byte `(tag, len)` prefix followed by a further `len + 8`.
+        let body_len = u64::from(u32::from_le_bytes([prefix[4], prefix[5], prefix[6], prefix[7]])) + 8;
+        let end = self
+            .offset
+            .checked_add(body_len + 8)
+            .context("Record extent overflows the file offset")?;
+        ensure!(end <= self.length, "Record extent runs past end of file");
+        self.offset = end;
+
+        Ok(Some(RecordFrame { tag, prefix, body_len }))
+    }
+
+    fn skip_body(&mut self, frame: &RecordFrame) -> Result<()> {
+        let body_len = i64::try_from(frame.body_len).context("Record body too large to skip")?;
+        self.reader.seek_relative(body_len)?;
+        Ok(())
+    }
+
+    /// Reads the current record whole, prefix included, ready to decode.
+    ///
+    /// [`Self::next_frame`] has already checked the declared extent against the file length, so the
+    /// allocation is bounded by the file size.
+    fn read_record(&mut self, frame: &RecordFrame) -> Result<Vec<u8>> {
+        let body_len = usize::try_from(frame.body_len).context("Record body too large to read")?;
+        let mut bytes = vec![0u8; body_len + 8];
+        bytes[..8].copy_from_slice(&frame.prefix);
+        self.reader.read_exact(&mut bytes[8..])?;
+        Ok(bytes)
+    }
 }
 
 /// Walks a plugin's record framing, yielding each record's tag and full extent without decoding it.
@@ -124,18 +379,6 @@ fn grass_record_ranges(bytes: &[u8]) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
     }
 
     (stat_ranges, cell_ranges)
-}
-
-/// Classifies a whole plugin list in parallel, one `bool` per input path.
-///
-/// This is [`is_grass_plugin`] applied across a list, and it lives here rather than in the caller so
-/// that the parallelism stays next to the parser it exists for: the cost is dominated by reading and
-/// decoding each file, and a GUI scanning an install cannot afford to do that serially.
-///
-/// A plugin that cannot be read or parsed classifies as `false`. The result drives a suggestion, so
-/// there is nothing for a caller to do with a per-file error that it would not do with a `false`.
-pub fn classify_grass_plugins(paths: &[PathBuf]) -> Vec<bool> {
-    paths.par_iter().map(|path| is_grass_plugin(path).unwrap_or(false)).collect()
 }
 
 pub(crate) struct GrassPluginLoad<'a> {

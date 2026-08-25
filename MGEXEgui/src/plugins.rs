@@ -214,6 +214,13 @@ impl PluginUniverse {
         self.entries.iter().map(|entry| entry.full_path.clone()).collect()
     }
 
+    /// The layered data directories, lowest priority first.
+    ///
+    /// The groundcover scan resolves a plugin's declared masters against these.
+    pub(crate) fn data_dirs(&self) -> Vec<PathBuf> {
+        all_data_dirs(&self.root, &self.extra_dirs)
+    }
+
     pub(crate) fn enabled_count(&self) -> usize {
         self.entries.iter().filter(|entry| entry.enabled).count()
     }

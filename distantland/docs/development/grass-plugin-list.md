@@ -47,13 +47,35 @@ grouping.
 
 ## Classification helpers
 
-`is_grass_plugin` answers a single path with a bool; `classify_grass_plugins` is the same answer
-across a list, rayon-parallel, with unreadable files classified `false`. Both decode only `STAT`
-and `CELL`, the same record set OpenMW accepts from a groundcover file, and require both a
-grass-prefixed `STAT` and more than 50 new exterior placements of one. A plugin defining no grass
-static is rejected before any `CELL` is decoded. The heuristic is path-only, recognizing the
-conventional `grass\` mesh prefix; generation remains authoritative because it additionally applies
-VFS resolution and normal static overrides.
+`classify_grass_plugins(paths, data_dirs)` answers a list of paths positionally;
+`is_grass_plugin(path, data_dirs)` defers to it for one. Unreadable files classify `false`.
+`data_dirs` is the layered list, lowest priority first, and it resolves each plugin's declared
+masters — so a verdict is only valid for the directory set it was produced under, which is why the
+GUI rescans rather than reusing cached verdicts when that list changes.
+
+Three gates:
+
+- **Gate 0** walks record framing without decoding and rejects a plugin carrying more than 100
+  records outside `TES3`/`STAT`/`CELL`. It streams from byte 0 and bails early, so a landmass mod
+  costs about one buffer fill rather than its whole length.
+- **Gate A** requires a grass-prefixed `STAT` to be available: defined locally, or by one of the
+  plugin's masters. Groundcover written against a landmass mod commonly defines none of its own
+  (`Sky_Main_Grass.esp` has no `STAT` records at all).
+- **Gate B** requires more than 50 surviving exterior placements of one. `mast_index` is not
+  consulted; only `deleted` references are skipped.
+
+Between A and B, each distinct master's grass ids are built once, streaming, sequentially. A
+missing, unreadable, or malformed master makes only the plugins that declare it `false` —
+unresolvable is not the same as "defines no grass" — and does not disturb the rest of the batch.
+
+Two known imprecisions, both biased toward false positives, which are cheap here: Gate A's union
+does not apply override resolution, so a later non-grass `STAT` sharing an id with a master's grass
+`STAT` does not shadow it; and Gate 0's threshold is sampled from a 22-plugin corpus, not derived,
+so a grass/terrain hybrid or a badly CS-dirtied grass plugin can be rejected. The hybrid case is an
+accepted exclusion.
+
+The heuristic is path-only, recognizing the conventional `grass\` mesh prefix; generation remains
+authoritative because it additionally applies VFS resolution and normal static overrides.
 
 ## Requirements on the configuring GUI
 
