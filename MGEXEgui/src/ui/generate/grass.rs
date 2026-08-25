@@ -168,7 +168,9 @@ fn command_column(ui: &mut Ui, generator: &mut GeneratorState, size: Vec2) {
             })
             .inner;
         if rescan {
-            generator.grass_scan.rescan(generator.universe.plugin_paths());
+            generator
+                .grass_scan
+                .rescan(generator.universe.plugin_paths(), generator.universe.data_dirs());
         }
         if ui.add_sized(button, Button::new(t!("common.actions.clear_all"))).clicked() {
             for entry in &mut generator.universe.entries {

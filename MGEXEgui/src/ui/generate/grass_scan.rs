@@ -3,6 +3,9 @@
 //! Runs on a worker thread (too slow for a frame) and caches by file mtime +
 //! length so re-scanning re-classifies only what actually changed. Both the
 //! Grass and Plugins tabs consume the result.
+//!
+//! A verdict also depends on the plugin's masters and on the data-directory
+//! list that resolves them, neither of which the stamp covers.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,11 +31,13 @@ pub(crate) struct GrassScan {
 impl GrassScan {
     /// Classifies every path not already covered by an up-to-date cache entry.
     ///
+    /// `data_dirs` is the layered data-directory list, lowest priority first.
+    ///
     /// A scan already in flight is abandoned rather than joined: its results
     /// would describe the previous directory set, and the paths that survive the
     /// change are re-submitted here anyway. Dropping the receiver lets the old
     /// worker finish into a closed channel and exit.
-    pub(crate) fn start(&mut self, paths: Vec<PathBuf>) {
+    pub(crate) fn start(&mut self, paths: Vec<PathBuf>, data_dirs: Vec<PathBuf>) {
         let stale: Vec<(PathBuf, FileStamp)> = paths
             .into_iter()
             .filter_map(|path| {
@@ -52,7 +57,7 @@ impl GrassScan {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let paths: Vec<PathBuf> = stale.iter().map(|(path, _)| path.clone()).collect();
-            let verdicts = classify_grass_plugins(&paths);
+            let verdicts = classify_grass_plugins(&paths, &data_dirs);
             let classified = stale
                 .into_iter()
                 .zip(verdicts)
@@ -93,10 +98,12 @@ impl GrassScan {
     ///
     /// The cache stamp catches a plugin that was rebuilt, but not one whose mod
     /// manager restored an identical mtime and length, and not a mistake in the
-    /// heuristic the user wants to retest. This is the manual escape hatch.
-    pub(crate) fn rescan(&mut self, paths: Vec<PathBuf>) {
+    /// heuristic the user wants to retest. It also cannot catch a master that
+    /// changed, or a precedence change that moved which file supplies one, so a
+    /// changed `data_dirs` must come through here rather than [`Self::start`].
+    pub(crate) fn rescan(&mut self, paths: Vec<PathBuf>, data_dirs: Vec<PathBuf>) {
         self.known.clear();
-        self.start(paths);
+        self.start(paths, data_dirs);
     }
 
     pub(crate) fn is_running(&self) -> bool {
