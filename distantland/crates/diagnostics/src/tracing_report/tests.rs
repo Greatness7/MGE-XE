@@ -74,6 +74,8 @@ fn stage_memory_round_trips_through_the_report_format() {
                 memory: Some(StageMemory {
                     private_bytes_at_end: 1_234,
                     peak_working_set_bytes_at_end: 5_678,
+                    private_bytes_at_start: 1_000,
+                    peak_working_set_bytes_at_start: 5_000,
                 }),
             },
             StageTiming {
