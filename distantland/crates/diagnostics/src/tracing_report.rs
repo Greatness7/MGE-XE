@@ -137,11 +137,7 @@ fn sample_process_memory() -> Option<ProcessMemorySample> {
         // The EX layout begins with the base counters and only extends it, so the API
         // fills this buffer in place; `cb` declares the extended length that makes
         // `PrivateUsage` valid on return. The pseudo-handle needs no release.
-        K32GetProcessMemoryInfo(
-            GetCurrentProcess(),
-            (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
-            cb,
-        )
+        K32GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast::<PROCESS_MEMORY_COUNTERS>(), cb)
     };
     (filled != 0).then_some(ProcessMemorySample {
         private_bytes: counters.PrivateUsage as u64,

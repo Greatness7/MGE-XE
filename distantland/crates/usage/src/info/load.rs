@@ -551,10 +551,7 @@ impl<'a> UsageInfo<'a> {
     /// it. `script_disabled` is still recorded on those objects, matching the pre-merge behaviour
     /// this replaces.
     pub(crate) fn classify_script_disables(&mut self) {
-        debug_assert!(
-            !self.released,
-            "script disable classification after post-fingerprint release"
-        );
+        debug_assert!(!self.released, "script disable classification after post-fingerprint release");
         self.script_disable.self_disabling_scripts = self.disable_scripts.len();
         self.script_disable.disable_targets_named = self.disable_targets.len();
         if self.disable_scripts.is_empty() && self.disable_targets.is_empty() {
