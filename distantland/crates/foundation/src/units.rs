@@ -9,7 +9,7 @@
 /// behavior must invalidate cached statics output. One knob rather than one per recipe: each
 /// extra knob is one more a human must remember to bump, the exact failure the knobs exist
 /// to prevent.
-pub const STATICS_RECIPE_VERSION: u32 = 3;
+pub const STATICS_RECIPE_VERSION: u32 = 4;
 
 /// Invalidation knob for every terrain-domain fingerprint recipe.
 ///

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Fixed distant land generation and loading for non-English interior cell names.
+
 ## v0.20.1 beta
 
 ### Fixed

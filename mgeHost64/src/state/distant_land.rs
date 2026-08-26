@@ -6,8 +6,8 @@ use tracing::trace;
 #[cfg(test)]
 use crate::abi::D3dxVector3;
 use crate::abi::{
-    D3dxVector4, DynVisFlag, RenderMesh, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND, VIS_NEAR, VIS_VERY_FAR,
-    ViewFrustum, VisibleSetSort,
+    CellName, D3dxVector4, DynVisFlag, EscapedName, RenderMesh, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND,
+    VIS_NEAR, VIS_VERY_FAR, ViewFrustum, VisibleSetSort,
 };
 use crate::config::Configuration;
 use crate::error::HostError;
@@ -67,7 +67,8 @@ pub struct DistantLandState {
     pub(crate) configuration: Configuration,
     pub dynamic_vis_groups: Vec<Vec<DynamicMeshRef>>,
     pub world_spaces: Vec<WorldSpace>,
-    pub world_space_indices: HashMap<String, usize>,
+    /// World spaces keyed by their undecoded engine name; see [`CellName`].
+    pub world_space_indices: HashMap<CellName, usize>,
     pub current_world_space: Option<usize>,
     pub land_quadtree: QuadTree,
     horizon: HorizonRuntime,
@@ -163,12 +164,15 @@ impl DistantLandState {
     /// Sets the world space used by subsequent visibility queries.
     ///
     /// Returns `true` when `name` matches a loaded world space.
-    pub fn set_current_world_space(&mut self, name: &str) -> bool {
+    pub fn set_current_world_space(&mut self, name: &[u8]) -> bool {
         if let Some(&world_space_index) = self.world_space_indices.get(name) {
             self.current_world_space = Some(world_space_index);
             true
         } else {
-            trace!("World space '{name}' was not found in the distant statics cache");
+            trace!(
+                "World space '{}' was not found in the distant statics cache",
+                EscapedName(name)
+            );
             self.current_world_space = None;
             false
         }
@@ -232,7 +236,7 @@ impl DistantLandState {
 
         // Terrain horizon data describes the exterior world space only. Interior world spaces may
         // share its coordinate range, but must never use its terrain horizon.
-        let horizon = if self.world_space_indices.get("").copied() == Some(world_space_index) {
+        let horizon = if self.world_space_indices.get(CellName::EXTERIOR.as_bytes()).copied() == Some(world_space_index) {
             view_sphere.and(self.horizon.table())
         } else {
             None

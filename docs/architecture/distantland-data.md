@@ -158,6 +158,13 @@ worldspace blocks, repeated:
 trailing metadata (GUI reads the last 4 bytes as the generated "near size" float)
 ```
 
+- Both `char[64]` fields hold the engine's own single-byte name bytes, not UTF-8: on a
+  localized install they are that install's codepage. They are NUL-padded when shorter and
+  carry no terminator when a name fills all 64 bytes, so readers must bound at the field
+  width and compare raw bytes — decoding them lossily merges distinct non-ASCII names. The
+  generator recovers the original bytes by encoding through WINDOWS-1252, which round-trips
+  because every high byte maps to a distinct codepoint; an embedded NUL or a name wider than
+  64 bytes is rejected rather than truncated.
 - The host consumes the placement blocks. It expands each record to a world transform
   (legacy D3DX rotation order), computes post-transform bounds against the registered
   static metadata, and inserts them into per-worldspace quadtrees (near/far/very-far/grass).

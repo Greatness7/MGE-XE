@@ -12,10 +12,10 @@ use tracing::{error, info, warn};
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 use crate::abi::{
-    BoundingBox, BoundingSphere, D3dxMatrix, D3dxVector2, D3dxVector3, DistantStatic, DistantSubset, MGE_DL_VERSION,
-    OcclusionFormatError, RenderMesh, STATIC_AUTO, STATIC_BUILDING, STATIC_FAR, STATIC_GRASS, STATIC_NEAR, STATIC_TREE,
-    STATIC_VERY_FAR, TERRAIN_FILE_NAME, TERRAIN_OCCLUSION_FILE_NAME, TerrainFileHeader, TerrainFileLayout, USE_DISTANT_LAND,
-    parse_terrain_file_layout, parse_terrain_occlusion,
+    BoundingBox, BoundingSphere, CellName, D3dxMatrix, D3dxVector2, D3dxVector3, DistantStatic, DistantSubset,
+    MGE_DL_VERSION, OcclusionFormatError, RenderMesh, STATIC_AUTO, STATIC_BUILDING, STATIC_FAR, STATIC_GRASS, STATIC_NEAR,
+    STATIC_TREE, STATIC_VERY_FAR, TERRAIN_FILE_NAME, TERRAIN_OCCLUSION_FILE_NAME, TerrainFileHeader, TerrainFileLayout,
+    USE_DISTANT_LAND, parse_terrain_file_layout, parse_terrain_occlusion,
 };
 use crate::error::HostError;
 use crate::ipc::shared_vec::SharedVec;
@@ -161,8 +161,8 @@ struct StaticsQtSummary {
 
 fn get_or_insert_world_space(
     world_spaces: &mut Vec<WorldSpace>,
-    world_space_indices: &mut HashMap<String, usize>,
-    name: String,
+    world_space_indices: &mut HashMap<CellName, usize>,
+    name: CellName,
 ) -> usize {
     if let Some(&index) = world_space_indices.get(&name) {
         return index;
@@ -317,14 +317,13 @@ impl DistantLandState {
             }
 
             let world_name = if world_index == 0 {
-                let world_name = String::new();
-                let _ = get_or_insert_world_space(world_spaces, world_space_indices, world_name.clone());
+                let _ = get_or_insert_world_space(world_spaces, world_space_indices, CellName::EXTERIOR);
                 worldspace_count += 1;
                 if used_count == 0 {
                     world_index += 1;
                     continue;
                 }
-                world_name
+                CellName::EXTERIOR
             } else {
                 let mut cellname = [0_u8; 64];
                 let name_start = Instant::now();
@@ -333,7 +332,7 @@ impl DistantLandState {
                 usage_bytes_read += cellname.len();
                 worldspace_count += 1;
                 interior_worldspace_count += 1;
-                crate::abi::c_string_from_fixed(&cellname).into_owned()
+                CellName::from_bytes(crate::abi::bytes_from_fixed(&cellname))
             };
 
             let mut world_statics = Vec::with_capacity(used_count as usize);
@@ -555,7 +554,7 @@ impl DistantLandState {
         // Terrain visibility queries still require a selected world space. Establish the
         // exterior here so the client may deliberately omit InitDistantStatics while keeping
         // landscape rendering available; a later statics init rebuilds the world-space map.
-        let _ = get_or_insert_world_space(&mut self.world_spaces, &mut self.world_space_indices, String::new());
+        let _ = get_or_insert_world_space(&mut self.world_spaces, &mut self.world_space_indices, CellName::EXTERIOR);
         log_timing("landscape.host64_total", elapsed_ms(total_start));
         Ok(())
     }

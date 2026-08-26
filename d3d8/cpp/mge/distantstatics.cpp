@@ -1064,9 +1064,11 @@ bool DistantLand::loadVisGroupsClient(HANDLE h) {
             dvg.enabled = true;
             dvg.gameObject = nullptr;
 
+            // The 64-byte field is only NUL-terminated when the name is shorter than
+            // the field, so bound the assignment instead of reading past the buffer.
             char id[64];
             visReader.read(&id, sizeof(id));
-            dvg.id = id;
+            dvg.id.assign(id, std::find(std::begin(id), std::end(id), '\0'));
 
             uint8_t rangeCount;
             visReader.read(&rangeCount, sizeof(rangeCount));
