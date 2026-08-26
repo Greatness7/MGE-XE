@@ -151,10 +151,13 @@ clip cube through `inverseCameraProj` and the cascade view-projection, divides b
 the twelve edges to the light far plane (the near side is clamped in the vertex shader, not
 clipped, so it is left alone), offsets every point by the four corners of a
 `shadowStencilMarginTexels` (8) square, and takes the convex hull. That is the Minkowski sum
-of the silhouette and the square, so the mask extends exactly 8 texels past the frustum on
-every side, at vertices as well as along edges. The hull is drawn once as a fan through
-`DrawPrimitiveUP` with `world` and `shadowViewProj[0]` both identity; a degenerate hull
-(non-positive w) falls back to masking the whole cascade. The pass writes no colour
+of the silhouette and the square: an exact 8-texel square dilation, so at least 8 texels of
+outward coverage in every direction (up to 11.3 on the diagonals), at vertices as well as
+along edges. The square is the right structuring element for a separable blur. The hull is
+drawn once as a fan through `DrawPrimitiveUP` with `world` and `shadowViewProj[0]` both
+identity. A singular camera projection, a non-positive or non-finite w, or any non-finite
+point falls back to masking the whole cascade, which keeps NaN out of the hull sort and is
+only slower. The pass writes no colour
 (`ColorWriteEnable = 0`), disables z, and sets stencil to `replace` with `StencilRef = 1`.
 Both caster passes then run `StencilFunc = notequal, StencilRef = 0`, so they only touch
 texels the camera could actually see.

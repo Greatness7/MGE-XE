@@ -47,19 +47,24 @@ size_t convexHull(D3DXVECTOR2* pts, size_t n, D3DXVECTOR2* hull) {
 }
 
 // The camera frustum's silhouette in light clip space, clipped to the light far plane and
-// dilated by an exact margin on every side. A Minkowski sum with the margin square, as a
-// union of translated copies leaves sharp silhouette vertices with no margin at all.
-// Returns the fan vertex count, 0 if the transform is degenerate.
+// dilated by the margin square, so at least the margin outward in every direction. A
+// Minkowski sum, as a union of translated copies leaves sharp silhouette vertices with no
+// margin at all. Returns the fan vertex count, 0 if the transform is degenerate. Every
+// value is checked finite before it can reach std::sort, whose comparator is undefined
+// on NaN.
 size_t buildStencilHull(const D3DXMATRIX& clipToLight, float margin, D3DXVECTOR3* fan) {
     // Frustum corners, camera clip space to light post-projective space
     D3DXVECTOR3 corner[8];
     for (int i = 0; i < 8; ++i) {
         D3DXVECTOR4 p((i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, (i & 4) ? 1.0f : 0.0f, 1.0f);
         D3DXVec4Transform(&p, &p, &clipToLight);
-        if (p.w <= 0) {
+        if (!std::isfinite(p.w) || p.w <= 0.0f) {
             return 0;
         }
         corner[i] = D3DXVECTOR3(p.x / p.w, p.y / p.w, p.z / p.w);
+        if (!std::isfinite(corner[i].x) || !std::isfinite(corner[i].y) || !std::isfinite(corner[i].z)) {
+            return 0;
+        }
     }
 
     // Clip to the light far plane. The vertex shader clamps the near side instead of
@@ -94,6 +99,11 @@ size_t buildStencilHull(const D3DXMATRIX& clipToLight, float margin, D3DXVECTOR3
     }
     if (n < 3) {
         return 0;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(pts[i].x) || !std::isfinite(pts[i].y)) {
+            return 0;
+        }
     }
 
     const size_t count = convexHull(pts, n, hull);
@@ -133,15 +143,16 @@ void DistantLand::renderShadowMap() {
     effectShadow->EndPass();
 
     // Calculate transform to map view frustum into world space
+    // Null when the camera projection is singular, which masks the whole cascade instead
     D3DXMATRIX inverseCameraProj, cameraViewProj;
     D3DXMatrixMultiply(&cameraViewProj, &mwView, &mwProj);
-    D3DXMatrixInverse(&inverseCameraProj, NULL, &cameraViewProj);
+    const D3DXMATRIX* frustumToWorld = D3DXMatrixInverse(&inverseCameraProj, NULL, &cameraViewProj) ? &inverseCameraProj : nullptr;
 
     // Render near layer (changes viewport)
-    renderShadowLayer(0, shadowNearRadius, &inverseCameraProj);
+    renderShadowLayer(0, shadowNearRadius, frustumToWorld);
 
     // Render far layer (changes viewport)
-    renderShadowLayer(1, shadowFarRadius, &inverseCameraProj);
+    renderShadowLayer(1, shadowFarRadius, frustumToWorld);
 
     // Reset viewport
     device->SetViewport(&vp);
@@ -178,10 +189,14 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const 
     // Render view frustum to stencil, which limits rendering to visible texels
     // Dilated so receivers at the frustum edge do not blur into the cleared atlas.
     // The hull is already in light clip space, so both transforms are identity here.
-    // A degenerate hull falls back to masking the whole cascade, which is only slower.
+    // A missing inverse or degenerate hull falls back to masking the whole cascade, which
+    // is only slower.
     D3DXVECTOR3 fan[80];
-    const D3DXMATRIX clipToLight = (*inverseCameraProj) * (*viewproj);
-    const size_t fanCount = buildStencilHull(clipToLight, shadowStencilMarginTexels * 2.0f / res, fan);
+    size_t fanCount = 0;
+    if (inverseCameraProj) {
+        const D3DXMATRIX clipToLight = (*inverseCameraProj) * (*viewproj);
+        fanCount = buildStencilHull(clipToLight, shadowStencilMarginTexels * 2.0f / res, fan);
+    }
 
     D3DXMATRIX identity;
     D3DXMatrixIdentity(&identity);
