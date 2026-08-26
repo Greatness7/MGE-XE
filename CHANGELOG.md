@@ -11,6 +11,7 @@
 - The configuration utility no longer needs administrator rights to save display settings, and now
   shows the same resolution the game and the Morrowind launcher use.
 - The configuration utility now detects groundcover mods that use grass only defined in master files.
+- Fixed sun shadow flickering at the bottom screen corners and at the cascade intersection.
 
 ## v0.20.0 beta, G7 fork
 

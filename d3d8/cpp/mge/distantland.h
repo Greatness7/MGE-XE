@@ -200,7 +200,7 @@ public:
 
     static IDirect3DTexture9* texShadow, *texSoftShadow;
     static IDirect3DSurface9* surfShadowZ;
-    static IDirect3DVertexBuffer9* vbFullFrame, *vbClipCube;
+    static IDirect3DVertexBuffer9* vbFullFrame;
 
     // Must match shadowCascades in "XE Mod Shadow Data.fx". That file is user-replaceable
     // through shaders/core-mods, so a stale copy silently disagrees with this value.
@@ -363,7 +363,7 @@ public:
     static bool projectionIsCanonical(const D3DXMATRIX& projection);
 
     static void renderShadowMap();
-    static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
+    static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
     static void renderShadowLayer(int layer, float radius, const D3DXMATRIX* inverseCameraProj);
     static void renderShadow();
     static void renderShadowDebug();
