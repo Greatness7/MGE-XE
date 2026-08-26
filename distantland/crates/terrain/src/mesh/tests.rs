@@ -8,12 +8,35 @@ fn make_heights(fill: f32) -> Box<[[f32; 65]; 65]> {
     Box::new([[fill; 65]; 65])
 }
 
+fn encode_normal(normal: Vec3) -> [i8; 3] {
+    normal.to_array().map(|component| component.round() as i8)
+}
+
+fn encode_color(color: Vec4) -> [u8; 3] {
+    let [r, g, b, _] = color.to_array();
+    [r, g, b].map(|component| (component * 255.0).round() as u8)
+}
+
+fn encoded_normals_mut<'a>(cell: &'a mut crate::texture::TerrainCell<'_>) -> &'a mut [[i8; 3]] {
+    let crate::texture::TerrainNormals::Encoded(normals) = &mut cell.normals else {
+        unreachable!();
+    };
+    normals.as_flattened_mut()
+}
+
+fn encoded_colors_mut<'a>(cell: &'a mut crate::texture::TerrainCell<'_>) -> &'a mut [[u8; 3]] {
+    let crate::texture::TerrainColors::Encoded(colors) = &mut cell.colors else {
+        unreachable!();
+    };
+    colors.as_flattened_mut()
+}
+
 fn make_cell(grid: (i32, i32), normal: Vec3, color: Vec4) -> crate::texture::TerrainCell<'static> {
     crate::texture::TerrainCell {
         grid,
         heights: make_heights(0.0),
-        normals: vec![normal; 65 * 65],
-        colors: vec![color; 65 * 65],
+        normals: crate::texture::TerrainNormals::Encoded(Box::new([[encode_normal(normal); 65]; 65])),
+        colors: crate::texture::TerrainColors::Encoded(Box::new([[encode_color(color); 65]; 65])),
         texture_indices: Box::new([[0; 16]; 16]),
         texture_table: Arc::new(IndexMap::default()),
     }
@@ -152,10 +175,11 @@ fn smoothed_simplifier_normals_blend_across_cell_borders() {
 #[test]
 fn smoothed_simplifier_normals_missing_neighbors_use_origin_clamped_samples() {
     let mut cell = make_cell((0, 0), Vec3::X, Vec4::ONE);
-    cell.normals[0] = Vec3::X;
-    cell.normals[1] = Vec3::Y;
-    cell.normals[65] = Vec3::Z;
-    cell.normals[66] = Vec3::NEG_X;
+    let normals = encoded_normals_mut(&mut cell);
+    normals[0] = encode_normal(Vec3::X);
+    normals[1] = encode_normal(Vec3::Y);
+    normals[65] = encode_normal(Vec3::Z);
+    normals[66] = encode_normal(Vec3::NEG_X);
 
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();
     terrain_cells.insert((0, 0), cell);
@@ -403,7 +427,7 @@ fn mixed_default_and_nondefault_chunk_takes_normal_path() {
 
     let mut nondefault = make_cell((2, 2), Vec3::Z, default_color());
     nondefault.heights = make_heights(0.0);
-    nondefault.colors[7] = Vec4::new(0.5, 1.0, 1.0, 0.0);
+    encoded_colors_mut(&mut nondefault)[7] = encode_color(Vec4::new(0.5, 1.0, 1.0, 0.0));
     terrain_cells.insert((2, 2), nondefault);
     let default_cells = collect_default_cells(&terrain_cells);
 
@@ -481,9 +505,9 @@ fn seam_sampling_uses_position_owned_cell_so_position_only_dedup_stays_valid() {
     // west cell (0, 0) at local 64. This is the floor-ownership rule that keeps position-only
     // vertex dedup across chunk seams valid.
     let mut left = make_cell((0, 0), Vec3::X, Vec4::ONE);
-    left.normals.fill(Vec3::X);
+    encoded_normals_mut(&mut left).fill(encode_normal(Vec3::X));
     let mut right = make_cell((1, 0), Vec3::Y, Vec4::ONE);
-    right.normals.fill(Vec3::Y);
+    encoded_normals_mut(&mut right).fill(encode_normal(Vec3::Y));
 
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();
     terrain_cells.insert((0, 0), left);
@@ -505,8 +529,8 @@ fn seam_sampling_uses_position_owned_cell_so_position_only_dedup_stays_valid() {
 #[test]
 fn sampled_normal_and_color_pack_into_terrain_vertex_layout() {
     let mut cell = make_cell((0, 0), Vec3::Z, Vec4::new(0.25, 0.5, 0.75, 0.0));
-    cell.colors.fill(Vec4::new(0.25, 0.5, 0.75, 0.0));
-    cell.normals.fill(Vec3::Z);
+    encoded_colors_mut(&mut cell).fill(encode_color(Vec4::new(0.25, 0.5, 0.75, 0.0)));
+    encoded_normals_mut(&mut cell).fill(encode_normal(Vec3::Z));
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();
     terrain_cells.insert((0, 0), cell);
 
@@ -628,17 +652,16 @@ fn adjacent_dense_chunks_share_bit_identical_edge_attributes() {
 }
 
 #[test]
-fn dense_vertex_reads_grid_samples_directly() {
-    // A single populated cell with a distinct value at one interior grid vertex. The
-    // dense builder must read that vertex straight from the grids: the exact stored
-    // height, the raw normal WITHOUT re-normalizing (the stored vector is deliberately
-    // non-unit), the smoothed normal likewise un-renormalized, and the color clamped
-    // with alpha forced to 1.
+fn dense_vertex_decodes_grid_samples_directly() {
+    // A single populated cell with a distinct raw payload at one interior grid
+    // vertex. The dense builder must read that exact grid entry, decode its normal
+    // and color with TES3 semantics, and leave the already-built smoothed field
+    // unnormalized while forcing output color alpha to 1.
     let index = 5 * 65 + 3;
     let mut cell = make_cell((0, 0), Vec3::new(9.0, 9.0, 9.0), Vec4::new(0.1, 0.1, 0.1, 0.0));
     cell.heights[5][3] = 123.0;
-    cell.normals[index] = Vec3::new(2.0, 0.0, 0.0);
-    cell.colors[index] = Vec4::new(0.25, 0.5, 0.75, 0.0);
+    encoded_normals_mut(&mut cell)[index] = [2, 0, 0];
+    encoded_colors_mut(&mut cell)[index] = [64, 128, 191];
 
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();
     terrain_cells.insert((0, 0), cell);
@@ -652,9 +675,9 @@ fn dense_vertex_reads_grid_samples_directly() {
     let vertex = dense_vertex(&vertices, dense_vertices_per_edge(1), 3, 5);
 
     assert_eq!(vertex.position[2], 123.0);
-    assert_eq!(vertex.raw_normal, Vec3::new(2.0, 0.0, 0.0));
+    assert_eq!(vertex.raw_normal, Vec3::X);
     assert_eq!(vertex.smoothed_normal, Vec3::new(0.0, 3.0, 0.0));
-    assert_eq!(vertex.color, [0.25, 0.5, 0.75, 1.0]);
+    assert_eq!(vertex.color, [64.0 / 255.0, 128.0 / 255.0, 191.0 / 255.0, 1.0]);
 }
 
 #[test]
@@ -663,8 +686,8 @@ fn dense_chunk_missing_north_east_neighbor_uses_fallbacks() {
     // north/east seam addresses the absent (1, 0)/(0, 1) cells and must fall back to
     // the documented deep-water height and default normal/color.
     let mut cell = make_cell((0, 0), Vec3::X, Vec4::new(0.2, 0.4, 0.6, 0.0));
-    cell.normals.fill(Vec3::X);
-    cell.colors.fill(Vec4::new(0.2, 0.4, 0.6, 0.0));
+    encoded_normals_mut(&mut cell).fill(encode_normal(Vec3::X));
+    encoded_colors_mut(&mut cell).fill(encode_color(Vec4::new(0.2, 0.4, 0.6, 0.0)));
     cell.heights = make_heights(50.0);
 
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();
@@ -695,7 +718,7 @@ fn dense_chunk_negative_region_minima_read_correct_cells() {
     // correct absolute cell for interior vertices and roll to the (absent) next cell
     // at the seam, all under signed arithmetic.
     let mut cell = make_cell((-2, -1), Vec3::Y, Vec4::ONE);
-    cell.normals.fill(Vec3::Y);
+    encoded_normals_mut(&mut cell).fill(encode_normal(Vec3::Y));
     cell.heights = make_heights(7.0);
 
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();
@@ -721,7 +744,7 @@ fn dense_chunk_beyond_region_max_uses_fallbacks() {
     // partial-final-chunk case). Vertices inside the populated cell read real data;
     // vertices in the unpopulated cells past the region extent fall back.
     let mut cell = make_cell((0, 0), Vec3::X, Vec4::ONE);
-    cell.normals.fill(Vec3::X);
+    encoded_normals_mut(&mut cell).fill(encode_normal(Vec3::X));
     cell.heights = make_heights(11.0);
 
     let mut terrain_cells: crate::texture::TerrainCells<'static> = Default::default();

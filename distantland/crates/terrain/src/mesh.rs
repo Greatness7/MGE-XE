@@ -218,14 +218,14 @@ fn build_smoothed_simplifier_normals<'a>(
         .par_iter()
         .filter_map(|&grid| {
             let cell = terrain_cells.get(&grid)?;
-            let origin_normals = cell.normals.as_slice();
-            let neighbor_normals: [[Option<&[Vec3]>; 3]; 3] = std::array::from_fn(|neighbor_y| {
+            let origin_normals = &cell.normals;
+            let neighbor_normals: [[Option<&crate::texture::TerrainNormals>; 3]; 3] = std::array::from_fn(|neighbor_y| {
                 std::array::from_fn(|neighbor_x| {
                     let neighbor_grid = (grid.0 + neighbor_x as i32 - 1, grid.1 + neighbor_y as i32 - 1);
                     if neighbor_grid == grid {
                         Some(origin_normals)
                     } else {
-                        terrain_cells.get(&neighbor_grid).map(|cell| cell.normals.as_slice())
+                        terrain_cells.get(&neighbor_grid).map(|cell| &cell.normals)
                     }
                 })
             });
@@ -246,16 +246,16 @@ fn build_smoothed_simplifier_normals<'a>(
                 };
 
                 let sample = if let Some(normals) = neighbor_normals[neighbor_y][neighbor_x] {
-                    normals[local_y * 65 + local_x]
+                    normals.get(local_y * 65 + local_x)
                 } else {
                     let clamped_x = vertex_x.clamp(0, 64) as usize;
                     let clamped_y = vertex_y.clamp(0, 64) as usize;
-                    origin_normals[clamped_y * 65 + clamped_x]
+                    origin_normals.get(clamped_y * 65 + clamped_x)
                 };
                 sample.normalize_or(DEFAULT_FALLBACK_NORMAL)
             };
 
-            let mut field = Vec::with_capacity(cell.normals.len());
+            let mut field = Vec::with_capacity(65 * 65);
             for y in 0..65 {
                 for x in 0..65 {
                     let mut accumulated = Vec3::ZERO;
@@ -286,9 +286,10 @@ fn build_smoothed_simplifier_normals<'a>(
 /// [`LAND_STEPS_PER_CELL`]) belongs to the north/east cell at local `0`, never local
 /// `64` of the south/west cell, and it stays correct for negative region minima and
 /// for the final partial chunk whose grid extends past `region.max`. Because the
-/// coordinate is exact, the height, raw normal, and color are read straight from the
-/// cell's grids (`colors` are still clamped with alpha forced to `1`), and the raw and
-/// smoothed normals are already unit-length where they are built, so they are not re-normalized.
+/// coordinate is exact, the height, decoded normal, and color are read straight from
+/// the cell's grids (`colors` are still clamped with alpha forced to `1`), and the
+/// raw and smoothed normals are already unit-length where they are built, so they are
+/// not re-normalized.
 fn build_dense_mesh_chunk_vertices_into<'a>(
     terrain_cells: &TerrainCells<'a>,
     smoothed_normals: &HashMap<(i32, i32), Vec<Vec3>>,
@@ -325,14 +326,14 @@ fn build_dense_mesh_chunk_vertices_into<'a>(
             let index = local_y * 65 + local_x;
             let (height, raw_normal, color) = match terrain_cells.get(&(cell_x, cell_y)) {
                 Some(cell) => {
-                    let raw_color = cell.colors[index];
+                    let raw_color = cell.colors.get(index);
                     let color = [
                         raw_color.x.clamp(0.0, 1.0),
                         raw_color.y.clamp(0.0, 1.0),
                         raw_color.z.clamp(0.0, 1.0),
                         1.0,
                     ];
-                    (cell.heights[local_y][local_x], cell.normals[index], color)
+                    (cell.heights[local_y][local_x], cell.normals.get(index), color)
                 }
                 None => (DEEP_WATER_Z, DEFAULT_FALLBACK_NORMAL, DEFAULT_FALLBACK_COLOR.to_array()),
             };

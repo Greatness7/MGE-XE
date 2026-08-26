@@ -313,9 +313,14 @@ Three complementary observability mechanisms:
 
 - **`tracing` spans** — `TraceReportLayer`
   ([crates/diagnostics/src/tracing_report.rs](crates/diagnostics/src/tracing_report.rs)) captures
-  elapsed time only for `generation` and the existing `stage.*` pipeline spans. The report embeds
-  total elapsed milliseconds plus at most 128 stage name/elapsed-time pairs in opening order;
-  arbitrary fields and parentage are intentionally not persisted.
+  elapsed time for `generation` and the existing `stage.*` pipeline spans. The report embeds total
+  elapsed milliseconds plus at most 128 stage entries in opening order; arbitrary fields and
+  parentage are intentionally not persisted. On Windows, a completed stage entry also carries
+  optional process-wide `private_bytes_at_end` (`PrivateUsage`) and
+  `peak_working_set_bytes_at_end` (`PeakWorkingSetSize`) samples taken when the span closes. Active
+  snapshot entries and non-Windows reports omit memory. Nested `stage.*` spans are inclusive, so
+  compare private-byte deltas between siblings; the working-set field is the process-lifetime high
+  water mark as of close, not a per-stage or private-byte peak.
 - **`GenerationMetrics`** ([src/generation/metrics.rs](src/generation/metrics.rs)) — structured
   per-stage counters (reference counts before/after each prune, static/subset/vertex/triangle
   totals, merge-simplification target/cap/cache distributions, atlas family layout hits plus

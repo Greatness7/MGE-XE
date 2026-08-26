@@ -4,11 +4,14 @@
 
 ### Fixed
 
-- Sun shadows flickered in the bottom screen corners and at the cascade intersection. The
-  caster stencil mask had under a texel of margin near the eye while the shadow blur reaches
-  about three, so receivers at the frustum edge sampled the cleared atlas. The mask is now
-  the convex hull of the frustum silhouette with an 8-texel square dilation, at least 8
-  texels of margin in every direction.
+- Reduced memory use while generating distant land, hopefully preventing crashes with very large
+  mod lists ([#3](https://github.com/Greatness7/MGE-XE/issues/3)).
+- The configuration utility no longer fails to launch when ReShade is installed
+  ([#4](https://github.com/Greatness7/MGE-XE/issues/4)).
+- The configuration utility no longer needs administrator rights to save display settings, and now
+  shows the same resolution the game and the Morrowind launcher use.
+- The configuration utility now detects groundcover mods that use grass only defined in master files.
+- Fixed sun shadow flickering at the bottom screen corners and at the cascade intersection.
 
 ## v0.20.0 beta, G7 fork
 

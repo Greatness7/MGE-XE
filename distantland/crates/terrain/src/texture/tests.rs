@@ -23,8 +23,8 @@ fn make_cell<'a>(grid: (i32, i32), tex_path: &'a str) -> TerrainCell<'a> {
     TerrainCell {
         grid,
         heights: Box::new([[0.0f32; 65]; 65]),
-        normals: vec![Vec3::Z; 65 * 65],
-        colors: vec![Vec4::new(1.0, 1.0, 1.0, 0.0); 65 * 65],
+        normals: Default::default(),
+        colors: Default::default(),
         texture_indices: tex_indices,
         texture_table,
     }
@@ -34,8 +34,8 @@ fn make_default_cell(grid: (i32, i32)) -> TerrainCell<'static> {
     TerrainCell {
         grid,
         heights: Box::new([[0.0f32; 65]; 65]),
-        normals: vec![Vec3::Z; 65 * 65],
-        colors: vec![Vec4::new(1.0, 1.0, 1.0, 0.0); 65 * 65],
+        normals: Default::default(),
+        colors: Default::default(),
         texture_indices: Box::new([[0u16; 16]; 16]), // all raw 0 -> default
         texture_table: Arc::new(Default::default()),
     }

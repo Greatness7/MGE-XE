@@ -40,6 +40,7 @@ impl<'a> UsageInfo<'a> {
 
     /// Normalizes reference IDs to their underlying mesh paths and applies visibility overrides.
     pub(crate) fn remap_references(&mut self, args: &UsageFilterOptions, overrides: &StaticOverrides) {
+        debug_assert!(!self.released, "reference remap after post-fingerprint release");
         let objects = &self.objects;
         let name_overrides = &overrides.names;
         let reference_sources = self.reference_sources.clone();

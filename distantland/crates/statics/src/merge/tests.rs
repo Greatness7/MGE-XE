@@ -13,7 +13,7 @@ fn merge_exterior_references<'a>(
 ) -> MergeSimplificationMetrics {
     let plan = plan_exterior_merge_groups(distant_statics, usage_info, max_group_radius);
     apply_merge_usage(&plan, usage_info);
-    build_merge_geometry(&plan, &CellFilter::All, distant_statics, config, None)
+    build_merge_geometry_unpacked(&plan, &CellFilter::All, distant_statics, config, None)
 }
 
 fn make_static() -> DistantStatic {
@@ -29,8 +29,19 @@ fn make_static() -> DistantStatic {
     ds
 }
 
+/// [`make_static`] carrying real geometry, with identical bounds so grouping is unchanged.
+///
+/// Tests that inspect the merged record itself need this: a merge whose members contribute no
+/// subsets produces an empty record, and empty records are dropped rather than emitted.
+fn make_merge_source() -> DistantStatic {
+    DistantStatic {
+        subsets: make_grid_static(32.0, 0.0, 1.0).subsets,
+        ..make_static()
+    }
+}
+
 fn make_static_with_type(static_type: StaticType) -> DistantStatic {
-    let mut ds = make_static();
+    let mut ds = make_merge_source();
     ds.static_type = static_type;
     ds
 }
@@ -94,8 +105,8 @@ fn flat_terrain(grid: (i32, i32), height: f32) -> crate::usage::TerrainCells<'st
         crate::usage::TerrainCell {
             grid,
             heights: Box::new([[height; 65]; 65]),
-            normals: vec![Vec3::Z; 65 * 65],
-            colors: vec![Vec4::ONE; 65 * 65],
+            normals: Default::default(),
+            colors: Default::default(),
             texture_indices: Box::new([[0; 16]; 16]),
             texture_table: std::sync::Arc::default(),
         },
@@ -588,10 +599,10 @@ fn radius_sweep_changes_group_count_without_changing_the_relative_cap() {
 fn build_merge_geometry_honors_cell_filter_while_apply_stays_global() {
     fn world() -> (DistantStatics, UsageInfo<'static>) {
         let mut distant_statics: DistantStatics = Default::default();
-        distant_statics.insert("west_a.nif".to_string(), make_static());
-        distant_statics.insert("west_b.nif".to_string(), make_static());
-        distant_statics.insert("east_a.nif".to_string(), make_static());
-        distant_statics.insert("east_b.nif".to_string(), make_static());
+        distant_statics.insert("west_a.nif".to_string(), make_merge_source());
+        distant_statics.insert("west_b.nif".to_string(), make_merge_source());
+        distant_statics.insert("east_a.nif".to_string(), make_merge_source());
+        distant_statics.insert("east_b.nif".to_string(), make_merge_source());
 
         let mut usage: UsageInfo<'static> = UsageInfo::default();
         usage.exterior_references_mut().extend([
@@ -618,7 +629,7 @@ fn build_merge_geometry_honors_cell_filter_while_apply_stays_global() {
     let plan = plan_exterior_merge_groups(&partial_statics, &partial_usage, crate::DEFAULT_MERGE_GROUP_RADIUS);
     apply_merge_usage(&plan, &mut partial_usage);
     let dirty: HashSet<(i32, i32)> = HashSet::from_iter([(0, 0)]);
-    build_merge_geometry(&plan, &CellFilter::Dirty(dirty), &mut partial_statics, config, None);
+    build_merge_geometry_unpacked(&plan, &CellFilter::Dirty(dirty), &mut partial_statics, config, None);
 
     // Only the west cell's synthetic static was built, and it matches the full build.
     assert!(partial_statics.contains_key(west_id));
@@ -648,10 +659,10 @@ fn build_merge_geometry_honors_cell_filter_while_apply_stays_global() {
 #[test]
 fn same_cell_emits_multiple_groups_in_stable_group_idx_order() {
     let mut distant_statics: DistantStatics = Default::default();
-    distant_statics.insert("a.nif".to_string(), make_static());
-    distant_statics.insert("b.nif".to_string(), make_static());
-    distant_statics.insert("c.nif".to_string(), make_static());
-    distant_statics.insert("d.nif".to_string(), make_static());
+    distant_statics.insert("a.nif".to_string(), make_merge_source());
+    distant_statics.insert("b.nif".to_string(), make_merge_source());
+    distant_statics.insert("c.nif".to_string(), make_merge_source());
+    distant_statics.insert("d.nif".to_string(), make_merge_source());
 
     // Two tight pairs far apart in the same exterior cell so a small radius yields two groups.
     let mut usage: UsageInfo<'static> = UsageInfo::default();
@@ -722,7 +733,7 @@ fn build_straddling_merge(cull: Option<SubterrainCull<'_>>) -> (DistantStatic, M
     let (mut distant_statics, mut usage) = straddling_world();
     let plan = plan_exterior_merge_groups(&distant_statics, &usage, crate::DEFAULT_MERGE_GROUP_RADIUS);
     apply_merge_usage(&plan, &mut usage);
-    let metrics = build_merge_geometry(
+    let metrics = build_merge_geometry_unpacked(
         &plan,
         &CellFilter::All,
         &mut distant_statics,

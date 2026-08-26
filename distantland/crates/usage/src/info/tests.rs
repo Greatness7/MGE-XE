@@ -58,6 +58,45 @@ fn make_usage_with_references(
     usage
 }
 
+#[test]
+fn release_post_fingerprint_fields_drops_metadata_and_preserves_world_cells() {
+    let mut usage = make_usage_with_references("object", "object.nif", 1, |_| {});
+    usage.forced_meshes.insert("forced.nif");
+    usage.door_meshes.insert("door.nif");
+    usage.mesh_scale_maximums.insert("object.nif", 1.0);
+    usage
+        .interior_metadata
+        .insert(UString::new("Interior"), InteriorMetadata::default());
+    usage.disable_scripts.insert(UString::new("disable_script"));
+    usage.disable_targets.insert(UString::new("disable_target"));
+    usage.script_disable.self_disabling_scripts = 1;
+    usage.terrain_cells.insert(
+        (0, 0),
+        crate::TerrainCell {
+            grid: (0, 0),
+            heights: Box::new([[0.0; 65]; 65]),
+            normals: crate::TerrainNormals::Default,
+            colors: crate::TerrainColors::Default,
+            texture_indices: Box::new([[0; 16]; 16]),
+            texture_table: crate::TerrainTextureTable::default(),
+        },
+    );
+
+    usage.release_post_fingerprint_fields();
+
+    assert_eq!(usage.reference_sources, ReferenceSources::default());
+    assert_eq!(usage.objects.capacity(), 0);
+    assert_eq!(usage.forced_meshes.capacity(), 0);
+    assert_eq!(usage.door_meshes.capacity(), 0);
+    assert_eq!(usage.mesh_scale_maximums.capacity(), 0);
+    assert_eq!(usage.interior_metadata.capacity(), 0);
+    assert_eq!(usage.disable_scripts.capacity(), 0);
+    assert_eq!(usage.disable_targets.capacity(), 0);
+    assert_eq!(usage.script_disable, ScriptDisableReport::default());
+    assert_eq!(usage.exterior_references_count(), 1);
+    assert!(usage.terrain_cells.contains_key(&(0, 0)));
+}
+
 type TestGrassRef<'a> = (u32, u32, &'a str, f32, bool);
 
 type TestGrassCell<'a> = ((i32, i32), Vec<TestGrassRef<'a>>);

@@ -65,6 +65,7 @@ fn cell_owner_is_dirty(cell_x: i32, cell_y: i32, owners: &OwnerPlan) -> bool {
 pub(super) fn build_static_assembly(
     owners: &OwnerPlan,
     distant_statics: &DistantStatics,
+    merged_keys: &[StaticRecordKey],
     planned_merged_keys: &[StaticRecordKey],
     previous_shards: &[StaticShardState; STATIC_MESH_SHARD_COUNT],
 ) -> std::result::Result<[Vec<StaticRecordKey>; STATIC_MESH_SHARD_COUNT], StaticsFallbackReason> {
@@ -72,11 +73,14 @@ pub(super) fn build_static_assembly(
     // `previous` carry no heap data, so neither needs an owned copy of every mesh path.
     let previous: HashSet<&StaticRecordKey> = previous_shards.iter().flat_map(|shard| shard.records.iter()).collect();
     let planned: HashSet<&StaticRecordKey> = planned_merged_keys.iter().collect();
-    let current: HashSet<StaticRecordKey> = distant_statics
+    // `distant_statics` holds ordinary records only: merged geometry is packed and released as it
+    // is built, so the merged keys this pass emitted arrive separately.
+    let mut current: HashSet<StaticRecordKey> = distant_statics
         .iter()
         .filter(|(_, distant_static)| !distant_static.subsets.is_empty())
         .map(|(key, _)| StaticRecordKey::parse(key))
         .collect();
+    current.extend(merged_keys.iter().cloned());
 
     for key in current.iter().filter(|key| matches!(key, StaticRecordKey::Mesh { .. })) {
         if !owner_is_dirty(key, owners) && !previous.contains(key) {

@@ -436,29 +436,56 @@ pub(super) fn prepare_statics_bundle(
             drop(decode_guard);
 
             let dirty_cells = owners.dirty_cells.iter().map(|cell| (cell.x, cell.y)).collect();
-            let partial_merge_metrics = build_merge_geometry(
-                &merge_plan,
-                &CellFilter::Dirty(dirty_cells),
-                &mut distant_statics,
-                cfg,
-                Some(SubterrainCull::new(&usage_info.terrain_cells, subterrain_margin)),
-            );
+            let merge_span = merge_geometry_span();
+            let (partial_merge_metrics, merged_statics) = {
+                let _guard = merge_span.enter();
+                let built = build_merge_geometry(
+                    &merge_plan,
+                    &CellFilter::Dirty(dirty_cells),
+                    &distant_statics,
+                    cfg,
+                    Some(SubterrainCull::new(&usage_info.terrain_cells, subterrain_margin)),
+                    vfs,
+                    job.settings.door_size_multiplier,
+                );
+                record_merged_pack_metrics(&merge_span, &built.1);
+                built
+            };
             cache.static_shards.merge_groups_geometry_built = partial_merge_metrics.group_count;
             cache.static_shards.lod_cache_entries_built = partial_merge_metrics.lod_cache_entry_count;
             merged_away_statics = retain_referenced_statics(&mut distant_statics, usage_info);
 
-            let assembly =
-                match build_static_assembly(&owners, &distant_statics, &planned_merged_keys, &previous.static_mesh_shards) {
-                    Ok(assembly) => assembly,
-                    Err(reason) => break 'partial Some(reason),
-                };
+            // The merged records this pass built are already packed, so the assembly is told which
+            // keys they were instead of reading them back out of `distant_statics`.
+            let merged_keys = merged_statics.keys().map(|key| StaticRecordKey::parse(key)).collect_vec();
+            let assembly = match build_static_assembly(
+                &owners,
+                &distant_statics,
+                &merged_keys,
+                &planned_merged_keys,
+                &previous.static_mesh_shards,
+            ) {
+                Ok(assembly) => assembly,
+                Err(reason) => break 'partial Some(reason),
+            };
 
+            // This must stay a clone, not an `extract_if` move: `splice_static_shards` below can
+            // still `break 'partial` into the full rebuild, which re-runs `build_merge_geometry`
+            // under `CellFilter::All` and looks every planned member up in `distant_statics`
+            // (`debug_assert!` then `.unwrap()`). The only restore on that path,
+            // `distant_statics.extend(merged_away_statics)`, puts back records trimmed by
+            // `retain_referenced_statics` - not dirty surviving records. Moving these out would
+            // panic the fallback in release.
             let dirty_statics: DistantStatics = distant_statics
                 .iter()
                 .filter(|(key, distant_static)| !distant_static.subsets.is_empty() && owner_key_is_dirty(key, &owners))
                 .map(|(key, distant_static)| (key.clone(), distant_static.clone()))
                 .collect();
-            let fresh_records = convert_statics_stage(dirty_statics, vfs, job.settings.door_size_multiplier, reporter)?;
+            let mut fresh_records = convert_statics_stage(dirty_statics, vfs, job.settings.door_size_multiplier, reporter)?;
+            // Every group built above sits in a dirty cell by construction, so all of these records
+            // are dirty by `owner_key_is_dirty` - the same set the clone used to carry. Order does
+            // not matter: `splice_static_shards` re-sorts each shard by key bytes.
+            fresh_records.extend(merged_statics);
 
             let spliced = match splice_static_shards(
                 &owners,
@@ -555,10 +582,11 @@ pub(super) fn prepare_statics_bundle(
         optimized_mesh_bounds = capture_optimized_bounds(&distant_statics);
     }
     record_optimize_metrics(cache, initial_static_count, &optimized_meshes, selective_optimize);
-    metrics.statics.merge_simplification = {
-        // Merge geometry runs outside every `run_stage` call, so without its own `stage.*`
-        // span the merge LOD builds and subterrain culling never reach the reported timeline.
-        let _guard = info_span!("stage.build_merge_geometry", report = true).entered();
+    // Merge geometry runs outside every `run_stage` call, so without its own `stage.*`
+    // span the merge LOD builds, subterrain culling, and packing never reach the reported timeline.
+    let merge_span = merge_geometry_span();
+    let (merge_metrics, merged_statics) = {
+        let _guard = merge_span.enter();
         // Every planned member's source mesh must still be present: a degraded owner-partial
         // attempt trims the meshes its merge swallowed, and the restore above is what keeps this
         // pass's lookups total.
@@ -566,21 +594,29 @@ pub(super) fn prepare_statics_bundle(
             merge_plan.member_ids().all(|id| distant_statics.contains_key(id)),
             "merge plan member missing from statics map"
         );
-        build_merge_geometry(
+        let built = build_merge_geometry(
             &merge_plan,
             &CellFilter::All,
-            &mut distant_statics,
+            &distant_statics,
             cfg,
             Some(SubterrainCull::new(&usage_info.terrain_cells, subterrain_margin)),
-        )
+            vfs,
+            job.settings.door_size_multiplier,
+        );
+        record_merged_pack_metrics(&merge_span, &built.1);
+        built
     };
+    metrics.statics.merge_simplification = merge_metrics;
     cache.static_shards.merge_groups_geometry_built = metrics.statics.merge_simplification.group_count;
     cache.static_shards.lod_cache_entries_built = metrics.statics.merge_simplification.lod_cache_entry_count;
     distant_statics.retain(|_, distant_static| !distant_static.subsets.is_empty());
     retain_referenced_statics(&mut distant_statics, usage_info);
-    metrics.statics.after_merge_static_count = distant_statics.len();
+    // Merged records left the unpacked map when they were packed, so the count spans both halves.
+    metrics.statics.after_merge_static_count = distant_statics.len() + merged_statics.len();
 
-    let distant_statics = convert_statics_stage(distant_statics, vfs, job.settings.door_size_multiplier, reporter)?;
+    let mut distant_statics = convert_statics_stage(distant_statics, vfs, job.settings.door_size_multiplier, reporter)?;
+    distant_statics.extend(merged_statics);
+    sort_packed_statics(&mut distant_statics);
     let final_counts = summarize_distant_statics(&distant_statics);
     metrics.statics.final_static_count = distant_statics.len();
     metrics.statics.final_subset_count = final_counts.0;
@@ -819,6 +855,44 @@ pub(super) fn publish_statics_bundle(
     }
 }
 
+/// Opens the merge-geometry stage span, including the fields describing what it packed.
+fn merge_geometry_span() -> Span {
+    info_span!(
+        "stage.build_merge_geometry",
+        report = true,
+        packed_merged_static_count = field::Empty,
+        packed_merged_subset_count = field::Empty,
+        packed_merged_vertex_count = field::Empty,
+        packed_merged_triangle_count = field::Empty,
+    )
+}
+
+/// Records what [`build_merge_geometry`] packed onto its own stage span.
+///
+/// Merged records are packed inside the merge pass and never reach `stage.convert_statics`, so
+/// that stage's counts describe ordinary statics alone. Reporting the merged half here keeps the
+/// two spans summing to the whole rather than leaving merged geometry unaccounted for.
+fn record_merged_pack_metrics(span: &Span, merged_statics: &crate::PackedDistantStatics) {
+    let (subset_count, vertex_count, triangle_count) = summarize_distant_statics(merged_statics);
+    record_usize(span, "packed_merged_static_count", merged_statics.len());
+    record_usize(span, "packed_merged_subset_count", subset_count);
+    record_usize(span, "packed_merged_vertex_count", vertex_count);
+    record_usize(span, "packed_merged_triangle_count", triangle_count);
+}
+
+/// Orders packed statics shard-major, then by key bytes, for stable runtime ordinals.
+///
+/// The order is total, so a map assembled from several sources - the conversion stage plus the
+/// records `build_merge_geometry` packed as it went - sorts into the same sequence a single pass
+/// would have produced.
+pub(super) fn sort_packed_statics(distant_statics: &mut crate::PackedDistantStatics) {
+    distant_statics.sort_unstable_by(|left_key, _, right_key, _| {
+        static_mesh_shard_id(left_key)
+            .cmp(&static_mesh_shard_id(right_key))
+            .then_with(|| left_key.as_bytes().cmp(right_key.as_bytes()))
+    });
+}
+
 /// Converts intermediate statics into final shard-major/key order for stable runtime ordinals.
 pub(super) fn finalize_distant_statics(
     distant_statics: DistantStatics,
@@ -836,11 +910,7 @@ pub(super) fn finalize_distant_statics(
         .into_par_iter()
         .map(|(key, value)| (key, value.into_distant_static(vfs, door_size_multiplier)))
         .collect();
-    distant_statics.sort_unstable_by(|left_key, _, right_key, _| {
-        static_mesh_shard_id(left_key)
-            .cmp(&static_mesh_shard_id(right_key))
-            .then_with(|| left_key.as_bytes().cmp(right_key.as_bytes()))
-    });
+    sort_packed_statics(&mut distant_statics);
     record_usize(&span, "packed_static_count", distant_statics.len());
     distant_statics
 }
@@ -866,6 +936,18 @@ mod tests {
             },
             static_type,
             ..crate::DistantStatic::default()
+        }
+    }
+
+    const DEFAULT_DOOR_SIZE_MULTIPLIER: f32 = 2.0;
+
+    fn empty_vfs() -> crate::Vfs {
+        crate::Vfs {
+            ini_path: std::path::PathBuf::from("Morrowind.ini"),
+            data_dirs: vec![],
+            active_plugins: vec![],
+            archives: vec![],
+            maps: crate::vfs::directory_map::DirectoryMaps::default(),
         }
     }
 
@@ -975,15 +1057,19 @@ mod tests {
         assert!(statics.is_empty());
 
         statics.extend(removed);
-        // Without the restore this lookup of each planned member's source mesh panics.
-        build_merge_geometry(
+        // Without the restore this lookup of each planned member's source mesh panics. These
+        // members carry no subsets, so the merged record is empty and never reaches the packed
+        // map; the member tally is what proves both lookups resolved.
+        let (metrics, _) = build_merge_geometry(
             &plan,
             &CellFilter::All,
-            &mut statics,
+            &statics,
             crate::StaticMeshSimplifierConfig::default(),
             None,
+            &empty_vfs(),
+            DEFAULT_DOOR_SIZE_MULTIPLIER,
         );
-        assert!(statics.contains_key(&plan.merged_record_keys().next().unwrap().render()));
+        assert_eq!(metrics.member_count, 2);
     }
 
     #[test]
