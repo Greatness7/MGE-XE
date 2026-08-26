@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "bsa"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "bstr",
  "memmap2",
@@ -521,7 +521,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "bytes_io"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "bstr",
  "bytemuck",
@@ -538,7 +538,7 @@ dependencies = [
 [[package]]
 name = "bytes_io_macros"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -1514,7 +1514,7 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 [[package]]
 name = "esp"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "bitflags 2.13.1",
  "bstr",
@@ -1533,7 +1533,7 @@ dependencies = [
 [[package]]
 name = "esp_macros"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -2624,7 +2624,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 [[package]]
 name = "nif"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "bstr",
  "bytemuck",
@@ -2641,7 +2641,7 @@ dependencies = [
 [[package]]
 name = "nif_macros"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -4207,7 +4207,7 @@ dependencies = [
 [[package]]
 name = "tes3"
 version = "0.0.1"
-source = "git+https://github.com/Greatness7/tes3.git#44ea38ca389f5361229eef4800373b3df13f7063"
+source = "git+https://github.com/Greatness7/tes3.git#bf6aa1af3c844cb9a95c73ffb334695a9bea3917"
 dependencies = [
  "bsa",
  "esp",

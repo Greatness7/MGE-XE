@@ -12,6 +12,8 @@
   shows the same resolution the game and the Morrowind launcher use.
 - The configuration utility now detects groundcover mods that use grass only defined in master files.
 - Fixed sun shadow flickering at the bottom screen corners and at the cascade intersection.
+- Skinned meshes, such as the hanging banners in Vivec, are now included in distant statics.
+  ([#1](https://github.com/Greatness7/MGE-XE/issues/1)).
 
 ## v0.20.0 beta, G7 fork
 
