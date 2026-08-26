@@ -1,0 +1,87 @@
+# Publishes a release archive to the Nexus Mods page. Deliberately separate from
+# release.yml: that job is a ~35 minute cold --max-perf build, and a failure here
+# (beta action, API hiccup, archived-version mixup) must be retryable in seconds
+# without rebuilding or re-cutting the GitHub release.
+#
+# workflow_dispatch is the real trigger. `release: published` does not fire for
+# releases release.yml creates, because GitHub does not start workflow runs from
+# events generated with GITHUB_TOKEN; it is here only for releases published by
+# hand from the web UI.
+name: Publish to Nexus Mods
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, e.g. v0.20.1
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # The "MGE XE G7" file entry on https://www.nexusmods.com/morrowind/mods/59957,
+  # whose contents each release replaces. Files tab -> Manage Files -> API Info
+  # reports it as "Group ID"; the mod file id and its update group id are the
+  # same number. The separate Remiros Groundcover Patch entry (7854105) is not
+  # built by CI and is untouched by this workflow.
+  #
+  # Note this is not the 59957 in the mod URL: that is the game_scoped_id, and
+  # the v3 mod id is 429496789557. Only matters if the `changelog` input is ever
+  # enabled, which needs `mod_id` set to the latter.
+  NEXUS_FILE_ID: '7854099'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: nexusmods
+
+    steps:
+      - name: Resolve the release archive
+        id: archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::tag '$TAG' is not v<major>.<minor>.<build>"; exit 1; }
+
+          mkdir -p dist
+          gh release download "$TAG" --pattern '*.7z' --dir dist
+
+          # Exactly one, so a stray archive cannot be uploaded silently in place
+          # of the real one.
+          shopt -s nullglob
+          archives=(dist/*.7z)
+          (( ${#archives[@]} == 1 )) \
+            || { echo "::error::expected one .7z on $TAG, found ${#archives[@]}"; exit 1; }
+
+          {
+            echo "path=${archives[0]}"
+            echo "version=${TAG#v}"
+            echo "url=${GITHUB_SERVER_URL}/${GH_REPO}/releases/tag/${TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Pinned to v1.0.0-beta.10. The action is pre-1.0 and ships a committed
+      # dist/index.js, so a SHA is the only supply-chain control available.
+      - name: Upload to Nexus Mods
+        uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ env.NEXUS_FILE_ID }}
+          filename: ${{ steps.archive.outputs.path }}
+          version: ${{ steps.archive.outputs.version }}
+          display_name: MGE XE G7 v${{ steps.archive.outputs.version }}
+          # Nexus renders this as plain text, so the changelog markdown would
+          # arrive full of literal link syntax. Point at the rendered release
+          # notes instead.
+          description: >-
+            Full changelog: ${{ steps.archive.outputs.url }}
+          category: main
+          archive_existing_version: true
+          update_mod_version: true
+          allow_mod_manager_download: false
