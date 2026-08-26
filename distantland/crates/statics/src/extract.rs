@@ -264,6 +264,8 @@ impl DistantStatic {
         force_generate: bool,
         overrides: &StaticOverrides,
     ) -> Option<DistantStatic> {
+        let static_type = resolve_static_type(rel_path, force_generate, overrides)?;
+
         let Ok(mut stream) = NiStream::from_bytes(bytes) else {
             trace!("Failed to parse NIF: {:?}", rel_path);
             return None;
@@ -274,6 +276,8 @@ impl DistantStatic {
             return None;
         }
 
+        stream.apply_skin_deforms();
+
         clear_root_node_transforms(&mut stream);
         normalize_texture_paths(&mut stream);
 
@@ -281,8 +285,6 @@ impl DistantStatic {
         if shapes.is_empty() {
             return None;
         }
-
-        let static_type = resolve_static_type(rel_path, force_generate, overrides)?;
 
         // Compute bounds only for visible geometries and cache each shared shape-data bound.
         let bounding_sphere = ({

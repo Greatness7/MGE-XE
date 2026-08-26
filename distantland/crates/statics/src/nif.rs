@@ -106,8 +106,11 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
 /// Iterates visible triangle shapes with accumulated transforms and render properties.
 ///
 /// DFS traversal skips dynamic effects, billboards, particles, collision nodes, culled/editor
-/// markers, skinned shapes, inactive LOD/switch children, missing geometry, and unsupported
-/// texture formats. LOD selection uses the child covering the `LOD_DIST` sample.
+/// markers, inactive LOD/switch children, missing geometry, and unsupported texture formats.
+/// LOD selection uses the child covering the `LOD_DIST` sample.
+///
+/// Skinned shapes are included; callers are expected to have baked deformation first, via
+/// [`NiStream::apply_skins`], which clears the skin instance.
 pub(crate) fn visible_geometries(stream: &NiStream) -> impl Iterator<Item = Geometry<'_>> {
     let root = stream.roots.first().copied().unwrap_or_default();
 
@@ -169,11 +172,6 @@ pub(crate) fn visible_geometries(stream: &NiStream) -> impl Iterator<Item = Geom
             let Ok(shape) = <&NiTriShape>::try_from(this) else {
                 continue;
             };
-
-            if !shape.skin_instance.is_null() {
-                // TODO: I think MGE-XE actually applies skin deformation.
-                continue;
-            }
 
             let Some(data) = stream.get_as::<_, NiTriShapeData>(shape.geometry_data) else {
                 continue;
