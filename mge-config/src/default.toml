@@ -1,7 +1,7 @@
 # MGE XE configuration
 # Values omitted from a user file use these schema defaults.
 # Increment only for an intentionally incompatible schema revision.
-schema_version = 2
+schema_version = 3
 
 # Display-device values are applied by the GUI/registry owner unless noted.
 [graphics]

@@ -24,6 +24,7 @@ mod tests {
         let path = root.join(FILE_NAME);
         let document = ConfigDocument::open(&path);
         assert_eq!(document.state(), OpenState::MissingDefaults);
+        assert!(document.warnings().is_empty());
         assert_eq!(document.settings(), &Settings::default());
         assert_eq!(document.settings().gui.language, "auto");
     }
