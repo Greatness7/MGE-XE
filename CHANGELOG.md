@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.20.3 beta
+
+### Fixed
+
+- Fixed some distant objects receiving incorrect vertex colors.
+
 ## v0.20.2 beta
 
 ### Fixed

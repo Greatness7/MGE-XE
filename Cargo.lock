@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "MGEXEgui"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "anyhow",
  "distantland",
@@ -2508,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "mgeHost64"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "arc-swap",
  "bytemuck",
@@ -5452,7 +5452,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "cc",
  "serde_json",
