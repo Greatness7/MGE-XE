@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// MGE XE distant land format version (must match `d3d8/cpp/mge/mgeversion.h`;
 /// `mgeHost64/src/abi/constants.rs` asserts the two are equal).
-pub const MGE_DL_VERSION: u8 = 16;
+pub const MGE_DL_VERSION: u8 = 17;
 /// Filename prefix shared by every opaque static-atlas page.
 pub const OPAQUE_ATLAS_PREFIX: &str = "_mge_xe_atlas";
 

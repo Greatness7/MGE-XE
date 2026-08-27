@@ -470,7 +470,7 @@ These constants gate interop and must move together:
 | `XE_VERSION_STRING` / `MGE_*_VERSION` | `d3d8/cpp/mge/mgeversion.h` | `VERSION_NUMBER` / `VERSION_STRING` and package version in `MGEXEgui` |
 | `mge_config::SCHEMA_VERSION` (3) | `mge-config/src/schema.rs` | root `schema_version` in `mgeXE.toml`; mismatches warn, known fields load, and the current version is written on save |
 | `MGE_SAVE_VERSION` (47) | `mgeversion.h` | Legacy constant only; no longer governs persistent configuration |
-| `MGE_DL_VERSION` (16) | `mgeversion.h` (distantland data compat) | Rust-host ABI constant, generator output `version` file. `MGEXEgui` keeps no copy — it uses `distantland::MGE_DL_VERSION`. Both remaining copies are pinned to the generator by tests in `mgeHost64/src/abi/constants.rs`, which parse `mgeversion.h` directly |
+| `MGE_DL_VERSION` (17) | `mgeversion.h` (distantland data compat) | Generator output `version` file plus Rust-host and C++ runtime copies. `MGEXEgui` keeps no copy — it uses `distantland::MGE_DL_VERSION`. Tests in `mgeHost64/src/abi/constants.rs` pin both copies to the generator, and `dl-contract-test` independently compares its linked C++ value with the generator constant at runtime |
 | IPC ABI structs | `d3d8/cpp/ipc/bridge.h` | `mgeHost64/src/abi/*` + `layout_tests.rs` |
 | `terrain.bin` layout | `d3d8/cpp/mge/dlformat.h` (`TerrainBin`) + static asserts | `mgeHost64/src/abi/terrain.rs`, `distantland` writer, [`terrain-bin.md`](docs/architecture/terrain-bin.md) |
 | Fixed `static_meshes_000..127` v5 layout/order | `d3d8/cpp/mge/dlformat.h` (`StaticMeshesBin`), `d3d8/cpp/mge/distantinit.cpp` | `distantland` writer; client loader builds concatenated `DistantSubset` records consumed by host `state/loading.rs` |
