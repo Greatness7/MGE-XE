@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed distant land generation and loading for non-English interior cell names.
+- Fixed handling of grass mods that place statics defined in a master file (such as Tamriel Data).
 
 ## v0.20.1 beta
 
