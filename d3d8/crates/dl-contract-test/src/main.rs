@@ -3,7 +3,7 @@ use std::os::raw::{c_char, c_int};
 use std::process::ExitCode;
 
 unsafe extern "C" {
-    fn mge_dl_contract_main(argc: c_int, argv: *const *const c_char) -> c_int;
+    fn mge_dl_contract_main(argc: c_int, argv: *const *const c_char, generator_version: u8) -> c_int;
 }
 
 fn main() -> ExitCode {
@@ -12,6 +12,12 @@ fn main() -> ExitCode {
         .collect();
     let argv: Vec<*const c_char> = args.iter().map(|a| a.as_ptr()).collect();
 
-    let code = unsafe { mge_dl_contract_main(argv.len() as c_int, argv.as_ptr()) };
+    let code = unsafe {
+        mge_dl_contract_main(
+            argv.len() as c_int,
+            argv.as_ptr(),
+            distantland_foundation::output::MGE_DL_VERSION,
+        )
+    };
     ExitCode::from(code as u8)
 }

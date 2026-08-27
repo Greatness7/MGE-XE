@@ -332,7 +332,8 @@ Three shader systems coexist:
   (all culling quadtrees live in the host).
 - `dlformat.h` — length-aware decoder for the host-pinned distant-land output descriptor.
   Build its Win32 harness with `cargo build -p dl-contract-test --target i686-pc-windows-msvc
-  --release`. Run it with no arguments for the compile-time `MGE_DL_VERSION` assertion, or pass
+  --release`. Run it with no arguments to check the C++ `MGE_DL_VERSION` against the generator's,
+  or pass
   the root of a generated tree (the `Data Files` directory of a Morrowind install) to validate
   `distantland/version`, every `static_meshes_N` shard header, the shard-count sum against
   `distantland/statics/usage.data`, and the `terrain.bin` magic and version.

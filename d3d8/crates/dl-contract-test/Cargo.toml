@@ -12,5 +12,8 @@ forced-target = "i686-pc-windows-msvc"
 name = "dl-contract-test"
 path = "src/main.rs"
 
+[dependencies]
+distantland_foundation = { path = "../../../distantland/crates/foundation" }
+
 [build-dependencies]
 cc = "1"
