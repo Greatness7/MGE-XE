@@ -19,10 +19,10 @@ use std::cmp::Ordering;
 
 use crate::output::STATIC_MESH_SHARD_COUNT;
 
-/// Stable assignment domain for the fixed version-16 static shard set.
+/// Stable assignment domain for the fixed static shard set.
 pub const STATIC_SHARD_ASSIGNMENT_MAGIC: &[u8] = b"tes3-distantland-static-shard-assignment-v2\0";
 
-/// Assigns a packed-static key to its fixed version-16 shard.
+/// Assigns a packed-static key to its fixed shard.
 pub fn static_mesh_shard_id(key: &str) -> usize {
     static_mesh_shard_id_bytes(key.as_bytes())
 }

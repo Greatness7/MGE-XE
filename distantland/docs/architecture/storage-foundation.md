@@ -1,7 +1,7 @@
-# Storage foundation (version 16)
+# Storage foundation
 
-Normative contract for the complete-or-absent distant-land store. Version 16 is the only supported
-current writer/reader format. The storage layer treats older generated trees only as material that
+Normative contract for the complete-or-absent distant-land store. The current format is the only
+supported writer/reader format. The storage layer treats older generated trees only as material that
 needs a clean rebuild. It refuses future versions without modifying generated output.
 
 The implementation lives in `crates/foundation/src/`. The crate owns storage authority, durable
@@ -20,7 +20,7 @@ and statics metadata discovery.
 
 | Component | Rule |
 |---|---|
-| Output format version | single-byte `distantland\version` equal to `MGE_DL_VERSION` (16) |
+| Output format version | single-byte `distantland\version` equal to `MGE_DL_VERSION` |
 | Publication authority | `distantland\generation_state.bin` only |
 | Writer lock | exclusive `distantland\.writer.lock` for the full decide/publish lifecycle |
 | Reader lock | shared `.writer.lock` for the lifetime of an `OutputSnapshot` |
@@ -90,12 +90,12 @@ DDS, and terrain occlusion.
 
 ## Classification under the writer lock
 
-1. Refuse a version greater than 16 immediately. Do not inspect, adopt, clean, or overwrite.
-2. Treat version 16 plus a decodable state whose required artifacts pass Routine validation as a valid base.
-3. Missing version/state, version below 16, invalid/torn state, invalid inventory, or a missing,
+1. Refuse a version greater than `MGE_DL_VERSION` immediately. Do not inspect, adopt, clean, or overwrite.
+2. Treat a matching version byte plus a decodable state whose required artifacts pass Routine validation as a valid base.
+3. Missing version/state, an older version, invalid/torn state, invalid inventory, or a missing,
    wrong-length, or wrong-header required artifact means the cache is absent. Force a full clean regeneration.
 
-Do not recover a partially written version-16 tree. Invalid state is the recovery decision.
+Do not recover a partially written tree. Invalid state is the recovery decision.
 
 ## Validation modes
 
@@ -136,7 +136,7 @@ One `WriterSession` owns the exclusive lock for `generate` and `ensure_generated
    pages, `terrain.bin`, terrain DDS) use buffered writes. Their flushed handles register in the
    ledger's pending-sync registry. Every authoritative write also records its path, byte length,
    and BLAKE3. Reused artifacts remain untouched and carry their validated length/hash entries.
-   Write version 16 when replacing an older/missing version.
+   Write the `MGE_DL_VERSION` byte when replacing an older/missing version.
 8. Run the sync barrier. Sequentially `sync_all` every pending payload handle. Any failure
    aborts before the state write, leaving the state invalidated.
 9. Check the write ledger. Every recorded write must have an inventory entry at its canonical
@@ -186,7 +186,7 @@ Do not simplify away these two constraints:
 
 `open_output_snapshot` (in `crates/foundation/src/output_index.rs`):
 
-- checks version 16;
+- checks the version byte matches `MGE_DL_VERSION`;
 - acquires the shared `.writer.lock`;
 - rechecks the version under the lock;
 - decodes/checksums `generation_state.bin` and validates invariants;
@@ -207,7 +207,7 @@ Representative interruption points (exit code 42 when armed):
 
 ## Pruned superseded evidence
 
-After successful version-16 publication, owned cleanup removes:
+After successful publication, owned cleanup removes:
 
 - superseded version-15 `static_meshes_00..31` shards
 - `commit_journal.bin`, `generation_index_a.bin`, `generation_index_b.bin`

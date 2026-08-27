@@ -1,6 +1,6 @@
-# Caching and startup (version 16)
+# Caching and startup
 
-Version 16 retains the complete-or-absent state authority and uses fixed static shards at
+The output store uses the complete-or-absent state authority and fixed static shards at
 canonical payload paths. This document describes fingerprints, domain gates, startup handoff, and
 how no-op versus dirty publication interact with that store.
 

@@ -1,4 +1,4 @@
-//! Read-only runtime authority for the version-16 complete-or-absent output tree.
+//! Read-only runtime authority for the complete-or-absent output tree.
 //!
 //! Opening a snapshot acquires a shared storage lock, revalidates `generation_state.bin` under that
 //! lock, and keeps the guard alive for the lifetime of the returned snapshot. Fixed payload
@@ -87,7 +87,7 @@ impl OutputSnapshot {
         &self.state
     }
 
-    /// Returns the selected filesystem paths (fixed under version 16).
+    /// Returns the selected fixed filesystem paths.
     pub fn paths(&self) -> &OutputPaths {
         &self.paths
     }
@@ -103,7 +103,7 @@ impl OutputSnapshot {
     }
 }
 
-/// Opens a version-16 output snapshot and keeps its shared lock pinned.
+/// Opens an output snapshot and keeps its shared lock pinned.
 ///
 /// Waits up to `lock_timeout` for the shared lock, then re-reads and validates the state while
 /// holding it. Every other version is rejected. An older tree must be replaced by a clean rebuild

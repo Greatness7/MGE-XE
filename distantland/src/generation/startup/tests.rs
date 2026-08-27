@@ -1,4 +1,4 @@
-//! Startup status unit tests for the version-16 complete-or-absent store.
+//! Startup status unit tests for the complete-or-absent store.
 
 use super::*;
 use crate::generation::progress::{GenerationStage, ProgressReporter};

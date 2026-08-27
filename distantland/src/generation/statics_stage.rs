@@ -1,4 +1,4 @@
-//! Static-bundle decision and version-16 sharded publication.
+//! Static-bundle decision and sharded publication.
 
 use std::thread::JoinHandle;
 use std::time::Instant;

@@ -82,7 +82,7 @@ pub enum StaticReuseMode {
     ForcedFull,
 }
 
-/// Aggregate observability for the fixed version-16 static shard set.
+/// Aggregate observability for the fixed static shard set.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StaticShardMetrics {
     /// Reuse path selected by the statics stage.

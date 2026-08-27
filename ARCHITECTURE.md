@@ -360,7 +360,7 @@ As IPC host it owns the distant-land world state: per-worldspace quadtrees (near
 statics, grass), the landscape quadtree, and dynamic-visibility groups. It answers
 visibility queries by streaming `RenderMesh` records into shared vectors. It re-reads
 `usage.data` and `terrain.bin` itself (64-bit address space) — the 32-bit client only
-uploads D3D resources and registers their pointers. For version 16, the host validates and pins the
+uploads D3D resources and registers their pointers. For output matching `MGE_DL_VERSION`, the host validates and pins the
 complete `generation_state.bin` inventory under a retained shared lock. The client opens the fixed
 the terrain and 128 static-shard paths directly.
 
@@ -397,7 +397,7 @@ Full protocol description: [docs/architecture/ipc.md](docs/architecture/ipc.md).
 Full inventory and flow: [docs/architecture/distantland-data.md](docs/architecture/distantland-data.md).
 Key contracts:
 
-- `Data Files\distantland\version` — one byte. Production generation and all current readers require version 16.
+- `Data Files\distantland\version` — one byte. Production generation and all current readers require `MGE_DL_VERSION`.
 - `terrain.bin` (`XELAND02`) + five DDS textures (atlas, material, material flags, patch
   albedo, blend patterns) — terrain geometry and the texture-atlas scheme. Byte-level spec:
   [`terrain-bin.md`](docs/architecture/terrain-bin.md).
@@ -411,8 +411,8 @@ Key contracts:
   ([guide](mod-metadata-guide.md)) and legacy `.ovr` classifier files.
 
 Generation runs through `distantland::ensure_generated`, called in-process by
-`MGEXEgui.exe`'s generator window or by `mgeHost64.exe`'s startup-generation worker. Version-16
-output commits in place through the exclusive writer lock and sole `generation_state.bin`
+`MGEXEgui.exe`'s generator window or by `mgeHost64.exe`'s startup-generation worker. Output commits
+in place through the exclusive writer lock and sole `generation_state.bin`
 publication authority; journal/index, staging, quarantine, and directory promotion are retired.
 
 ---

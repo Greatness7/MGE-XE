@@ -1,4 +1,4 @@
-//! The version-16 complete-or-absent storage authority.
+//! The complete-or-absent storage authority.
 //!
 //! Every write to a committed tree goes through `authority::WriterSession`, which holds the
 //! exclusive writer lock, classifies the cache from `generation_state.bin`, and publishes one

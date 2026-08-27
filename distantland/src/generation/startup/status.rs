@@ -90,7 +90,7 @@ pub(super) fn previous_status_under_lock(
             // A Valid classification must carry the Routine-validated base state that produced it.
             writer
                 .base_state()
-                .context("valid version-16 output has no committed state")?;
+                .with_context(|| format!("valid version-{MGE_DL_VERSION} output has no committed state"))?;
             Ok(status_from_valid_base(writer.paths()))
         }
         CacheClass::Absent => Ok(classify_absent_under_lock(writer.paths())),

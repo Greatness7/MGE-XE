@@ -9,9 +9,9 @@ All four use little-endian layouts via the `bytes_io` reader/writer or explicit 
 magics, versions, and length invariants defensively (`load_terrain_file` etc. return
 `io::Error` on malformed input rather than panicking).
 
-## Version-16 publication authority
+## Publication authority
 
-The version-16 output store uses one generator-owned authority file outside `crates/formats/src/`:
+The output store uses one generator-owned authority file outside `crates/formats/src/`:
 
 - `generation_state.bin` ([state.rs](../../crates/foundation/src/storage/state.rs)) uses the shared
   framed-archive envelope with magic `TES3GCS1`, schema version 1, reserved zeroes, and a BLAKE3
@@ -125,7 +125,7 @@ C++-mirroring reader. There is no Rust deserializer; instead, a hand-built fixtu
 
 ## The `version` file and DDS outputs
 
-- `distantland\version` is a single byte equal to `MGE_DL_VERSION` (currently 16, defined in
+- `distantland\version` is a single byte equal to `MGE_DL_VERSION` (defined in
   [crates/foundation/src/output.rs](../../crates/foundation/src/output.rs)); it must match
   the runtime's `MGE_DL_VERSION` in `d3d8/cpp/mge/mgeversion.h` (path from the repo root),
   which `mgeHost64/src/abi/constants.rs` asserts at test time.

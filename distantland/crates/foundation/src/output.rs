@@ -18,7 +18,7 @@ pub const MGE_DL_VERSION: u8 = 16;
 /// Filename prefix shared by every opaque static-atlas page.
 pub const OPAQUE_ATLAS_PREFIX: &str = "_mge_xe_atlas";
 
-/// Fixed number of XESTAT05 static-mesh shards owned by output version 16.
+/// Fixed number of XESTAT05 static-mesh shards owned by the current output format.
 pub const STATIC_MESH_SHARD_COUNT: usize = 128;
 
 /// Fixed numeric width used in sharded static-mesh file names.
@@ -30,7 +30,7 @@ const _: () = assert!(STATIC_MESH_SHARD_COUNT <= u8::MAX as usize + 1);
 ///
 /// # Panics
 ///
-/// Panics when `shard_id` is outside the fixed version-16 shard range.
+/// Panics when `shard_id` is outside the fixed static-mesh shard range.
 pub fn static_mesh_shard_file_name(shard_id: usize) -> String {
     assert!(shard_id < STATIC_MESH_SHARD_COUNT, "static shard id is out of range");
     format!("static_meshes_{shard_id:0width$}", width = STATIC_MESH_SHARD_ID_WIDTH)
@@ -40,7 +40,7 @@ pub fn static_mesh_shard_file_name(shard_id: usize) -> String {
 ///
 /// # Panics
 ///
-/// Panics when `shard_id` is outside the fixed version-16 shard range.
+/// Panics when `shard_id` is outside the fixed static-mesh shard range.
 pub fn static_mesh_shard_relative_path(shard_id: usize) -> String {
     format!("statics\\{}", static_mesh_shard_file_name(shard_id))
 }

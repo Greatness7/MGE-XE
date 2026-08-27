@@ -95,7 +95,7 @@ static queries, the host copies the mesh record, replaces `faces` with the selec
 cumulative count (`faces`, `farFaces`, or `veryFarFaces`), and skips zero-count results.
 Coarse queries have no band endpoints and emit full face counts.
 
-Version 16 has no payload-selection RPC. The Rust host is the sole state/inventory/checksum
+There is no payload-selection RPC. The Rust host is the sole state/inventory/checksum
 authority and retains the shared snapshot pin for server lifetime. The C++ client opens the fixed
 terrain and 128 static-shard paths after checking the version byte, and retains the
 payload-specific binary validation; it does not parse the storage envelope or implement BLAKE3.
