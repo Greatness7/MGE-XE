@@ -35,7 +35,7 @@ impl<'a> UsageInfo<'a> {
                 &reference_sources,
                 capture,
             );
-        let grass = load_grass_plugins(vfs, grass_plugins, args, overrides, &reference_sources)?;
+        let grass = load_grass_plugins(vfs, grass_plugins, &usage_info.objects, args, overrides, &reference_sources)?;
         usage_info.merge(grass.usage_info);
         usage_info.finalize();
         Ok((usage_info, plugin_identities, grass.identities, grass.warnings, capture))

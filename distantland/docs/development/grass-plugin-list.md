@@ -13,32 +13,43 @@ existing VFS.
 
 ## Load order within the list
 
-The list is its own load order, self-contained: grass plugins can override each other but can never
-reach the game's load order. Both reference implementations work this way. OpenMW loads
-groundcover files into an index space separate from its content list, and MGE-XE's legacy generator
-gave grass mods ordinary override rules inside the single plugin list it had.
+The list has its own placement load order. It does not import placements from the game's active load
+order, but its static definitions start from the winning active main-load object store. Both
+reference implementations keep groundcover placement identity separate from content placement
+identity.
 
+- Static definitions start with grass-classified definitions from the merged active load order.
+  Ordered grass-list definitions then override them, and later grass-list definitions win.
 - A later entry overrides or deletes an earlier entry's placements, resolved through its `MAST`
   table exactly as the game resolves plugin overrides.
-- Static definitions are unioned across the whole list, so an addon can place references to grass
-  statics another entry defines. Later definitions of the same id win.
-- A `MAST` target that is not itself in the list (`Morrowind.esm`, typically) cannot be addressed;
-  such references are kept as new placements and reported. OpenMW's `resolveParentFileIndices`
-  degrades the same way.
+- Placements from active content masters are not imported into the dedicated resolver. Only an
+  earlier grass-list file can supply placement override/delete identity.
 
-Placement identity is `(cell, resolved source plugin, refr_index)`. The cell is part of it because
-groundcover generators restart `refr_index` at 0 in every cell, technically invalid, universal in
-practice, and harmless under per-cell scoping. A plugin-global refnum would collapse every cell onto
-the first. Identity is run-local: nothing downstream addresses a grass placement, so it never
-reaches the output format.
+Placement identity is `(cell, resolved or fallback source plugin, refr_index)`. The cell is part of
+it because some groundcover generators restart `refr_index` at 0 in every cell. During resolution,
+an unresolved master index also distinguishes a fallback placement from a local placement with the
+same refnum. Identity is run-local: nothing downstream addresses a grass placement, so neither key
+detail reaches the output format.
 
 `plugins` is not a supported home for groundcover. There, identity is `(plugin, refr_index)` with no
-cell component, so a groundcover file's reused indices collapse and the lost placements are reported
-as `plugin_duplicate_reference_indices`. Use this list instead.
+cell component, so reused per-cell indices collapse. The trace warning for this is not a structured
+generation warning and does not reach the GUI. Use the dedicated list instead.
 
 ## Warning codes
 
-- `grass_plugin_master_not_in_list`
+- `grass_plugin_content_master_delete_ignored`: deletes target an active content master whose
+  placements are not imported into the dedicated resolver. Ordinary non-delete dependencies on an
+  active content master do not warn.
+- `grass_plugin_master_after_dependent`: the named grass master appears later in `grass_plugins`.
+  Non-delete references use fallback placement identity and deletes cannot apply; move the master
+  before the dependent.
+- `grass_plugin_master_unselected`: the named master is selected in neither list. Non-delete
+  references are eligible only as fallback placements and deletes are ignored; enable a content
+  master under `plugins`, or put an actual groundcover master before the dependent under
+  `grass_plugins`.
+- `grass_plugin_master_index_invalid`: a reference's numeric `mast_index` is outside the declaring
+  plugin's `MAST` table. Non-delete references are eligible only as fallback placements and deletes
+  are ignored.
 
 Density thinning hashes the normalized grass-plugin filename, exterior cell coordinates,
 position bits, and a deterministic coincident-placement salt. Grass geometry remains an
@@ -94,6 +105,6 @@ authoritative because it additionally applies VFS resolution and normal static o
 4. Reject duplicate filenames within the grass list and overlaps with `plugins`, matching the
    library's fail-closed validation.
 
-The residual case the ordering rule does not cover, an ESP patching another ESP, still reports
-`grass_plugin_master_not_in_list`. Explicit reorder controls are the fix if that ever shows up in
-practice. The on-disk list is already ordered, so adding them needs no format change.
+The residual case the ordering rule does not cover, an ESP patching another ESP that sorts after it,
+reports `grass_plugin_master_after_dependent`. Explicit reorder controls are the fix if that shows
+up in practice. The on-disk list is already ordered, so adding them needs no format change.

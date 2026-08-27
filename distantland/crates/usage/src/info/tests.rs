@@ -145,6 +145,16 @@ fn grass_plugin_file(
     Plugin { objects }.save_path(path).unwrap();
 }
 
+fn grass_test_vfs(data_dir: &std::path::Path, active_plugins: Vec<std::path::PathBuf>) -> Vfs {
+    Vfs {
+        ini_path: data_dir.join("Morrowind.ini"),
+        data_dirs: vec![data_dir.to_path_buf()],
+        active_plugins,
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[data_dir.to_path_buf()]).unwrap(),
+    }
+}
+
 /// A later grass plugin overrides and deletes an earlier one's placements, and may place references
 /// to grass statics the earlier one defines.
 ///
@@ -201,9 +211,11 @@ fn grass_list_applies_cross_plugin_overrides_deletes_and_definitions() {
 
     let grass_paths = vec![base_path, patch_path];
     let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let main_objects = HashMap::new();
     let loaded = load_grass_plugins(
         &vfs,
         &grass_paths,
+        &main_objects,
         &make_args(),
         &StaticOverrides::default(),
         &reference_sources,
@@ -224,6 +236,126 @@ fn grass_list_applies_cross_plugin_overrides_deletes_and_definitions() {
     let mut expected = vec![30.0_f32.to_bits(), 40.0_f32.to_bits(), 99.0_f32.to_bits()];
     expected.sort_unstable();
     assert_eq!(placements, expected);
+}
+
+#[test]
+fn grass_list_definition_overrides_active_main_definition() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/main.nif"), b"").unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/override.nif"), b"").unwrap();
+
+    let master_path = data_dir.join("master.esm");
+    let grass_path = data_dir.join("dependent-grass.esp");
+    grass_plugin_file(&master_path, &[], Some(("grass_blade", "grass\\main.nif")), &[]);
+    grass_plugin_file(
+        &grass_path,
+        &["master.esm"],
+        Some(("grass_blade", "grass\\override.nif")),
+        &[((0, 0), vec![(0, 1, "grass_blade", 10.0, false)])],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![master_path]);
+    let (usage, _, _, warnings, ()) = UsageInfo::setup_with_grass_plugins_and_capture(
+        &vfs,
+        &[grass_path],
+        &make_args(),
+        &StaticOverrides::default(),
+        |_| (),
+    )
+    .unwrap();
+
+    assert!(warnings.is_empty());
+    let meshes = usage
+        .exterior_references()
+        .unwrap()
+        .values()
+        .map(|reference| reference.id.as_ref())
+        .collect_vec();
+    assert_eq!(meshes, ["grass\\override.nif"]);
+}
+
+#[test]
+fn unresolved_master_and_local_reference_keys_do_not_collide() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let grass_path = data_dir.join("dependent-grass.esp");
+    grass_plugin_file(
+        &grass_path,
+        &["absent.esm"],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[(
+            (0, 0),
+            vec![(0, 1, "grass_blade", 10.0, false), (1, 1, "grass_blade", 20.0, false)],
+        )],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![]);
+    let grass_paths = vec![grass_path];
+    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let loaded = load_grass_plugins(
+        &vfs,
+        &grass_paths,
+        &HashMap::new(),
+        &make_args(),
+        &StaticOverrides::default(),
+        &reference_sources,
+    )
+    .unwrap();
+
+    let mut placements = loaded
+        .usage_info
+        .exterior_references()
+        .unwrap()
+        .values()
+        .map(|reference| reference.translation.x.to_bits())
+        .collect_vec();
+    placements.sort_unstable();
+    assert_eq!(placements, [10.0_f32.to_bits(), 20.0_f32.to_bits()]);
+    assert_eq!(loaded.warnings[0].code, "grass_plugin_master_unselected");
+}
+
+#[test]
+fn active_content_master_warns_only_for_ignored_deletes() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let content_path = data_dir.join("content.esm");
+    let grass_path = data_dir.join("dependent-grass.esp");
+    grass_plugin_file(&content_path, &[], None, &[]);
+    grass_plugin_file(
+        &grass_path,
+        &["content.esm"],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[(
+            (0, 0),
+            vec![(1, 1, "grass_blade", 10.0, false), (1, 2, "grass_blade", 20.0, true)],
+        )],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![content_path.clone()]);
+    let grass_paths = vec![grass_path];
+    let sources = ReferenceSources::from_plugin_lists(&[content_path], &grass_paths);
+    let loaded = load_grass_plugins(
+        &vfs,
+        &grass_paths,
+        &HashMap::new(),
+        &make_args(),
+        &StaticOverrides::default(),
+        &sources,
+    )
+    .unwrap();
+
+    assert_eq!(loaded.warnings.len(), 1);
+    assert_eq!(loaded.warnings[0].code, "grass_plugin_content_master_delete_ignored");
+    assert!(loaded.warnings[0].message.contains("1 delete reference(s)"));
+    assert!(!loaded.warnings[0].message.contains("kept"));
 }
 
 /// The main load order requires plugin-unique reference indices and no longer works around

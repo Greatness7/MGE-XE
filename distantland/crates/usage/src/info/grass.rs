@@ -403,11 +403,31 @@ type GrassCandidateSortKey<'a> = ((i32, i32), [u32; 3], [u32; 3], u32, &'a str, 
 
 /// Identity of one grass placement while the ordered grass list is being resolved.
 ///
-/// Scoped per cell because groundcover generators restart `refr_index` at 0 in every cell, so a
-/// plugin-global refnum would collide. Both reference implementations key the same way: MGE-XE's
-/// legacy generator put cell coordinates in the key string, and OpenMW rebuilds its `refs` map for
-/// each cell in `Groundcover::collectInstances`.
-type GrassRefKey = ((i32, i32), SourceId, u32);
+/// Scoped per cell because some groundcover generators restart `refr_index` at 0 in every cell,
+/// so a plugin-global refnum would collide. Both reference implementations key the same way:
+/// MGE-XE's legacy generator put cell coordinates in the key string, and OpenMW rebuilds its `refs`
+/// map for each cell in `Groundcover::collectInstances`. The final field distinguishes unresolved
+/// master references from local placements while they share the declaring plugin's fallback source.
+type GrassRefKey = ((i32, i32), SourceId, u32, u32);
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum UnresolvedMasterTarget {
+    Named(String),
+    InvalidIndex(u32),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct UnresolvedReferenceCounts {
+    placements: u64,
+    deletes: u64,
+}
+
+struct UnresolvedMasterCount {
+    declaring_plugin: String,
+    declaring_index: usize,
+    target: UnresolvedMasterTarget,
+    references: UnresolvedReferenceCounts,
+}
 
 /// One grass plugin after parsing, held while definitions are unioned across the whole list.
 struct LoadedGrassPlugin {
@@ -422,6 +442,7 @@ struct LoadedGrassPlugin {
 pub(super) fn load_grass_plugins<'a>(
     vfs: &'a Vfs,
     paths: &[PathBuf],
+    main_objects: &HashMap<String, ObjectDefinition<'a>>,
     args: &UsageFilterOptions,
     overrides: &StaticOverrides,
     reference_sources: &ReferenceSources,
@@ -467,9 +488,13 @@ pub(super) fn load_grass_plugins<'a>(
         });
     }
 
-    // Pass 2: union the grass static definitions across the whole list, so an addon plugin can place
-    // references to grass defined by another. Later plugins win, matching ordinary override rules.
-    let mut definitions: HashMap<String, (SourceId, ObjectDefinition<'a>)> = HashMap::new();
+    // Pass 2: seed grass definitions from the already-merged active load order, then union the
+    // dedicated list over them. Later grass plugins win, matching ordinary override rules.
+    let mut definitions: HashMap<String, (Option<SourceId>, ObjectDefinition<'a>)> = main_objects
+        .iter()
+        .filter(|(_, definition)| grass_density_for_object(definition, args, overrides).is_some())
+        .map(|(object_id, definition)| (object_id.clone(), (None, definition.clone())))
+        .collect();
     for entry in &mut loaded {
         for object in entry.plugin.objects.iter_mut() {
             let TES3Object::Static(Static { id, mesh, .. }) = object else {
@@ -491,7 +516,7 @@ pub(super) fn load_grass_plugins<'a>(
                 continue;
             };
             if grass_density_for_object(&definition, args, overrides).is_some() {
-                definitions.insert(id.clone(), (entry.source, definition));
+                definitions.insert(id.clone(), (Some(entry.source), definition));
             }
         }
     }
@@ -501,34 +526,49 @@ pub(super) fn load_grass_plugins<'a>(
     // grass filter is applied afterwards, as OpenMW does when it looks up the groundcover model.
     let mut resolved: BTreeMap<GrassRefKey, GrassCandidate> = BTreeMap::new();
     let mut source_by_filename: HashMap<String, SourceId> = HashMap::new();
-    let mut unresolved_master_counts: Vec<(String, u64)> = Vec::new();
-    for entry in loaded {
-        let mut unresolved_masters = 0_u64;
+    let active_plugin_names: HashSet<String> = vfs.active_plugins().iter().map(|path| plugin_filename(path)).collect();
+    let grass_plugin_positions: HashMap<String, usize> = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (plugin_filename(path), index))
+        .collect();
+    let mut unresolved_master_counts = Vec::new();
+    for (declaring_index, entry) in loaded.into_iter().enumerate() {
+        let mut unresolved_masters: BTreeMap<UnresolvedMasterTarget, UnresolvedReferenceCounts> = BTreeMap::new();
         for cell in entry.plugin.into_objects_of_type::<Cell>() {
             if cell.is_interior() {
                 continue;
             }
             for ((mast_index, refr_index), reference) in cell.references {
-                // A master outside the grass list (`Morrowind.esm`, typically) cannot be addressed
-                // here, so the placement falls back to belonging to this plugin. OpenMW resolves the
-                // same way: `resolveParentFileIndices` leaves the index pointing at the reader
-                // itself when the master is absent from the groundcover file list.
-                let source = if mast_index == 0 {
-                    entry.source
+                let is_delete = reference.deleted.is_some();
+                // Only an earlier grass-list entry can own override/delete identity. An unresolved
+                // target falls back to this plugin for placement ownership, with the master index
+                // retained in the temporary key so it cannot collide with a local placement.
+                let (source, unresolved_mast_index) = if mast_index == 0 {
+                    (entry.source, 0)
+                } else if let Some(resolved_master) = entry
+                    .masters
+                    .get(mast_index as usize - 1)
+                    .and_then(|name| source_by_filename.get(name))
+                    .copied()
+                {
+                    (resolved_master, 0)
                 } else {
-                    let resolved_master = entry
-                        .masters
-                        .get(mast_index as usize - 1)
-                        .and_then(|name| source_by_filename.get(name))
-                        .copied();
-                    if resolved_master.is_none() {
-                        unresolved_masters += 1;
+                    let target = entry.masters.get(mast_index as usize - 1).cloned().map_or(
+                        UnresolvedMasterTarget::InvalidIndex(mast_index),
+                        UnresolvedMasterTarget::Named,
+                    );
+                    let counts = unresolved_masters.entry(target).or_default();
+                    if is_delete {
+                        counts.deletes += 1;
+                    } else {
+                        counts.placements += 1;
                     }
-                    resolved_master.unwrap_or(entry.source)
+                    (entry.source, mast_index)
                 };
 
-                let key = (cell.data.grid, source, refr_index);
-                if reference.deleted.is_some() {
+                let key = (cell.data.grid, source, refr_index, unresolved_mast_index);
+                if is_delete {
                     resolved.remove(&key);
                     continue;
                 }
@@ -546,14 +586,25 @@ pub(super) fn load_grass_plugins<'a>(
                 );
             }
         }
-        if unresolved_masters != 0 {
-            unresolved_master_counts.push((entry.filename.clone(), unresolved_masters));
-        }
+        unresolved_master_counts.extend(
+            unresolved_masters
+                .into_iter()
+                .map(|(target, references)| UnresolvedMasterCount {
+                    declaring_plugin: entry.filename.clone(),
+                    declaring_index,
+                    target,
+                    references,
+                }),
+        );
         // Only plugins already processed can be addressed as masters, mirroring OpenMW's backwards
         // search over readers with a lower index than the one being resolved.
         source_by_filename.insert(entry.filename, entry.source);
     }
-    warnings.extend(report_unresolved_masters(&unresolved_master_counts));
+    warnings.extend(report_unresolved_masters(
+        &unresolved_master_counts,
+        &active_plugin_names,
+        &grass_plugin_positions,
+    ));
 
     // Pass 4: keep the grass placements, thin by density, and emit.
     let mut candidates: Vec<GrassCandidate> = resolved
@@ -607,6 +658,9 @@ pub(super) fn load_grass_plugins<'a>(
     }
 
     for (object_id, (source, definition)) in definitions {
+        let Some(source) = source else {
+            continue;
+        };
         let source_name = reference_sources
             .name(source)
             .expect("interned grass plugin source has a filename");
@@ -642,23 +696,78 @@ fn classify_loaded_plugin(plugin: &Plugin, mut is_grass_mesh: impl FnMut(&str) -
     grass_object_ids
 }
 
-/// Reports references whose `MAST` target is not itself in the grass list.
-///
-/// Such a reference cannot address what it names, so it is kept as a placement belonging to the
-/// plugin that declared it. Grass plugins routinely master `Morrowind.esm` without addressing it;
-/// this fires only when a reference actually targets an out-of-list master.
-fn report_unresolved_masters(counts: &[(String, u64)]) -> Vec<UsageWarning> {
-    counts
-        .iter()
-        .map(|(filename, count)| UsageWarning {
-            code: "grass_plugin_master_not_in_list".to_owned(),
-            message: format!(
-                "Kept {count} reference(s) in grass plugin {filename} as new placements: they address a \
-                 master that is not itself listed under grass_plugins, so the plugin they were meant \
-                 to modify could not be found. Add that master to the grass list, before this plugin."
-            ),
-        })
-        .collect()
+fn report_unresolved_masters(
+    counts: &[UnresolvedMasterCount],
+    active_plugin_names: &HashSet<String>,
+    grass_plugin_positions: &HashMap<String, usize>,
+) -> Vec<UsageWarning> {
+    let mut warnings = Vec::new();
+    for count in counts {
+        let placements = count.references.placements;
+        let deletes = count.references.deletes;
+        match &count.target {
+            UnresolvedMasterTarget::Named(master) if active_plugin_names.contains(master) => {
+                if deletes != 0 {
+                    warnings.push(UsageWarning {
+                        code: "grass_plugin_content_master_delete_ignored".to_owned(),
+                        message: format!(
+                            concat!(
+                                "Grass plugin {} contains {} delete reference(s) targeting active content master ",
+                                "{}. Dedicated grass loading does not import main-load placements, so these ",
+                                "deletes cannot modify them and are ignored."
+                            ),
+                            count.declaring_plugin, deletes, master
+                        ),
+                    });
+                }
+            }
+            UnresolvedMasterTarget::Named(master) if grass_plugin_positions.contains_key(master) => {
+                debug_assert!(
+                    grass_plugin_positions[master] > count.declaring_index,
+                    "an earlier grass master should already have resolved"
+                );
+                warnings.push(UsageWarning {
+                    code: "grass_plugin_master_after_dependent".to_owned(),
+                    message: format!(
+                        concat!(
+                            "Grass plugin {} addresses master {}, but that master appears later in ",
+                            "grass_plugins. {} non-delete reference(s) are treated as new placements; ",
+                            "{} delete reference(s) cannot apply. Move {} before {}."
+                        ),
+                        count.declaring_plugin, master, placements, deletes, master, count.declaring_plugin
+                    ),
+                });
+            }
+            UnresolvedMasterTarget::Named(master) => {
+                warnings.push(UsageWarning {
+                    code: "grass_plugin_master_unselected".to_owned(),
+                    message: format!(
+                        concat!(
+                            "Grass plugin {} addresses unselected master {}. {} non-delete reference(s) are ",
+                            "eligible only as fallback placements; {} delete reference(s) are ignored. Enable ",
+                            "a content master under plugins, or put an actual groundcover master before {} ",
+                            "under grass_plugins."
+                        ),
+                        count.declaring_plugin, master, placements, deletes, count.declaring_plugin
+                    ),
+                });
+            }
+            UnresolvedMasterTarget::InvalidIndex(mast_index) => {
+                warnings.push(UsageWarning {
+                    code: "grass_plugin_master_index_invalid".to_owned(),
+                    message: format!(
+                        concat!(
+                            "Grass plugin {} contains malformed reference data: MAST index {} is outside its ",
+                            "declared master table. {} non-delete reference(s) are eligible only as fallback ",
+                            "placements; {} delete reference(s) are ignored."
+                        ),
+                        count.declaring_plugin, mast_index, placements, deletes
+                    ),
+                });
+            }
+        }
+    }
+    warnings
 }
 
 fn candidate_sort_key(candidate: &GrassCandidate) -> GrassCandidateSortKey<'_> {

@@ -264,7 +264,7 @@ impl PluginUniverse {
         //
         // `load_order_key` puts every ESM ahead of every ESP, which is the
         // realistic dependency case; the residual esp-patches-esp case still
-        // reports `grass_plugin_master_not_in_list`. It is also deterministic,
+        // reports `grass_plugin_master_after_dependent`. It is also deterministic,
         // which `scan_universe`'s `HashMap` order is not, so the byte-idempotent
         // job writer is unaffected.
         let mut grass: Vec<&PluginEntry> = self.entries.iter().filter(|entry| entry.grass).collect();
