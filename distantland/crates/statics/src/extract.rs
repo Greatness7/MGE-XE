@@ -353,6 +353,10 @@ impl DistantStatic {
 
             let has_normals = data.normals.len() == data.vertices.len();
             let has_colors = data.vertex_colors.len() == data.vertices.len();
+            let material = geometry.material_property(&stream);
+            let material_color = material
+                .map(|material| material.diffuse_color.extend(material.alpha))
+                .unwrap_or(Vec4::ONE);
 
             // `uv_set` yields exactly `data.vertices.len()` values, so every vertex is
             // written here; collecting sizes the buffer once instead of zero-filling it.
@@ -369,7 +373,7 @@ impl DistantStatic {
                         Vec3::Z
                     },
                     uv: *uv,
-                    color: if has_colors { data.vertex_colors[i] } else { Vec4::ONE },
+                    color: if has_colors { data.vertex_colors[i] } else { material_color },
                     uv_bound: UvBound {
                         min_y: 0.0,
                         max_x: 1.0,
@@ -411,7 +415,7 @@ impl DistantStatic {
 
             subset.has_alpha = geometry.has_alpha(&stream);
             subset.has_uv_controller = geometry.has_uv_controller(&stream);
-            subset.emissive = geometry.material_property(&stream).map(average_emissive).unwrap_or(0.0);
+            subset.emissive = material.map(average_emissive).unwrap_or(0.0);
 
             subsets.push(subset);
         }
