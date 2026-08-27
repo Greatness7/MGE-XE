@@ -1,9 +1,9 @@
 #pragma once
 
-#define XE_VERSION_STRING "MGE-XE G7 Fork v0.20.1"
+#define XE_VERSION_STRING "MGE-XE G7 Fork v0.20.2"
 #define MGE_MAJOR_VERSION 4
 #define MGE_MINOR_VERSION 20
-#define MGE_BUILD_VERSION 1
+#define MGE_BUILD_VERSION 2
 
 #define MGE_SAVE_VERSION 47
 #define MGE_DL_VERSION 16

@@ -9,7 +9,7 @@ resolver = "3"
 # `dinput8` stay at 0.1.0: nothing reads their version and bumping it forces a
 # full C++ rebuild.
 [workspace.package]
-version = "0.20.1"
+version = "0.20.2"
 
 # Inherited by members with `<dep>.workspace = true`. Every `distantland/*` crate
 # depends on this table; MGE-XE's own members migrate onto it as they need to.
