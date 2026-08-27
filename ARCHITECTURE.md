@@ -332,7 +332,8 @@ Three shader systems coexist:
   (all culling quadtrees live in the host).
 - `dlformat.h` — length-aware decoder for the host-pinned distant-land output descriptor.
   Build its Win32 harness with `cargo build -p dl-contract-test --target i686-pc-windows-msvc
-  --release`. Run it with no arguments for the compile-time `MGE_DL_VERSION` assertion, or pass
+  --release`. Run it with no arguments to check the C++ `MGE_DL_VERSION` against the generator's,
+  or pass
   the root of a generated tree (the `Data Files` directory of a Morrowind install) to validate
   `distantland/version`, every `static_meshes_N` shard header, the shard-count sum against
   `distantland/statics/usage.data`, and the `terrain.bin` magic and version.
@@ -359,7 +360,7 @@ As IPC host it owns the distant-land world state: per-worldspace quadtrees (near
 statics, grass), the landscape quadtree, and dynamic-visibility groups. It answers
 visibility queries by streaming `RenderMesh` records into shared vectors. It re-reads
 `usage.data` and `terrain.bin` itself (64-bit address space) — the 32-bit client only
-uploads D3D resources and registers their pointers. For version 16, the host validates and pins the
+uploads D3D resources and registers their pointers. For output matching `MGE_DL_VERSION`, the host validates and pins the
 complete `generation_state.bin` inventory under a retained shared lock. The client opens the fixed
 the terrain and 128 static-shard paths directly.
 
@@ -396,7 +397,7 @@ Full protocol description: [docs/architecture/ipc.md](docs/architecture/ipc.md).
 Full inventory and flow: [docs/architecture/distantland-data.md](docs/architecture/distantland-data.md).
 Key contracts:
 
-- `Data Files\distantland\version` — one byte. Production generation and all current readers require version 16.
+- `Data Files\distantland\version` — one byte. Production generation and all current readers require `MGE_DL_VERSION`.
 - `terrain.bin` (`XELAND02`) + five DDS textures (atlas, material, material flags, patch
   albedo, blend patterns) — terrain geometry and the texture-atlas scheme. Byte-level spec:
   [`terrain-bin.md`](docs/architecture/terrain-bin.md).
@@ -410,8 +411,8 @@ Key contracts:
   ([guide](mod-metadata-guide.md)) and legacy `.ovr` classifier files.
 
 Generation runs through `distantland::ensure_generated`, called in-process by
-`MGEXEgui.exe`'s generator window or by `mgeHost64.exe`'s startup-generation worker. Version-16
-output commits in place through the exclusive writer lock and sole `generation_state.bin`
+`MGEXEgui.exe`'s generator window or by `mgeHost64.exe`'s startup-generation worker. Output commits
+in place through the exclusive writer lock and sole `generation_state.bin`
 publication authority; journal/index, staging, quarantine, and directory promotion are retired.
 
 ---
@@ -469,7 +470,7 @@ These constants gate interop and must move together:
 | `XE_VERSION_STRING` / `MGE_*_VERSION` | `d3d8/cpp/mge/mgeversion.h` | `VERSION_NUMBER` / `VERSION_STRING` and package version in `MGEXEgui` |
 | `mge_config::SCHEMA_VERSION` (3) | `mge-config/src/schema.rs` | root `schema_version` in `mgeXE.toml`; mismatches warn, known fields load, and the current version is written on save |
 | `MGE_SAVE_VERSION` (47) | `mgeversion.h` | Legacy constant only; no longer governs persistent configuration |
-| `MGE_DL_VERSION` (16) | `mgeversion.h` (distantland data compat) | Rust-host ABI constant, generator output `version` file. `MGEXEgui` keeps no copy — it uses `distantland::MGE_DL_VERSION`. Both remaining copies are pinned to the generator by tests in `mgeHost64/src/abi/constants.rs`, which parse `mgeversion.h` directly |
+| `MGE_DL_VERSION` (17) | `mgeversion.h` (distantland data compat) | Generator output `version` file plus Rust-host and C++ runtime copies. `MGEXEgui` keeps no copy — it uses `distantland::MGE_DL_VERSION`. Tests in `mgeHost64/src/abi/constants.rs` pin both copies to the generator, and `dl-contract-test` independently compares its linked C++ value with the generator constant at runtime |
 | IPC ABI structs | `d3d8/cpp/ipc/bridge.h` | `mgeHost64/src/abi/*` + `layout_tests.rs` |
 | `terrain.bin` layout | `d3d8/cpp/mge/dlformat.h` (`TerrainBin`) + static asserts | `mgeHost64/src/abi/terrain.rs`, `distantland` writer, [`terrain-bin.md`](docs/architecture/terrain-bin.md) |
 | Fixed `static_meshes_000..127` v5 layout/order | `d3d8/cpp/mge/dlformat.h` (`StaticMeshesBin`), `d3d8/cpp/mge/distantinit.cpp` | `distantland` writer; client loader builds concatenated `DistantSubset` records consumed by host `state/loading.rs` |

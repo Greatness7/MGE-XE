@@ -1,4 +1,4 @@
-//! Version-16 inventory path grammar and related path services.
+//! Inventory path grammar and related path services.
 //!
 //! Paths are relative to `distantland`, use backslashes, are lower-case ASCII, and never contain
 //! absolute or parent-directory components. Epoch path formatting is gone: payloads use fixed paths.

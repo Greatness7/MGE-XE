@@ -5,7 +5,9 @@
 use half::f16;
 use tes3::nif::NiBound;
 
-use crate::mge_xe::distant_statics::{ComponentRecord, PackedDistantStatic, PackedSubset, PackedVertex};
+use crate::mge_xe::distant_statics::{
+    ComponentRecord, PackedDistantStatic, PackedSubset, PackedVertex, float_to_u8, pack_d3dcolor_vclr,
+};
 use crate::vfs::TextureSym;
 
 use super::{DistantStatic, SubsetTexture, horizon::horizon_footprint_from_vertices};
@@ -59,12 +61,12 @@ impl DistantStatic {
                     emissive,
                 ];
 
-                cv.color = [
-                    (vertex.color.x * 255.0 + 0.5) as u8,
-                    (vertex.color.y * 255.0 + 0.5) as u8,
-                    (vertex.color.z * 255.0 + 0.5) as u8,
-                    (vertex.color.w * 255.0 + 0.5) as u8,
-                ];
+                cv.color = pack_d3dcolor_vclr(
+                    float_to_u8(vertex.color.x),
+                    float_to_u8(vertex.color.y),
+                    float_to_u8(vertex.color.z),
+                    float_to_u8(vertex.color.w),
+                );
 
                 cv.uv_bound = [
                     f16::from_f32(vertex.uv_bound.min_y),

@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(job.output_root, Some(root.path().join("Data Files")));
     }
 
-    /// Builds a committed version-16 tree for storage-authority checks.
+    /// Builds a committed tree for storage-authority checks.
     ///
     /// Deliberately a real committed tree rather than a stub status lookup: what the policy
     /// turns on is what the storage authority says about committed state and inventory hashes.

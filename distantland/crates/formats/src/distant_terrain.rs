@@ -264,12 +264,6 @@ pub fn pack_ubyte4n_bias_normal(normal: Vec3) -> [u8; 4] {
     ]
 }
 
-/// Packs shader-space RGBA bytes into the little-endian raw byte order that D3D9
-/// `D3DDECLTYPE_D3DCOLOR` expects in a vertex buffer.
-pub const fn pack_d3dcolor_vclr(red: u8, green: u8, blue: u8, alpha: u8) -> [u8; 4] {
-    [blue, green, red, alpha]
-}
-
 /// Validates the fixed `terrain.bin` header prefix in `bytes`.
 ///
 /// This checks the minimum fixed header size plus the magic, version, vertex stride,

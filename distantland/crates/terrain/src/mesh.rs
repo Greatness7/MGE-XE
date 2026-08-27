@@ -11,8 +11,8 @@ use tracing::{debug, info_span};
 
 use crate::UsageInfo;
 use crate::layout::TerrainAtlasRegion;
-use crate::mge_xe::distant_statics::{BoundingBox, BoundingSphere};
-use crate::mge_xe::distant_terrain::{TerrainMesh, TerrainVertex, pack_d3dcolor_vclr, pack_ubyte4n_bias_normal};
+use crate::mge_xe::distant_statics::{BoundingBox, BoundingSphere, float_to_u8, pack_d3dcolor_vclr};
+use crate::mge_xe::distant_terrain::{TerrainMesh, TerrainVertex, pack_ubyte4n_bias_normal};
 use crate::mge_xe::world::LAND_CELL_SIZE;
 use crate::texture::TerrainCells;
 
@@ -776,10 +776,6 @@ fn terrain_bounding_sphere(vertices: &[TerrainVertex], center: Vec3) -> Bounding
 
 fn pack_vertex_color(color: Vec4) -> [u8; 4] {
     pack_d3dcolor_vclr(float_to_u8(color.x), float_to_u8(color.y), float_to_u8(color.z), u8::MAX)
-}
-
-fn float_to_u8(value: f32) -> u8 {
-    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 #[cfg(test)]

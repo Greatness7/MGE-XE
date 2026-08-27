@@ -1,4 +1,4 @@
-//! Exclusive writer session for the version-16 complete-or-absent store.
+//! Exclusive writer session for the complete-or-absent store.
 //!
 //! One session owns the `.writer.lock` for the full decide/publish lifecycle. A valid base is a
 //! decoded, Routine-validated `generation_state.bin`. Everything else is cache-absent and forces a
@@ -98,7 +98,7 @@ impl WriterSession {
                     classification: CacheClass::Valid,
                 }),
                 Err(error) => {
-                    tracing::info!(%error, "version-16 state is absent or invalid; forcing clean regeneration");
+                    tracing::info!(%error, "version-{MGE_DL_VERSION} state is absent or invalid; forcing clean regeneration");
                     Ok(Self {
                         paths,
                         _guard: guard,

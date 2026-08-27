@@ -7,6 +7,13 @@ use itertools::Itertools;
 use super::*;
 use crate::{PackedDistantStatics, serialize_static_meshes};
 
+#[test]
+fn pack_d3dcolor_vclr_matches_d3dcolor_little_endian_bytes() {
+    let packed = pack_d3dcolor_vclr(0x11, 0x22, 0x33, 0x44);
+    assert_eq!(packed, [0x33, 0x22, 0x11, 0x44]);
+    assert_eq!(u32::from_le_bytes(packed), 0x4411_2233);
+}
+
 fn vertex(seed: u8) -> PackedVertex {
     PackedVertex {
         position: [

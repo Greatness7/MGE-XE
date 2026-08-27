@@ -139,13 +139,6 @@ fn pack_ubyte4n_bias_normal_matches_expected_bias_encoding() {
 }
 
 #[test]
-fn pack_d3dcolor_vclr_matches_d3dcolor_little_endian_bytes() {
-    let packed = pack_d3dcolor_vclr(0x11, 0x22, 0x33, 0x44);
-    assert_eq!(packed, [0x33, 0x22, 0x11, 0x44]);
-    assert_eq!(u32::from_le_bytes(packed), 0x4411_2233);
-}
-
-#[test]
 fn terrain_file_matches_fixture_bytes_and_round_trips_exactly() {
     let file = minimal_terrain_file();
     let expected = minimal_terrain_file_bytes();

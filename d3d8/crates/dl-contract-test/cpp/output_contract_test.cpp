@@ -1,4 +1,4 @@
-// Focused version-16 output contract harness.
+// Focused distant-land output contract harness.
 #include "mge/mgeversion.h"
 
 #include <cstdint>
@@ -50,10 +50,15 @@ int fail(const char* message) {
 
 } // namespace
 
-extern "C" int mge_dl_contract_main(int argc, char** argv) {
-    static_assert(MGE_DL_VERSION == 16, "C++ client MGE_DL_VERSION must be 16");
-    if (MGE_DL_VERSION != 16) {
-        return fail("MGE_DL_VERSION is not 16");
+extern "C" int mge_dl_contract_main(int argc, char** argv, std::uint8_t generatorVersion) {
+    if (MGE_DL_VERSION != generatorVersion) {
+        std::fprintf(
+            stderr,
+            "output_contract_test: C++ MGE_DL_VERSION %u does not match generator MGE_DL_VERSION %u\n",
+            MGE_DL_VERSION,
+            generatorVersion
+        );
+        return 1;
     }
 
     if (argc < 2) {

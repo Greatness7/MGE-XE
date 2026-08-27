@@ -15,7 +15,7 @@ live in [docs/architecture/](docs/architecture/):
 - [docs/architecture/terrain.md](docs/architecture/terrain.md) — the terrain package: layout, textures, meshes, control maps
 - [docs/architecture/caching-and-startup.md](docs/architecture/caching-and-startup.md) — fingerprints, domain gates, complete-or-absent startup
 - [docs/architecture/binary-formats.md](docs/architecture/binary-formats.md) — the MGE-XE on-disk formats this crate owns
-- [docs/architecture/storage-foundation.md](docs/architecture/storage-foundation.md) — the normative version-16 complete-or-absent storage contract
+- [docs/architecture/storage-foundation.md](docs/architecture/storage-foundation.md) — the normative complete-or-absent storage contract
 
 ## High-level data flow
 
@@ -101,7 +101,7 @@ Stages, in order (enum `GenerationStage` in [src/generation/progress.rs](src/gen
 | *(inline decide)* | Feed the atlas-binding digest into the statics-domain gate; on an eligible miss, close typed owner dirt over binding deltas, meshopt only dirty meshes and dirty-cell partners while restoring cached post-optimize bounds for clean meshes, then globally filter/group; otherwise meshopt globally. Validate/decode affected prior shards, build dirty merge geometry, splice the authoritative typed-key assembly, and serialize usage without writing | [src/generation/statics_stage.rs](src/generation/statics_stage.rs), [src/generation/statics_stage/plan.rs](src/generation/statics_stage/plan.rs), [src/generation/unit_fingerprint.rs](src/generation/unit_fingerprint.rs) |
 | *(inline)* | Form one `CommitPlan` containing atlas/statics/terrain decisions, unit reporting, deferred small outputs, cumulative preflight, and an empty `PublicationWrites` ledger; a fully clean plan exits as a true no-op | [src/generation.rs](src/generation.rs) (`CommitPlan`), [crates/foundation/src/commit.rs](crates/foundation/src/commit.rs) (`PublicationWrites`) |
 | *(dirty)* | Invalidate existing valid state in place; carry clean atlas inventory entries and stream only `Build` pages; write version when required | [crates/foundation/src/storage/authority.rs](crates/foundation/src/storage/authority.rs), [crates/statics/src/atlas/plan.rs](crates/statics/src/atlas/plan.rs) |
-| `WriteVersionFile` | Consume the precomputed byte-equality decision and write the single-byte version-16 marker only when changed | [src/generation.rs](src/generation.rs) |
+| `WriteVersionFile` | Consume the precomputed byte-equality decision and write the single-byte version marker only when changed | [src/generation.rs](src/generation.rs) |
 | Statics bundle | Publish deferred `usage.data`; carry all 128 static shards on a coarse hit, or serialize only dirty `statics\static_meshes_000..127` shards sequentially on one background thread | [src/generation/statics_stage.rs](src/generation/statics_stage.rs) |
 | `WriteTerrainPackage` | Publish occlusion only when its prepared bytes changed; carry the whole package on a hit, otherwise rebuild only mesh work items with a dirty chunk dependency, carry the five DDS products when their domain digest is unchanged, and stream canonical `terrain.bin` on a background thread | [src/generation/terrain_stage.rs](src/generation/terrain_stage.rs) |
 | *(publish)* | Join payload writers, run the sync barrier, check the write ledger against the inventory, publish complete `generation_state.bin`, prune superseded owned files, write the advisory generation report, and Routine-validate under the exclusive lock | [crates/foundation/src/storage/authority.rs](crates/foundation/src/storage/authority.rs) |
@@ -250,7 +250,7 @@ the canonical layout beneath the output root. The MGE-XE contract (checked by
 `validate_mge_xe_contract`) comprises:
 
 ```
-distantland\version                          single byte = MGE_DL_VERSION (16)
+distantland\version                          single byte = MGE_DL_VERSION
 distantland\generation_state.bin             sole publication authority (TES3GCS1)
 distantland\terrain.bin                      world-space terrain payload (when enabled)
 distantland\terrain_atlas.dds                BC1 source-texture atlas (per-tile mips, wrap gutters)
@@ -277,7 +277,7 @@ same canonical paths.
 
 No legacy `world`, `world.dds`, or `world_n.dds` files are emitted. Geometry-informed texture
 sizing publishes no report of its own: the decisions reach output only through atlas dimensions,
-and the run's proposed-reduction count is visible on the `stage.analyze_texture_density` span. An older tree is never adopted as cache: after a successful version-16
+and the run's proposed-reduction count is visible on the `stage.analyze_texture_density` span. An older tree is never adopted as cache: after a successful
 publication, superseded journal/index/epoch evidence and cleanup targets are pruned. This includes
 the former JSON observability files, but cleanup happens only on a real publication, not an
 already-valid no-op.
@@ -409,7 +409,7 @@ layouts, and override semantics. Behavioral parity notes worth knowing:
 
 - The minimum-size static filter runs *after* mesh optimization (final bounds, not raw source
   geometry), matching MGE-XE.
-- The `version` file byte must equal `MGE_DL_VERSION` (currently 16), matching
+- The `version` file byte must equal `MGE_DL_VERSION`, matching
   `d3d8/cpp/mge/mgeversion.h` and `mgeHost64/src/abi/constants.rs` (paths from the repo
   root). The GUI keeps no copy of its own — it reads this crate's `MGE_DL_VERSION`.
 - The packed vertex `uv_bound` lane order and the terrain vertex packing are shader-coupled;

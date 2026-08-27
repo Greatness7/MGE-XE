@@ -1,6 +1,6 @@
-# Incremental generation (version 16)
+# Incremental generation
 
-The version-16 pipeline scales generation work to the changed inputs. It keeps one
+The pipeline scales generation work to the changed inputs. It keeps one
 complete-or-absent publication authority, and its output is logically equivalent to a forced clean
 rebuild. Domain gates, unit fingerprints, fixed static shards, and canonical payload paths are in
 place. Terrain-record reuse, static-shard reuse, atlas family reconciliation with binding deltas,
@@ -20,7 +20,7 @@ post-optimization reuse investigation is retired, and its script,
 ## Authority set
 
 - `generation_state.bin`: framed `TES3GCS1` state with a state body and required-artifact inventory
-- `version`: single-byte format marker (16)
+- `version`: single-byte format marker (`MGE_DL_VERSION`)
 - all canonical `statics\static_meshes_000..127` shards and, when enabled, `terrain.bin` plus terrain companions
 - generator-owned atlas pages under `statics\textures\`
 - exclusive/shared `.writer.lock`
@@ -44,9 +44,8 @@ state invalidation, state publication, durability flush, payload write, or pruni
 7. Write the optional non-authoritative generation report while the exclusive lock is still held.
 8. Reload/Routine-validate the on-disk state under the exclusive lock, then release.
 
-Interrupted runs after invalidation leave the cache absent. The run rebuilds older trees to
-canonical version 16, and removes their journal/index/epoch evidence only after version-16
-publication succeeds.
+Interrupted runs after invalidation leave the cache absent. The run rebuilds older trees to the
+current format, and removes their journal/index/epoch evidence only after publication succeeds.
 
 ## Domain carry rules
 
