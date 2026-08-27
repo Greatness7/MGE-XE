@@ -145,6 +145,9 @@ fn later_grass_master_reports_order_error_until_moved_first() {
     std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
     std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
 
+    let ini_path = data_dir.join("Morrowind.ini");
+    std::fs::write(&ini_path, b"").unwrap();
+
     let content_path = data_dir.join("content.esm");
     write_grass_plugin(&content_path, &[], None, &[]);
     let master_path = data_dir.join("master-grass.esm");
@@ -163,7 +166,7 @@ fn later_grass_master_reports_order_error_until_moved_first() {
     );
 
     let vfs = Vfs::load(&VfsLoadOptions {
-        morrowind_ini: None,
+        morrowind_ini: Some(ini_path),
         data_dirs: Some(vec![data_dir.to_path_buf()]),
         plugins: Some(vec![content_path]),
     })
@@ -205,6 +208,9 @@ fn missing_and_invalid_grass_masters_have_distinct_diagnostics() {
     std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
     std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
 
+    let ini_path = data_dir.join("Morrowind.ini");
+    std::fs::write(&ini_path, b"").unwrap();
+
     let content_path = data_dir.join("content.esm");
     write_grass_plugin(&content_path, &[], None, &[]);
     let dependent_path = data_dir.join("dependent-grass.esp");
@@ -221,7 +227,7 @@ fn missing_and_invalid_grass_masters_have_distinct_diagnostics() {
     );
 
     let vfs = Vfs::load(&VfsLoadOptions {
-        morrowind_ini: None,
+        morrowind_ini: Some(ini_path),
         data_dirs: Some(vec![data_dir.to_path_buf()]),
         plugins: Some(vec![content_path]),
     })
