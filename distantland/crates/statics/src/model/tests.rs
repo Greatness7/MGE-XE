@@ -35,6 +35,31 @@ fn pack_subset_normal_and_emissive(emissive: f32) -> [u8; 4] {
 }
 
 #[test]
+fn static_vertex_color_is_packed_as_d3dcolor_bytes() {
+    let vfs = crate::Vfs {
+        ini_path: PathBuf::from("Morrowind.ini"),
+        data_dirs: vec![],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::DirectoryMaps::default(),
+    };
+    let packed = DistantStatic {
+        subsets: vec![Subset {
+            vertices: vec![Vertex {
+                color: Vec4::new(0.0, 0.5, 1.0, 1.0),
+                ..Vertex::default()
+            }],
+            triangles: vec![[0, 0, 0]],
+            ..Subset::default()
+        }],
+        ..DistantStatic::default()
+    }
+    .into_distant_static(&vfs, 1.0);
+
+    assert_eq!(packed.subsets[0].vertices[0].color, [255, 128, 0, 255]);
+}
+
+#[test]
 fn building_statics_use_doubled_cutoff_radius() {
     assert!(!passes_min_radius(4.0, StaticType::StaticAuto, false, 1.0, 6.0, 1.0));
     assert!(passes_min_radius(4.0, StaticType::StaticBuilding, false, 1.0, 6.0, 1.0));
