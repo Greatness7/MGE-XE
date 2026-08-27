@@ -63,7 +63,7 @@ jobs:
           {
             echo "path=${archives[0]}"
             echo "version=${TAG#v}"
-            echo "url=${GITHUB_SERVER_URL}/${GH_REPO}/releases/tag/${TAG}"
+            echo "url=${GITHUB_SERVER_URL}/${GH_REPO}/blob/${TAG}/CHANGELOG.md"
           } >> "$GITHUB_OUTPUT"
 
       # Pinned to v1.0.0-beta.10. The action is pre-1.0 and ships a committed
@@ -77,8 +77,9 @@ jobs:
           version: ${{ steps.archive.outputs.version }}
           display_name: MGE XE G7 v${{ steps.archive.outputs.version }}
           # Nexus renders this as plain text, so the changelog markdown would
-          # arrive full of literal link syntax. Point at the rendered release
-          # notes instead.
+          # arrive full of literal link syntax. Point at CHANGELOG.md instead,
+          # pinned to the tag rather than a branch so the link keeps showing the
+          # changelog as it stood for this release once main moves on.
           description: >-
             Full changelog: ${{ steps.archive.outputs.url }}
           category: main
