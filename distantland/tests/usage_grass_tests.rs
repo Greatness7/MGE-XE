@@ -1,6 +1,6 @@
 //! Cross-crate coverage for dedicated grass-plugin usage loading.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use distantland::{
     DistantReference, StaticOverrides, UsageFilterOptions, UsageInfo, Vfs, VfsLoadOptions, classify_grass_plugins,
@@ -11,6 +11,7 @@ use distantland_test_support::{
     FIXTURE_SECOND_GRASS_PLUGIN_NAME, build_hermetic_fixture,
 };
 use itertools::Itertools;
+use tes3::esp::{Cell, Header, Plugin, Reference, Static, TES3Object};
 
 fn placement_facts(usage: &UsageInfo<'_>) -> Vec<(String, [u32; 3], [u32; 3], u32)> {
     let mut facts = usage
@@ -28,6 +29,53 @@ fn placement_facts(usage: &UsageInfo<'_>) -> Vec<(String, [u32; 3], [u32; 3], u3
         .collect_vec();
     facts.sort_unstable();
     facts
+}
+
+type TestGrassRef<'a> = (u32, u32, &'a str, bool);
+
+fn write_grass_plugin(path: &Path, masters: &[&str], definition: Option<(&str, &str)>, references: &[TestGrassRef<'_>]) {
+    let mut header = Header::default();
+    header.masters = masters.iter().map(|name| ((*name).to_owned(), 0)).collect();
+    let mut objects: Vec<TES3Object> = vec![header.into()];
+    if let Some((id, mesh)) = definition {
+        objects.push(
+            Static {
+                id: id.to_owned(),
+                mesh: mesh.to_owned(),
+                ..Static::default()
+            }
+            .into(),
+        );
+    }
+    if !references.is_empty() {
+        let mut cell = Cell::default();
+        for &(mast_index, refr_index, id, deleted) in references {
+            cell.references.insert(
+                (mast_index, refr_index),
+                Reference {
+                    mast_index,
+                    refr_index,
+                    id: id.to_owned(),
+                    deleted: deleted.then_some(true),
+                    ..Reference::default()
+                },
+            );
+        }
+        objects.push(cell.into());
+    }
+    Plugin { objects }.save_path(path).unwrap();
+}
+
+fn grass_options() -> UsageFilterOptions {
+    UsageFilterOptions {
+        include_activators: true,
+        include_misc: true,
+        include_interiors_with_water: false,
+        include_behaves_like_exterior: true,
+        include_large_interiors: true,
+        exclude_script_disable_targets: true,
+        grass_density: 1.0,
+    }
 }
 
 /// The two lists are deliberately not equivalent for groundcover.
@@ -87,10 +135,115 @@ fn main_load_order_collapses_groundcover_that_the_grass_list_keeps() {
         "the placements the main list keeps should be a subset of what the grass list keeps"
     );
 
-    assert_eq!(
-        grass_warnings.iter().map(|warning| warning.code.as_str()).collect_vec(),
-        ["grass_plugin_master_not_in_list"]
+    assert!(grass_warnings.is_empty(), "active content-master placements should not warn");
+}
+
+#[test]
+fn later_grass_master_reports_order_error_until_moved_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let content_path = data_dir.join("content.esm");
+    write_grass_plugin(&content_path, &[], None, &[]);
+    let master_path = data_dir.join("master-grass.esm");
+    let dependent_path = data_dir.join("dependent-grass.esp");
+    write_grass_plugin(
+        &master_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[(0, 1, "grass_blade", false)],
     );
+    write_grass_plugin(
+        &dependent_path,
+        &["master-grass.esm"],
+        None,
+        &[(1, 1, "grass_blade", true), (1, 2, "grass_blade", false)],
+    );
+
+    let vfs = Vfs::load(&VfsLoadOptions {
+        morrowind_ini: None,
+        data_dirs: Some(vec![data_dir.to_path_buf()]),
+        plugins: Some(vec![content_path]),
+    })
+    .unwrap();
+    let wrong_order = vec![dependent_path.clone(), master_path.clone()];
+    let (_, _, _, warnings, ()) = UsageInfo::setup_with_grass_plugins_and_capture(
+        &vfs,
+        &wrong_order,
+        &grass_options(),
+        &StaticOverrides::default(),
+        |_| (),
+    )
+    .unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].code, "grass_plugin_master_after_dependent");
+    assert!(warnings[0].message.contains("1 non-delete reference(s)"));
+    assert!(
+        warnings[0].message.contains("1 delete reference(s)"),
+        "{}",
+        warnings[0].message
+    );
+
+    let correct_order = vec![master_path, dependent_path];
+    let (_, _, _, warnings, ()) = UsageInfo::setup_with_grass_plugins_and_capture(
+        &vfs,
+        &correct_order,
+        &grass_options(),
+        &StaticOverrides::default(),
+        |_| (),
+    )
+    .unwrap();
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn missing_and_invalid_grass_masters_have_distinct_diagnostics() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let content_path = data_dir.join("content.esm");
+    write_grass_plugin(&content_path, &[], None, &[]);
+    let dependent_path = data_dir.join("dependent-grass.esp");
+    write_grass_plugin(
+        &dependent_path,
+        &["absent.esm"],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[
+            (1, 1, "grass_blade", false),
+            (1, 2, "grass_blade", true),
+            (7, 3, "grass_blade", false),
+            (7, 4, "grass_blade", true),
+        ],
+    );
+
+    let vfs = Vfs::load(&VfsLoadOptions {
+        morrowind_ini: None,
+        data_dirs: Some(vec![data_dir.to_path_buf()]),
+        plugins: Some(vec![content_path]),
+    })
+    .unwrap();
+    let (_, _, _, warnings, ()) = UsageInfo::setup_with_grass_plugins_and_capture(
+        &vfs,
+        &[dependent_path],
+        &grass_options(),
+        &StaticOverrides::default(),
+        |_| (),
+    )
+    .unwrap();
+
+    assert_eq!(
+        warnings.iter().map(|warning| warning.code.as_str()).collect_vec(),
+        ["grass_plugin_master_unselected", "grass_plugin_master_index_invalid"]
+    );
+    assert!(warnings[1].message.contains("MAST index 7"));
+    for warning in warnings {
+        assert!(warning.message.contains("1 non-delete reference(s)"));
+        assert!(warning.message.contains("1 delete reference(s)"));
+    }
 }
 
 /// List order decides overrides between grass plugins, but must not perturb disjoint ones.

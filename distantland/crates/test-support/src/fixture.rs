@@ -73,6 +73,9 @@ pub const FIXTURE_TAIL_PLUGIN_NAME: &str = "fixture-tail.esp";
 /// File name of the main-load-order grass plugin used by stable-identity scenarios.
 pub const FIXTURE_GRASS_PLUGIN_NAME: &str = "fixture-grass.esp";
 
+/// File name of the active content master that owns the grass-list fixture's static definition.
+pub const FIXTURE_GRASS_MASTER_NAME: &str = "fixture-grass-master.esm";
+
 /// File name of the dormant second grass plugin used by the grass-list add scenario.
 pub const FIXTURE_SECOND_GRASS_PLUGIN_NAME: &str = "fixture-grass-second.esp";
 
@@ -324,7 +327,6 @@ fn build_main_grass_variant(inputs_root: &Path) -> Result<HermeticFixturePaths> 
     Ok(paths)
 }
 
-/// Adds one active and one dormant generator-only grass plugin to the baseline fixture.
 fn build_grass_list_variant(inputs_root: &Path) -> Result<HermeticFixturePaths> {
     let mut paths = build_baseline_world_v1(inputs_root)?;
     let grass_mesh_dir = paths.data_dir.join("Meshes/grass");
@@ -344,6 +346,10 @@ fn build_grass_list_variant(inputs_root: &Path) -> Result<HermeticFixturePaths> 
         true,
     )?;
 
+    let mut master = grass_master_plugin();
+    master
+        .save_path(paths.data_dir.join(FIXTURE_GRASS_MASTER_NAME))
+        .context("writing fixture active grass-definition master")?;
     let mut primary = grass_list_plugin_with_ignored_content();
     primary
         .save_path(paths.data_dir.join(FIXTURE_GRASS_PLUGIN_NAME))
@@ -353,6 +359,7 @@ fn build_grass_list_variant(inputs_root: &Path) -> Result<HermeticFixturePaths> 
         .save_path(paths.data_dir.join(FIXTURE_SECOND_GRASS_PLUGIN_NAME))
         .context("writing second fixture grass-list plugin")?;
 
+    paths.plugin_names.insert(0, PathBuf::from(FIXTURE_GRASS_MASTER_NAME));
     paths.grass_plugin_names = vec![PathBuf::from(FIXTURE_GRASS_PLUGIN_NAME)];
     Ok(paths)
 }
@@ -432,6 +439,20 @@ fn baseline_world_v1_plugin() -> Plugin {
     plugin
 }
 
+/// Builds the active content master that supplies the dedicated grass plugin's STAT.
+fn grass_master_plugin() -> Plugin {
+    let mut plugin = Plugin::new();
+    let mut header = Header::default();
+    header.file_type = FileType::Esm;
+    plugin.objects.push(TES3Object::Header(header));
+    plugin.objects.push(TES3Object::Static(Static {
+        id: "fixture_grass".to_owned(),
+        mesh: "grass\\fixture_grass.nif".to_owned(),
+        ..Static::default()
+    }));
+    plugin
+}
+
 /// Builds a grass plugin whose native reference indices repeat across exterior cells.
 fn main_grass_plugin() -> Plugin {
     let mut plugin = Plugin::new();
@@ -467,14 +488,18 @@ fn main_grass_plugin() -> Plugin {
     plugin
 }
 
-/// Extends the primary grass plugin with ignored content covering all four stable warning codes.
+/// Builds a STAT-less grass plugin whose definition comes from an active content master.
+///
+/// The extra content-master reference is deliberately non-grass and verifies that ordinary
+/// non-delete dependencies on active content do not produce warning noise.
 fn grass_list_plugin_with_ignored_content() -> Plugin {
     let mut plugin = main_grass_plugin();
     plugin
-        .header_mut()
-        .expect("fixture plugin has a header")
-        .masters
-        .push((FIXTURE_PLUGIN_NAME.to_owned(), 0));
+        .objects
+        .retain(|object| !matches!(object, TES3Object::Static(Static { id, .. }) if id == "fixture_grass"));
+    let header = plugin.header_mut().expect("fixture plugin has a header");
+    header.masters.push((FIXTURE_GRASS_MASTER_NAME.to_owned(), 0));
+    header.masters.push((FIXTURE_PLUGIN_NAME.to_owned(), 0));
     plugin.objects.push(TES3Object::Static(Static {
         id: "fixture_non_grass".to_owned(),
         mesh: "fixture_opaque.nif".to_owned(),
@@ -482,7 +507,7 @@ fn grass_list_plugin_with_ignored_content() -> Plugin {
     }));
 
     let mut master_reference = placed_reference(100, "fixture_opaque", [40_000.0, 40_000.0, 0.0]);
-    master_reference.mast_index = 1;
+    master_reference.mast_index = 2;
     plugin.objects.push(TES3Object::Cell(exterior_cell(
         (5, 5),
         vec![
