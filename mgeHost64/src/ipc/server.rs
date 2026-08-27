@@ -8,7 +8,7 @@ use tracing::{error, info};
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
 use crate::abi::{
-    Command, DynVisFlag, INVALID_VECTOR, Parameters, RenderMesh, VIS_STATIC, VecId, VisibleSetSort, c_string_from_fixed,
+    Command, DynVisFlag, INVALID_VECTOR, Parameters, RenderMesh, VIS_STATIC, VecId, VisibleSetSort, bytes_from_fixed,
 };
 use crate::config::Configuration;
 use crate::error::HostError;
@@ -333,8 +333,8 @@ impl Server {
     /// Switches the active world space used by visibility queries.
     fn set_world_space(&mut self) {
         let mut params = unsafe { self.params().params.world_space_params };
-        let name = c_string_from_fixed(&params.cellname);
-        params.cell_found = self.distant_land.set_current_world_space(name.as_ref()) as u8;
+        let name = bytes_from_fixed(&params.cellname);
+        params.cell_found = self.distant_land.set_current_world_space(name) as u8;
         self.params_mut().params.world_space_params = params;
     }
 

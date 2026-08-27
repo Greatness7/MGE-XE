@@ -1,5 +1,6 @@
 //! Serialization of MGE-XE `usage.data`.
 
+use anyhow::Context as _;
 use bytes_io::Writer;
 
 use crate::info::UsageInfo;
@@ -98,10 +99,32 @@ pub fn serialize_usage_data<'a>(
         }
 
         if reference_count != 0 {
+            // The field holds the engine's own single-byte name bytes, whatever codepage the
+            // install uses. The ESM reader recovers those bytes by decoding as WINDOWS-1252,
+            // which is lossless because every high byte maps to a distinct codepoint, so
+            // encoding back the same way restores them. Writing the UTF-8 form instead both
+            // widens non-ASCII names past the field and yields bytes the game never matches.
+            //
+            // `encode` truncates at an embedded NUL, which would silently shorten the name
+            // and could merge two world spaces, so reject one rather than let it through.
+            anyhow::ensure!(
+                !cell_name.contains('\0'),
+                "interior cell name '{}' contains a NUL and cannot be written to the 64-byte usage.data field",
+                cell_name.escape_debug()
+            );
+            let encoded_name = writer
+                .encode(cell_name)
+                .with_context(|| format!("interior cell name '{cell_name}' is not representable as engine name bytes"))?;
+            anyhow::ensure!(
+                encoded_name.len() <= 64,
+                "interior cell name '{cell_name}' encodes to {} bytes, exceeding the 64-byte usage.data field",
+                encoded_name.len()
+            );
+
             let end_position = writer.cursor.position();
             writer.cursor.set_position(position);
             writer.save(&reference_count)?;
-            writer.save_bytes_padded::<64>(cell_name.as_bytes())?;
+            writer.save_bytes_padded::<64>(&encoded_name)?;
             writer.cursor.set_position(end_position);
         } else {
             // Empty interior groups are omitted entirely to match MGE-XE's layout.
@@ -167,15 +190,43 @@ fn write_reference(
 /// 1-byte range count, and 8 × 8-byte (begin, end) range pairs.
 fn write_dynamic_vis_groups(writer: &mut Writer, dynamic_vis: &DynamicVisData) -> std::io::Result<()> {
     for group in &dynamic_vis.groups {
-        let (source, id, ranges): (u8, &[u8], &[(i32, i32)]) = match &group.kind {
-            DynamicVisKind::Journal { journal_id, ranges } => (1, journal_id.as_bytes(), ranges.as_slice()),
-            DynamicVisKind::Global { global_id, ranges } => (2, global_id.as_bytes(), ranges.as_slice()),
-            DynamicVisKind::UniqueObject { source_id, .. } => (3, source_id.as_bytes(), &[(1, 2)]),
+        let (source, kind, id, ranges): (u8, &str, &str, &[(i32, i32)]) = match &group.kind {
+            DynamicVisKind::Journal { journal_id, ranges } => (1, "journal", journal_id, ranges.as_slice()),
+            DynamicVisKind::Global { global_id, ranges } => (2, "global", global_id, ranges.as_slice()),
+            DynamicVisKind::UniqueObject { source_id, .. } => (3, "unique object", source_id, &[(1, 2)]),
         };
+
+        // As with interior cell names, this field holds engine name bytes rather than UTF-8.
+        // Unlike them these ids come from override files, so an embedded NUL is reachable
+        // here; `encode` would truncate at it and quietly bind the group to a shorter id.
+        if id.contains('\0') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "dynamic vis {kind} id '{}' contains a NUL and cannot be written to the 64-byte usage.data field",
+                    id.escape_debug()
+                ),
+            ));
+        }
+        let encoded_id = writer.encode(id).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("dynamic vis {kind} id '{id}' is not representable as engine name bytes"),
+            )
+        })?;
+        if encoded_id.len() > 64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "dynamic vis {kind} id '{id}' encodes to {} bytes, exceeding the 64-byte usage.data field",
+                    encoded_id.len()
+                ),
+            ));
+        }
 
         let start = writer.cursor.position();
         writer.save(&source)?;
-        writer.save_bytes_padded::<64>(id)?;
+        writer.save_bytes_padded::<64>(&encoded_id)?;
         writer.save(&(ranges.len() as u8))?;
         for i in 0..8 {
             let (begin, end) = ranges.get(i).copied().unwrap_or((0, 0));

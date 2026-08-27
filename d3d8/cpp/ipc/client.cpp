@@ -2,6 +2,7 @@
 #include "mge/dlformat.h"
 #include "support/log.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -335,9 +336,12 @@ namespace IPC {
 		}
 		WAIT_FOR_PREVIOUS_COMMAND;
 
+		// The field is not NUL-terminated: a name filling all 64 bytes is valid, and the host
+		// reads the whole field when no terminator is present. Forcing one here would make
+		// such a name impossible to match.
 		auto& params = m_ipcParameters->params.worldSpaceParams;
-		strncpy(params.cellname, cellname.c_str(), sizeof(params.cellname));
-		params.cellname[sizeof(params.cellname) - 1] = 0;
+		memset(params.cellname, 0, sizeof(params.cellname));
+		memcpy(params.cellname, cellname.data(), std::min(cellname.size(), sizeof(params.cellname)));
 		if (!beginRpc(Command::SetWorldSpace)) {
 			return false;
 		}

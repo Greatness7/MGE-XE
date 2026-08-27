@@ -1,7 +1,7 @@
 use super::*;
 use crate::abi::{
-    BoundingBox, BoundingSphere, D3dxMatrix, D3dxVector2, D3dxVector3, RenderMesh, SIZE_OF_TERRAIN_VERT, TerrainFileHeader,
-    TerrainFileLayout, TerrainMeshHeader, TerrainMeshLayout, TerrainVertex,
+    BoundingBox, BoundingSphere, CellName, D3dxMatrix, D3dxVector2, D3dxVector3, RenderMesh, SIZE_OF_TERRAIN_VERT,
+    TerrainFileHeader, TerrainFileLayout, TerrainMeshHeader, TerrainMeshLayout, TerrainVertex,
 };
 use crate::state::horizon::GATE_EVAL_WINDOW;
 use crate::state::quadtree::QuadTreeMesh;
@@ -32,7 +32,7 @@ fn add_visible_mesh(tree: &mut QuadTree, tex: u32, v_buffer: u32, x: f32) -> Mes
 
 fn build_state() -> DistantLandState {
     let mut state = DistantLandState::new(Configuration::default());
-    state.world_space_indices.insert("test".to_string(), 0);
+    state.world_space_indices.insert(CellName::from_bytes(b"test"), 0);
     let mut world_space = WorldSpace::default();
     world_space.near_statics.set_box(400.0, D3dxVector2::default());
     add_visible_mesh(&mut world_space.near_statics, 20, 2, 10.0);
@@ -111,7 +111,7 @@ fn terrain_height_field(vertices: &[(f32, f32, f32)]) -> TerrainHeightField {
 
 fn static_bucket_state(configuration: Configuration) -> DistantLandState {
     let mut state = DistantLandState::new(configuration);
-    state.world_space_indices.insert(String::new(), 0);
+    state.world_space_indices.insert(CellName::EXTERIOR, 0);
     let mut world_space = WorldSpace::default();
     world_space.near_statics.set_box(20000.0, D3dxVector2::default());
     world_space.far_statics.set_box(20000.0, D3dxVector2::default());
@@ -1071,8 +1071,8 @@ fn horizon_culling_does_not_apply_to_interior_world_spaces() {
     state.prepare_horizon(horizon_view_sphere());
     assert!(state.horizon_for_tests().cached_horizon_for_tests().is_some());
 
-    state.world_space_indices.remove("");
-    state.world_space_indices.insert("interior".to_string(), 0);
+    state.world_space_indices.remove(CellName::EXTERIOR.as_bytes());
+    state.world_space_indices.insert(CellName::from_bytes(b"interior"), 0);
     state.current_world_space = Some(0);
 
     let meshes = collect_precise_meshes(&state, VIS_NEAR | VIS_FAR | VIS_VERY_FAR);
@@ -1082,7 +1082,7 @@ fn horizon_culling_does_not_apply_to_interior_world_spaces() {
 #[test]
 fn dynamic_visibility_updates_flip_groups_and_ignore_out_of_range_indices() {
     let mut state = DistantLandState::new(Configuration::default());
-    state.world_space_indices.insert("test".to_string(), 0);
+    state.world_space_indices.insert(CellName::from_bytes(b"test"), 0);
     let mut world_space = WorldSpace::default();
     world_space.near_statics.set_box(400.0, D3dxVector2::default());
     let first = add_visible_mesh(&mut world_space.near_statics, 20, 2, 10.0);
@@ -1126,8 +1126,8 @@ fn dynamic_visibility_updates_flip_groups_and_ignore_out_of_range_indices() {
 #[test]
 fn dynamic_visibility_only_updates_referenced_world_space() {
     let mut state = DistantLandState::new(Configuration::default());
-    state.world_space_indices.insert("first".to_string(), 0);
-    state.world_space_indices.insert("second".to_string(), 1);
+    state.world_space_indices.insert(CellName::from_bytes(b"first"), 0);
+    state.world_space_indices.insert(CellName::from_bytes(b"second"), 1);
 
     let mut first_world = WorldSpace::default();
     first_world.near_statics.set_box(400.0, D3dxVector2::default());
@@ -1156,4 +1156,33 @@ fn dynamic_visibility_only_updates_referenced_world_space() {
 
     assert_eq!(state.world_spaces[0].near_statics.mesh_enabled(first_mesh), 0);
     assert_eq!(state.world_spaces[1].near_statics.mesh_enabled(second_mesh), 1);
+}
+
+#[test]
+fn world_spaces_with_distinct_high_byte_names_select_distinct_indices() {
+    // Two interior names from a Russian install's cp1251 bytes. They differ in one byte, but
+    // a lossy UTF-8 decode renders both as the same run of replacement characters, so a
+    // String-keyed map would have bound the second interior to the first one's statics.
+    let balmora = b"\xc1\xe0\xeb\xec\xee\xf0\xe0";
+    let balmara = b"\xc1\xe0\xeb\xec\xe0\xf0\xe0";
+    assert_eq!(
+        String::from_utf8_lossy(balmora),
+        String::from_utf8_lossy(balmara),
+        "the fixture only means something while these decode alike"
+    );
+
+    let mut state = DistantLandState::new(Configuration::default());
+    state.world_spaces.push(WorldSpace::default());
+    state.world_spaces.push(WorldSpace::default());
+    state.world_space_indices.insert(CellName::from_bytes(balmora), 0);
+    state.world_space_indices.insert(CellName::from_bytes(balmara), 1);
+
+    assert!(state.set_current_world_space(balmora));
+    assert_eq!(state.current_world_space, Some(0));
+
+    assert!(state.set_current_world_space(balmara));
+    assert_eq!(state.current_world_space, Some(1));
+
+    assert!(!state.set_current_world_space(b"\xc1\xe0\xeb"));
+    assert_eq!(state.current_world_space, None);
 }
