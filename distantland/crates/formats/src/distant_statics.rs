@@ -100,6 +100,17 @@ pub struct PackedVertex {
     pub uv_bound: [f16; 4],
 }
 
+/// Quantizes a normalized floating-point channel to its nearest byte value.
+pub fn float_to_u8(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Packs shader-space RGBA bytes into the little-endian raw byte order that D3D9
+/// `D3DDECLTYPE_D3DCOLOR` expects in a vertex buffer.
+pub const fn pack_d3dcolor_vclr(red: u8, green: u8, blue: u8, alpha: u8) -> [u8; 4] {
+    [blue, green, red, alpha]
+}
+
 impl PackedVertex {
     /// Projects this vertex onto the 20-byte grass layout, dropping `uv_bound`.
     pub fn to_grass(&self) -> PackedGrassVertex {
