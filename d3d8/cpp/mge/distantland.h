@@ -175,6 +175,10 @@ public:
     static IPC::Client ipcClient;
     static std::vector<DynamicVisGroup> dynamicVisGroups;
     static void* lastDistantVisCell;
+    // Cached SetWorldSpace result; invalidated on every host (re)start.
+    static std::string lastWorldSpaceKey;
+    static bool lastWorldSpaceFound;
+    static bool worldSpaceCacheValid;
     static bool isDistantLandLoaded;
     static bool staticsUploaded;
 
@@ -338,6 +342,7 @@ public:
 
     static void editProjectionZ(D3DMATRIX* m, float zn, float zf);
     static bool selectDistantCell();
+    static void invalidateWorldSpaceCache();
     static bool isDistantCell();
     static void onResolveDuringInit();
     static void resolveDynamicVisGroups();

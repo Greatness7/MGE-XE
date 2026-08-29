@@ -73,6 +73,9 @@ VendorSpecificRendering DistantLand::vsr;
 IPC::Client DistantLand::ipcClient;
 std::vector<DistantLand::DynamicVisGroup> DistantLand::dynamicVisGroups;
 void* DistantLand::lastDistantVisCell;
+std::string DistantLand::lastWorldSpaceKey;
+bool DistantLand::lastWorldSpaceFound = false;
+bool DistantLand::worldSpaceCacheValid = false;
 bool DistantLand::isDistantLandLoaded = false;
 bool DistantLand::staticsUploaded = false;
 
@@ -1646,6 +1649,7 @@ void DistantLand::pumpUploadTick(int budgetMs) {
     switch (uploadPhase) {
     case UploadPhase::HostWait:
         if (ipcClient.launchState() == IPC::Client::Inactive) {
+            invalidateWorldSpaceCache();
             if (!ipcClient.launchServer("mgeHost64.exe")) {
                 failUpload();
                 return;
@@ -1883,6 +1887,7 @@ void DistantLand::release() {
     // the mapped file, and the IPC stream handle before the main teardown.
     abortUploadPump();
 
+    invalidateWorldSpaceCache();
     ipcClient.stopServer();
 
     if (!hasDeviceResources()) {
