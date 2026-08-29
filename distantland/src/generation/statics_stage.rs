@@ -15,7 +15,10 @@ use crate::{
 };
 
 use super::cache::{fingerprint_static_mesh_shard_inputs, static_mesh_shard_id};
-use super::metrics::{CacheMetadata, GenerationMetrics, StaticReuseMode, summarize_distant_statics};
+use super::metrics::{
+    CacheMetadata, GenerationMetrics, StaticReuseMode, static_geometry_bytes, summarize_distant_statics,
+    summarize_merged_distant_statics,
+};
 use super::output::{STATIC_MESH_SHARD_COUNT, static_mesh_shard_relative_path};
 use super::record_key::{StaticRecordKey, parse_merged};
 use super::state_db::{GenerationDiff, GenerationState, OptimizedMeshBounds, StaticShardState};
@@ -531,6 +534,15 @@ pub(super) fn prepare_statics_bundle(
             metrics.statics.final_subset_count = spliced.final_counts.0;
             metrics.statics.final_vertex_count = spliced.final_counts.1;
             metrics.statics.final_triangle_count = spliced.final_counts.2;
+            metrics.statics.merged_static_count = spliced.merged_counts.0;
+            metrics.statics.merged_vertex_count = spliced.merged_counts.1;
+            metrics.statics.merged_triangle_count = spliced.merged_counts.2;
+            metrics.statics.merged_static_geometry_bytes =
+                static_geometry_bytes(spliced.merged_counts.1, spliced.merged_counts.2);
+            metrics.statics.ordinary_static_geometry_bytes = static_geometry_bytes(
+                spliced.final_counts.1.saturating_sub(spliced.merged_counts.1),
+                spliced.final_counts.2.saturating_sub(spliced.merged_counts.2),
+            );
             record_optimize_metrics(cache, initial_static_count, &optimized_meshes, selective_optimize);
             return Ok(StaticsStagePlan {
                 static_mesh_shards: spliced.static_mesh_shards,
@@ -618,10 +630,19 @@ pub(super) fn prepare_statics_bundle(
     distant_statics.extend(merged_statics);
     sort_packed_statics(&mut distant_statics);
     let final_counts = summarize_distant_statics(&distant_statics);
+    let merged_counts = summarize_merged_distant_statics(&distant_statics);
     metrics.statics.final_static_count = distant_statics.len();
     metrics.statics.final_subset_count = final_counts.0;
     metrics.statics.final_vertex_count = final_counts.1;
     metrics.statics.final_triangle_count = final_counts.2;
+    metrics.statics.merged_static_count = merged_counts.0;
+    metrics.statics.merged_vertex_count = merged_counts.1;
+    metrics.statics.merged_triangle_count = merged_counts.2;
+    metrics.statics.merged_static_geometry_bytes = static_geometry_bytes(merged_counts.1, merged_counts.2);
+    metrics.statics.ordinary_static_geometry_bytes = static_geometry_bytes(
+        final_counts.1.saturating_sub(merged_counts.1),
+        final_counts.2.saturating_sub(merged_counts.2),
+    );
 
     let current_record_keys: HashSet<_> = distant_statics.keys().map(|key| StaticRecordKey::parse(key)).collect();
     let previous_record_keys: HashSet<_> = previous_state
@@ -670,12 +691,16 @@ pub(super) fn prepare_statics_bundle(
     let can_carry_shards = !force_rebuild && !migration && prior_shard_bytes_are_trusted;
     for (shard_id, packed) in packed_shards.into_iter().enumerate() {
         let (subset_count, vertex_count, triangle_count) = summarize_distant_statics(&packed);
+        let (merged_record_count, merged_vertex_count, merged_triangle_count) = summarize_merged_distant_statics(&packed);
         let shard_state = StaticShardState {
             input_digest: fingerprint_static_mesh_shard_inputs(shard_id, &packed),
             record_count: u32::try_from(packed.len())?,
             subset_count: subset_count as u64,
             vertex_count: vertex_count as u64,
             triangle_count: triangle_count as u64,
+            merged_record_count: merged_record_count as u64,
+            merged_vertex_count: merged_vertex_count as u64,
+            merged_triangle_count: merged_triangle_count as u64,
             records: packed.keys().map(|key| StaticRecordKey::parse(key)).collect(),
         };
         // Compare (and thus borrow) `shard_state` before moving it into the shard-state array.

@@ -123,6 +123,10 @@ public:
     static bool pumpDraining;      // pump is being drained synchronously during load
     static bool worldResolved;     // save/new-game world data has resolved
     static bool uploadComplete;    // all upload phases finished
+    // Development-only forced merged-static cap. Phase 3 consumes this value; Phase 0 parses and
+    // logs it early so stress runs cannot silently use a misspelled or overflowing value.
+    static bool streamingCapOverrideActive;
+    static std::uint64_t mergedStreamingCapBytes;
     static bool staticsPhaseStarted;  // beginStaticsPhase() has run for the current pump
     static bool outputStatusQueryPending;
     static int outputWaitStartedMs;
@@ -163,12 +167,16 @@ public:
     static VisibleSet visGrassShared;
     static VisibleSet visExtraShared;
     static IPC::VecView<IPC::DynVisFlag> dynVisFlagsShared;
+    static IPC::VecView<IPC::ResidencyPlan> residencyPlanShared;
+    static IPC::VecView<IPC::ResidencyCommit> residencyCommitShared;
 
     static IPC::VecId visLandSharedId;
     static IPC::VecId visDistantSharedId;
     static IPC::VecId visGrassSharedId;
     static IPC::VecId visExtraSharedId;
     static IPC::VecId dynVisFlagsSharedId;
+    static IPC::VecId residencyPlanSharedId;
+    static IPC::VecId residencyCommitSharedId;
 
     static std::vector<RecordedState> recordMW;
     static std::vector<RecordedState> recordSky;
@@ -279,6 +287,7 @@ public:
     static bool initIpc();
     static bool initIpcBlocking();
     static bool initIpcVectors();
+    static bool verifyResidencyProtocol();
     static bool finishLandscapeUpload();
     static bool initShader();
     static bool initDepth();

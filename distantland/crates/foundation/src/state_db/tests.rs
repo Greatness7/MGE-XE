@@ -176,6 +176,9 @@ fn state_with_shard_record(key: StaticRecordKey) -> GenerationState {
         subset_count: 2,
         vertex_count: 40,
         triangle_count: 20,
+        merged_record_count: 0,
+        merged_vertex_count: 0,
+        merged_triangle_count: 0,
         records: vec![key],
     };
     state

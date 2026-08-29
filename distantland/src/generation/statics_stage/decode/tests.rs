@@ -98,6 +98,9 @@ fn decode_inputs(
         subset_count: counts.0 as u64,
         vertex_count: counts.1 as u64,
         triangle_count: counts.2 as u64,
+        merged_record_count: 0,
+        merged_vertex_count: 0,
+        merged_triangle_count: 0,
         records: packed.keys().map(|key| StaticRecordKey::parse(key)).collect(),
     };
     (directory, paths, artifacts, states)

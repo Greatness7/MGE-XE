@@ -111,7 +111,11 @@ namespace IPC {
         // of whether the main distant-static pass or only a reflection pass ran this frame.
         FinishHorizonFrame,
         QueryOutputStatus,
+        UpdateResidency,
+        PlanResidency,
     };
+    static_assert(Command::UpdateResidency == 14, "Residency command ABI drifted");
+    static_assert(Command::PlanResidency == 15, "Residency command ABI drifted");
 
     enum OutputStatus : std::uint32_t {
         OutputPending = 0,
@@ -170,6 +174,54 @@ namespace IPC {
         OUT std::uint32_t status;
     };
 
+    enum ResidencyPlanAction : std::uint32_t {
+        ResidencyAdmit = 1,
+        ResidencyEvict = 2,
+    };
+
+    enum ResidencyCommitState : std::uint32_t {
+        ResidencyUnloaded = 0,
+        ResidencyResident = 1,
+        ResidencyUnavailable = 2,
+    };
+
+    struct ResidencyPlan {
+        std::uint32_t resourceId;
+        std::uint32_t action;
+        std::uint32_t planEpoch;
+        std::uint32_t reserved;
+    };
+
+    struct ResidencyCommit {
+        std::uint32_t resourceId;
+        std::uint32_t state;
+        ptr32<IDirect3DVertexBuffer9> vbuffer;
+        ptr32<IDirect3DIndexBuffer9> ibuffer;
+    };
+
+    struct UpdateResidencyParameters {
+        IN VecId commits;
+        OUT std::uint32_t success;
+    };
+
+    struct PlanResidencyParameters {
+        IN VecId plan;
+        IN std::uint32_t planEpoch;
+        IN float centerX;
+        IN float centerY;
+        IN float centerZ;
+        IN float admissionRadius;
+        IN float retainRadius;
+        IN std::uint32_t maxCells;
+        IN std::uint32_t maxResources;
+        std::uint32_t reserved;
+        IN std::uint64_t capBytes;
+        IN std::uint64_t availableBytes;
+        IN std::uint64_t capDebtBytes;
+    };
+    static_assert(sizeof(ResidencyPlan) == 16, "Residency plan ABI drifted");
+    static_assert(sizeof(ResidencyCommit) == 16, "Residency commit ABI drifted");
+
     struct SetWorldSpaceParameters {
         IN char cellname[64];
 
@@ -213,6 +265,8 @@ namespace IPC {
             GetMeshesParameters meshParams;
             SetHorizonConfigParameters horizonConfigParams;
             QueryOutputStatusParameters outputStatusParams;
+            UpdateResidencyParameters updateResidencyParams;
+            PlanResidencyParameters planResidencyParams;
         } params;
 	};
 

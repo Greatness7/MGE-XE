@@ -108,7 +108,16 @@ pub struct DistantSubset {
     pub far_faces: i32,
     /// Cumulative face count for the very-far-static tier.
     pub very_far_faces: i32,
+    /// Total vertex/index payload bytes owned by this resource.
+    pub geometry_bytes: u64,
+    /// Stable global subset index used by the residency protocol.
+    pub resource_id: u32,
+    /// Residency classification flags; streamability is explicit and never inferred from pointers.
+    pub resource_flags: u32,
 }
+
+/// The subset is synthetic merged exterior geometry eligible for runtime streaming.
+pub const DISTANT_SUBSET_STREAMABLE_MERGED: u32 = 1 << 0;
 
 /// Shared instance metadata for one distant static object.
 #[repr(C)]

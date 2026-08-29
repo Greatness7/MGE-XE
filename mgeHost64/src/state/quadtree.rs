@@ -45,6 +45,8 @@ pub struct TierBands {
 pub struct QuadTreeMesh {
     /// Mesh payload returned to the client when visible.
     pub render_mesh: RenderMesh,
+    /// Independent GPU-residency gate; dynamic visibility remains in `render_mesh.enabled`.
+    pub resident: bool,
     /// Bounding sphere used for coarse culling.
     pub sphere: BoundingSphere,
     /// Bounding box used for intersection refinement.
@@ -55,6 +57,12 @@ pub struct QuadTreeMesh {
     pub far_faces: i32,
     /// Cumulative face count selected in the very-far-static band.
     pub very_far_faces: i32,
+    /// Retained near-tier face count used to restore a streamed resource after admission.
+    pub near_faces: i32,
+    /// Retained far-tier face count while the drawable value is zeroed for non-residency.
+    pub retained_far_faces: i32,
+    /// Retained very-far-tier face count while the drawable value is zeroed for non-residency.
+    pub retained_very_far_faces: i32,
 }
 
 impl QuadTreeMesh {
@@ -78,13 +86,18 @@ impl QuadTreeMesh {
         far_faces: i32,
         very_far_faces: i32,
     ) -> Self {
+        let near_faces = render_mesh.faces;
         Self {
             render_mesh,
+            resident: true,
             sphere,
             box_value,
             horizon_bounds: horizon_bounds.unwrap_or_else(|| HorizonMeshBounds::from_box(box_value)),
             far_faces,
             very_far_faces,
+            near_faces,
+            retained_far_faces: far_faces,
+            retained_very_far_faces: very_far_faces,
         }
     }
 }
@@ -406,7 +419,7 @@ impl QuadTree {
 
         for &mesh_id in &node_ref.meshes {
             let mesh = self.mesh(mesh_id);
-            if mesh.render_mesh.enabled == 0 {
+            if mesh.render_mesh.enabled == 0 || !mesh.resident {
                 continue;
             }
             if !branch_inside {
@@ -493,7 +506,7 @@ impl QuadTree {
         }
         for &mesh_id in &node_ref.meshes {
             let mesh = self.mesh(mesh_id);
-            if mesh.render_mesh.enabled == 0 {
+            if mesh.render_mesh.enabled == 0 || !mesh.resident {
                 continue;
             }
             if !branch_inside && frustum.contains_sphere(&mesh.sphere) == Containment::Outside {

@@ -191,6 +191,21 @@ pub struct StaticMetrics {
     pub final_vertex_count: usize,
     /// Total triangle count across final serialized statics (`0` on a static bundle cache hit).
     pub final_triangle_count: usize,
+    /// Number of final synthetic merged-static records (`0` on a static bundle cache hit).
+    #[serde(default)]
+    pub merged_static_count: usize,
+    /// Total packed-vertex count in final merged-static records (`0` on a static bundle cache hit).
+    #[serde(default)]
+    pub merged_vertex_count: usize,
+    /// Total triangle count in final merged-static records (`0` on a static bundle cache hit).
+    #[serde(default)]
+    pub merged_triangle_count: usize,
+    /// Unique VB/IB payload bytes belonging to final ordinary static records.
+    #[serde(default)]
+    pub ordinary_static_geometry_bytes: u64,
+    /// Unique VB/IB payload bytes belonging to final merged-static records.
+    #[serde(default)]
+    pub merged_static_geometry_bytes: u64,
     /// Combined serialized byte size of all fixed static-mesh shards.
     pub static_meshes_serialized_size_bytes: u64,
 }
@@ -393,6 +408,30 @@ pub(super) fn summarize_distant_statics(distant_statics: &crate::PackedDistantSt
                 triangles + subset.triangles.len(),
             )
         })
+}
+
+/// Returns `(static_count, vertex_count, triangle_count)` for synthetic merged records only.
+pub(super) fn summarize_merged_distant_statics(distant_statics: &crate::PackedDistantStatics) -> (usize, usize, usize) {
+    use crate::generation::record_key::parse_merged;
+
+    distant_statics.iter().filter(|(key, _)| parse_merged(key).is_some()).fold(
+        (0, 0, 0),
+        |(statics, vertices, triangles), (_, static_mesh)| {
+            let (record_vertices, record_triangles) = static_mesh.subsets.iter().fold((0, 0), |counts, subset| {
+                (counts.0 + subset.vertices.len(), counts.1 + subset.triangles.len())
+            });
+            (statics + 1, vertices + record_vertices, triangles + record_triangles)
+        },
+    )
+}
+
+/// Returns the exact packed VB/IB bytes represented by static vertex and triangle totals.
+pub(super) fn static_geometry_bytes(vertex_count: usize, triangle_count: usize) -> u64 {
+    (vertex_count as u64)
+        .saturating_mul(crate::mge_xe::distant_statics::STATIC_VERTEX_STRIDE as u64)
+        .saturating_add(
+            (triangle_count as u64).saturating_mul(3 * crate::mge_xe::distant_statics::INDEX_ELEMENT_SIZE as u64),
+        )
 }
 
 /// Returns `(mesh_count, vertex_count, triangle_count)` for a serialized terrain file.

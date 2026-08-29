@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 
 
@@ -69,6 +70,8 @@ bool DistantLand::pumpActive = false;
 bool DistantLand::pumpDraining = false;
 bool DistantLand::worldResolved = false;
 bool DistantLand::uploadComplete = false;
+bool DistantLand::streamingCapOverrideActive = false;
+std::uint64_t DistantLand::mergedStreamingCapBytes = 0;
 bool DistantLand::staticsPhaseStarted = false;
 bool DistantLand::outputStatusQueryPending = false;
 int DistantLand::outputWaitStartedMs = 0;
@@ -82,12 +85,16 @@ VisibleSet DistantLand::visDistantShared;
 VisibleSet DistantLand::visGrassShared;
 VisibleSet DistantLand::visExtraShared;
 IPC::VecView<IPC::DynVisFlag> DistantLand::dynVisFlagsShared;
+IPC::VecView<IPC::ResidencyPlan> DistantLand::residencyPlanShared;
+IPC::VecView<IPC::ResidencyCommit> DistantLand::residencyCommitShared;
 
 IPC::VecId DistantLand::visLandSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visDistantSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visGrassSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visExtraSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::dynVisFlagsSharedId = IPC::InvalidVector;
+IPC::VecId DistantLand::residencyPlanSharedId = IPC::InvalidVector;
+IPC::VecId DistantLand::residencyCommitSharedId = IPC::InvalidVector;
 
 vector<DistantLand::RecordedState> DistantLand::recordMW;
 vector<DistantLand::RecordedState> DistantLand::recordSky;
@@ -144,6 +151,31 @@ float DistantLand::nearViewRange;
 float DistantLand::windScaling, DistantLand::niceWeather;
 float DistantLand::lightSunMult, DistantLand::lightAmbMult;
 DistantLand::TerrainRuntimeConstants DistantLand::terrainConstants = {};
+
+namespace {
+
+bool readMergedStreamingCapOverride(std::uint64_t& capBytes) {
+    char value[64] = {};
+    const DWORD length = GetEnvironmentVariableA("MGE_DL_STREAMING_CAP_MB", value, static_cast<DWORD>(sizeof(value)));
+    if (length == 0) {
+        return false;
+    }
+    if (length >= sizeof(value)) {
+        LOG::logline("!! MGE_DL_STREAMING_CAP_MB is too long; ignoring the development override");
+        return false;
+    }
+
+    char* end = nullptr;
+    const unsigned long long capMb = std::strtoull(value, &end, 10);
+    if (end == value || *end != '\0' || capMb > (std::numeric_limits<std::uint64_t>::max() >> 20)) {
+        LOG::logline("!! MGE_DL_STREAMING_CAP_MB=%s is invalid; ignoring the development override", value);
+        return false;
+    }
+    capBytes = static_cast<std::uint64_t>(capMb) << 20;
+    return true;
+}
+
+}
 
 DistantLand::NativeDepthBackend DistantLand::nativeDepthBackend = DistantLand::NativeDepthBackend::None;
 IDxvkMorrowindInterop* DistantLand::dxvkMorrowindInterop = nullptr;
@@ -274,6 +306,17 @@ bool DistantLand::init() {
     staticsHostVecId = IPC::InvalidVector;
     subsetsHostVecId = IPC::InvalidVector;
     uploadComplete = false;
+    mergedStreamingCapBytes = 0;
+    streamingCapOverrideActive = readMergedStreamingCapOverride(mergedStreamingCapBytes);
+    if (streamingCapOverrideActive) {
+        LOG::logline(
+            "-- Merged-static streaming cap override: source=MGE_DL_STREAMING_CAP_MB cap_mb=%llu cap_bytes=%llu automatic_cap=disabled",
+            static_cast<unsigned long long>(mergedStreamingCapBytes >> 20),
+            static_cast<unsigned long long>(mergedStreamingCapBytes)
+        );
+    } else {
+        LOG::logline("-- Merged-static streaming cap: override=none automatic_cap=disabled full_residency=true");
+    }
     worldResolved = false;
     isDistantLandLoaded = false;
     staticsUploaded = false;
@@ -420,6 +463,9 @@ bool DistantLand::uploadDistantLand() {
         }
         staticsHostVecId = IPC::InvalidVector;
         subsetsHostVecId = IPC::InvalidVector;
+        if (!verifyResidencyProtocol()) {
+            return false;
+        }
     }
 
     const int uploadEndMs = HighResolutionTimer::getMilliseconds();
@@ -485,7 +531,25 @@ bool DistantLand::initIpcVectors() {
     auto& dynVisVec = maybeDynVisVec.value();
     dynVisFlagsSharedId = dynVisVec.id();
     dynVisFlagsShared = dynVisVec;
+
+    auto maybeResidencyPlanVec = ipcClient.allocVecBlocking<IPC::ResidencyPlan>(64, 128, 64);
+    if (!maybeResidencyPlanVec.has_value()) return false;
+    residencyPlanSharedId = maybeResidencyPlanVec->id();
+    residencyPlanShared = *maybeResidencyPlanVec;
+
+    auto maybeResidencyCommitVec = ipcClient.allocVecBlocking<IPC::ResidencyCommit>(64, 128, 64);
+    if (!maybeResidencyCommitVec.has_value()) return false;
+    residencyCommitSharedId = maybeResidencyCommitVec->id();
+    residencyCommitShared = *maybeResidencyCommitVec;
     return true;
+}
+
+bool DistantLand::verifyResidencyProtocol() {
+    residencyCommitShared.clear();
+    if (!ipcClient.updateResidency(residencyCommitSharedId)) {
+        return false;
+    }
+    return ipcClient.waitForCompletion() == IPC::Complete && ipcClient.lastUpdateResidencySucceeded();
 }
 
 // Consume the outstanding InitLandscape RPC result and release its staging vector.
@@ -1642,6 +1706,10 @@ void DistantLand::pumpUploadTick(int budgetMs) {
             }
             staticsHostVecId = IPC::InvalidVector;
             subsetsHostVecId = IPC::InvalidVector;
+            if (!verifyResidencyProtocol()) {
+                failUpload();
+                return;
+            }
             uploadPhase = UploadPhase::Done;
         }
         break;

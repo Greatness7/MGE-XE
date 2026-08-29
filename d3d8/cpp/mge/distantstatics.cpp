@@ -22,12 +22,39 @@
 using std::vector;
 
 namespace {
-    struct MeshResources {
+    struct IndexCopySpan {
+        std::uint32_t sourceOffset;
+        std::uint32_t byteCount;
+    };
+
+    enum class StaticResourceState : std::uint8_t {
+        Unloaded,
+        IoQueued,
+        ReadyForGpu,
+        CommitPending,
+        Resident,
+        EvictQueued,
+        RemovalInFlight,
+        Unavailable,
+    };
+
+    struct StaticResource {
         IDirect3DVertexBuffer9* vb;
         IDirect3DIndexBuffer9* ib;
         IDirect3DTexture9* tex;
+        std::uint32_t resourceId = 0;
+        std::uint32_t shardId = 0;
+        std::uint64_t vertexOffset = 0;
+        std::uint64_t indexOffset = 0;
+        std::uint32_t vertexBytes = 0;
+        std::uint32_t indexBytes = 0;
+        bool merged = false;
+        StaticResourceState state = StaticResourceState::Resident;
+        std::uint32_t planEpoch = 0;
+        std::vector<IndexCopySpan> indexCopyPlan;
+        std::vector<D3DXVECTOR4> palette;
 
-        MeshResources(IDirect3DVertexBuffer9* _vb, IDirect3DIndexBuffer9* _ib, IDirect3DTexture9* _tex)
+        StaticResource(IDirect3DVertexBuffer9* _vb, IDirect3DIndexBuffer9* _ib, IDirect3DTexture9* _tex)
             : vb(_vb), ib(_ib), tex(_tex) {}
     };
 
@@ -99,7 +126,7 @@ namespace {
         return true;
     }
 
-    vector<MeshResources> meshCollectionStatics;
+    vector<StaticResource> staticResourceCatalog;
 
     // Per-subset UV-bound palettes, keyed on the subset's vertex buffer.
     //
@@ -217,9 +244,7 @@ struct DistantLand::StaticsLoader {
 
     std::vector<DistantStatic> distantStatics;
     std::vector<DistantSubset> distantSubsets;
-    std::vector<MeshResources> loadedMeshResources;
-    // Parallel to loadedMeshResources; committed together in finishStaticsPhase.
-    std::vector<std::vector<D3DXVECTOR4>> loadedPalettes;
+    std::vector<StaticResource> loadedResources;
     std::vector<std::uint8_t> indexScratch;
 
     // Resumable cursors.
@@ -268,6 +293,13 @@ struct DistantLand::StaticsLoader {
     size_t totalVeryFarFaces = 0;
     std::uint64_t totalVertexBytes = 0;
     std::uint64_t totalIndexBytes = 0;
+    bool currentStaticMerged = false;
+    size_t mergedStatics = 0;
+    size_t mergedSubsets = 0;
+    size_t mergedVertices = 0;
+    size_t mergedFaces = 0;
+    std::uint64_t mergedVertexBytes = 0;
+    std::uint64_t mergedIndexBytes = 0;
 
     // Statics not generated: the phase is a no-op whose success depends on whether
     // distant land is required.
@@ -285,12 +317,12 @@ void DistantLand::abortStaticsPhase() {
         return;
     }
     StaticsLoader& L = *staticsLoader;
-    for (auto it = L.loadedMeshResources.rbegin(); it != L.loadedMeshResources.rend(); ++it) {
+    for (auto it = L.loadedResources.rbegin(); it != L.loadedResources.rend(); ++it) {
         if (it->tex) { it->tex->Release(); }
         if (it->ib) { it->ib->Release(); }
         if (it->vb) { it->vb->Release(); }
     }
-    L.loadedMeshResources.clear();
+    L.loadedResources.clear();
     if (L.errorTexture) {
         L.errorTexture->Release();
         L.errorTexture = nullptr;
@@ -451,8 +483,7 @@ bool DistantLand::beginStaticsPhase() {
     L.totalSubsetCount = static_cast<std::uint32_t>(totalSubsetCount);
     L.distantStatics.reserve(L.totalStaticCount);
     L.distantSubsets.reserve(L.totalSubsetCount);
-    L.loadedMeshResources.reserve(L.totalSubsetCount);
-    L.loadedPalettes.reserve(L.totalSubsetCount);
+    L.loadedResources.reserve(L.totalSubsetCount);
 
     // Bright yellow error texture
     if (FAILED(device->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &L.errorTexture, NULL))) {
@@ -602,6 +633,17 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
                 LOG::flush();
                 return false;
             }
+            const bool subsetIsMerged = subsetRecord.component_count != 0;
+            if (L.subsetOffset == 0) {
+                L.currentStaticMerged = subsetIsMerged;
+            } else if (L.currentStaticMerged != subsetIsMerged) {
+                LOG::logline(
+                    "!! static_meshes static %lu mixes componentless and merged-provenance subsets.",
+                    L.staticIndex
+                );
+                LOG::flush();
+                return false;
+            }
 
             if (subsetRecord.first_palette_index != L.expectedFirstPaletteIndex) {
                 LOG::logline(
@@ -721,6 +763,9 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.farFaces = runtimeFarFaceCount;
             subset.veryFarFaces = runtimeVeryFarFaceCount;
             subset.horizonFootprint = subsetRecord.horizonFootprint;
+            subset.geometryBytes = vertexBytes + indexBytes;
+            subset.resourceId = static_cast<std::uint32_t>(L.distantSubsets.size());
+            subset.resourceFlags = L.currentStaticMerged ? DISTANT_SUBSET_STREAMABLE_MERGED : 0;
             ++L.totalSubsets;
             L.totalVertices += subsetRecord.vertex_count;
             L.totalFaces += subsetRecord.triangle_count;
@@ -728,6 +773,13 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             L.totalVeryFarFaces += veryFarFaceCount;
             L.totalVertexBytes += vertexBytes;
             L.totalIndexBytes += indexBytes;
+            if (L.currentStaticMerged) {
+                ++L.mergedSubsets;
+                L.mergedVertices += subsetRecord.vertex_count;
+                L.mergedFaces += subsetRecord.triangle_count;
+                L.mergedVertexBytes += vertexBytes;
+                L.mergedIndexBytes += indexBytes;
+            }
 
             IDirect3DVertexBuffer9* vb = nullptr;
             IDirect3DIndexBuffer9* ib = nullptr;
@@ -851,8 +903,6 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.vbuffer = vb;
             subset.ibuffer = ib;
             subset.tex = tex;
-            L.loadedMeshResources.push_back(MeshResources(vb, ib, tex));
-
             std::vector<D3DXVECTOR4> palette;
             palette.reserve(subsetRecord.palette_count);
             const auto* paletteEntries = L.paletteRecords + subsetRecord.first_palette_index;
@@ -860,7 +910,30 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
                 const auto& entry = paletteEntries[paletteIndex];
                 palette.push_back(D3DXVECTOR4(entry.bound[0], entry.bound[1], entry.bound[2], entry.bound[3]));
             }
-            L.loadedPalettes.push_back(std::move(palette));
+            StaticResource resource(vb, ib, tex);
+            resource.resourceId = subset.resourceId;
+            resource.shardId = L.shardIndex;
+            resource.vertexOffset = subsetRecord.vertex_offset;
+            resource.indexOffset = subsetRecord.index_offset;
+            resource.vertexBytes = vertexUploadBytes;
+            resource.indexBytes = indexUploadBytes;
+            resource.merged = L.currentStaticMerged;
+            resource.palette = std::move(palette);
+            if (resource.merged) {
+                for (int tier = 2; tier >= 0; --tier) {
+                    for (std::uint32_t componentIndex = 0; componentIndex < subsetRecord.component_count; ++componentIndex) {
+                        const auto& component = components[componentIndex];
+                        if (classifyStaticComponent(component, Configuration.DL.FarStaticMinSize, Configuration.DL.VeryFarStaticMinSize) != tier) {
+                            continue;
+                        }
+                        resource.indexCopyPlan.push_back(IndexCopySpan {
+                            component.first_triangle * 3u * StaticMeshesBin::IndexElementSize,
+                            component.triangle_count * 3u * StaticMeshesBin::IndexElementSize,
+                        });
+                    }
+                }
+            }
+            L.loadedResources.push_back(std::move(resource));
 
             L.distantSubsets.push_back(subset);
             L.expectedGeometryOffset = nextGeometryOffset;
@@ -879,6 +952,9 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
 
             L.expectedFirstSubsetIndex += staticRecord.subset_count;
             L.distantStatics.push_back(L.runtimeStatic);
+            if (L.currentStaticMerged) {
+                ++L.mergedStatics;
+            }
             ++L.staticIndex;
             L.subsetOffset = 0;
         }
@@ -984,7 +1060,7 @@ bool DistantLand::finishStaticsPhase() {
     }
 
     vector<IDirect3DTexture9*> atlasPages;
-    for (const auto& mesh : L.loadedMeshResources) {
+    for (const auto& mesh : L.loadedResources) {
         if (mesh.tex && mesh.tex != L.errorTexture
             && std::find(atlasPages.begin(), atlasPages.end(), mesh.tex) == atlasPages.end()) {
             atlasPages.push_back(mesh.tex);
@@ -992,18 +1068,21 @@ bool DistantLand::finishStaticsPhase() {
     }
 
     // Commit (infallible): transfer ownership of the per-subset resources to
-    // meshCollectionStatics so release() frees them; abort must not touch them now.
+    // staticResourceCatalog so release() frees them; abort must not touch them now.
     if (L.errorTexture) {
         L.errorTexture->Release();
         L.errorTexture = nullptr;
     }
-    staticUvBoundPalettes.reserve(staticUvBoundPalettes.size() + L.loadedMeshResources.size());
-    for (std::size_t i = 0; i < L.loadedMeshResources.size(); ++i) {
-        staticUvBoundPalettes.emplace(L.loadedMeshResources[i].vb, std::move(L.loadedPalettes[i]));
+    staticUvBoundPalettes.reserve(staticUvBoundPalettes.size() + L.loadedResources.size());
+    for (auto& resource : L.loadedResources) {
+        staticUvBoundPalettes.emplace(resource.vb, resource.palette);
     }
-    L.loadedPalettes.clear();
-    meshCollectionStatics.insert(meshCollectionStatics.end(), L.loadedMeshResources.begin(), L.loadedMeshResources.end());
-    L.loadedMeshResources.clear();
+    staticResourceCatalog.insert(
+        staticResourceCatalog.end(),
+        std::make_move_iterator(L.loadedResources.begin()),
+        std::make_move_iterator(L.loadedResources.end())
+    );
+    L.loadedResources.clear();
 
     DistantLoadInstrumentation::log_timing("static_meshes.parse_total", L.parseTotalMs);
     DistantLoadInstrumentation::log_timing("static_meshes.create_vertex_buffers", L.createVertexBuffersMs);
@@ -1023,6 +1102,17 @@ bool DistantLand::finishStaticsPhase() {
         L.totalVertices,
         L.totalFaces,
         static_cast<unsigned long long>(totalGeometryBytes)
+    );
+    const std::uint64_t mergedGeometryBytes = L.mergedVertexBytes + L.mergedIndexBytes;
+    LOG::logline(
+        "-- Distant load summary: static_meshes ordinary_statics=%zu merged_statics=%zu merged_subsets=%zu merged_vertices=%zu merged_faces=%zu ordinary_geometry_bytes=%llu merged_geometry_bytes=%llu",
+        static_cast<std::size_t>(L.totalStaticCount) - L.mergedStatics,
+        L.mergedStatics,
+        L.mergedSubsets,
+        L.mergedVertices,
+        L.mergedFaces,
+        static_cast<unsigned long long>(totalGeometryBytes - mergedGeometryBytes),
+        static_cast<unsigned long long>(mergedGeometryBytes)
     );
     LOG::logline(
         "-- Distant load summary: static_meshes far_faces=%zu very_far_faces=%zu far_reduction=%.1f%% very_far_reduction=%.1f%%",
@@ -1180,12 +1270,12 @@ const StaticUvBoundPaletteMap& staticUvBoundPaletteMap() {
 }
 
 void releaseStaticsResources() {
-    for (auto& mesh : meshCollectionStatics) {
+    for (auto& mesh : staticResourceCatalog) {
         if (mesh.vb) { mesh.vb->Release(); }
         if (mesh.ib) { mesh.ib->Release(); }
         if (mesh.tex) { mesh.tex->Release(); }
     }
-    meshCollectionStatics.clear();
+    staticResourceCatalog.clear();
     // Keyed on the vertex buffers just released; the keys are dangling from here on.
     staticUvBoundPalettes.clear();
 }

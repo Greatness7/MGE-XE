@@ -52,7 +52,12 @@ struct DistantSubset {
     HorizonFootprint horizonFootprint;
     int farFaces;
     int veryFarFaces;
+    std::uint64_t geometryBytes;
+    std::uint32_t resourceId;
+    std::uint32_t resourceFlags;
 };
+
+static constexpr std::uint32_t DISTANT_SUBSET_STREAMABLE_MERGED = 1u << 0;
 
 struct DistantStatic {
     unsigned char type;
@@ -206,10 +211,13 @@ namespace StaticMeshesBin {
     static_assert(offsetof(HorizonFootprint, vertexCount) == 4, "Static mesh horizon footprint vertexCount offset drifted");
     static_assert(offsetof(HorizonFootprint, padding) == 5, "Static mesh horizon footprint padding offset drifted");
     static_assert(offsetof(HorizonFootprint, footprintXY) == 8, "Static mesh horizon footprint vertices offset drifted");
-    static_assert(sizeof(DistantSubset) == 128, "Distant subset ABI drifted");
+    static_assert(sizeof(DistantSubset) == 144, "Distant subset ABI drifted");
     static_assert(offsetof(DistantSubset, horizonFootprint) == 64, "Distant subset horizon footprint offset drifted");
     static_assert(offsetof(DistantSubset, farFaces) == 120, "Distant subset farFaces offset drifted");
     static_assert(offsetof(DistantSubset, veryFarFaces) == 124, "Distant subset veryFarFaces offset drifted");
+    static_assert(offsetof(DistantSubset, geometryBytes) == 128, "Distant subset geometryBytes offset drifted");
+    static_assert(offsetof(DistantSubset, resourceId) == 136, "Distant subset resourceId offset drifted");
+    static_assert(offsetof(DistantSubset, resourceFlags) == 140, "Distant subset resourceFlags offset drifted");
     static_assert(sizeof(Vec3) == 12, "Static mesh vec3 ABI drifted");
     static_assert(sizeof(BoundingSphere) == 16, "Static mesh sphere ABI drifted");
     static_assert(sizeof(Aabb) == 24, "Static mesh AABB ABI drifted");

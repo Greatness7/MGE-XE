@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use hashbrown::HashMap;
-use tracing::trace;
+use hashbrown::{HashMap, HashSet};
+use tracing::{trace, warn};
 
-#[cfg(test)]
-use crate::abi::D3dxVector3;
 use crate::abi::{
-    CellName, D3dxVector4, DynVisFlag, EscapedName, RenderMesh, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND,
-    VIS_NEAR, VIS_VERY_FAR, ViewFrustum, VisibleSetSort,
+    CellName, D3dxVector3, D3dxVector4, DynVisFlag, EscapedName, PlanResidencyParameters, RenderMesh, ResidencyCommit,
+    ResidencyPlan, ResidencyPlanAction, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND, VIS_NEAR, VIS_VERY_FAR,
+    ViewFrustum, VisibleSetSort,
 };
 use crate::config::Configuration;
 use crate::error::HostError;
@@ -44,6 +43,17 @@ pub struct DynamicMeshRef {
     pub(super) mesh: MeshId,
 }
 
+/// Host-side state for one client-owned VB/IB resource.
+#[derive(Default)]
+pub struct ResidencyResource {
+    pub geometry_bytes: u64,
+    pub streamable: bool,
+    pub resident: bool,
+    pub unavailable: bool,
+    pub center: D3dxVector3,
+    pub mesh_refs: Vec<DynamicMeshRef>,
+}
+
 #[derive(Default)]
 pub struct WorldSpace {
     pub near_statics: QuadTree,
@@ -70,6 +80,15 @@ pub struct DistantLandState {
     /// World spaces keyed by their undecoded engine name; see [`CellName`].
     pub world_space_indices: HashMap<CellName, usize>,
     pub current_world_space: Option<usize>,
+    pub residency_resources: Vec<ResidencyResource>,
+    residency_buckets: HashMap<(i32, i32), Vec<u32>>,
+    residency_offsets: Vec<(i32, i32)>,
+    residency_radius_cells: i32,
+    planner_cell: Option<(i32, i32)>,
+    planner_offset_cursor: usize,
+    planner_bucket_cursor: usize,
+    resident_scan_cursor: usize,
+    oversize_logged: HashSet<u32>,
     pub land_quadtree: QuadTree,
     horizon: HorizonRuntime,
 }
@@ -83,9 +102,247 @@ impl DistantLandState {
             world_spaces: Vec::new(),
             world_space_indices: HashMap::new(),
             current_world_space: None,
+            residency_resources: Vec::new(),
+            residency_buckets: HashMap::new(),
+            residency_offsets: Vec::new(),
+            residency_radius_cells: -1,
+            planner_cell: None,
+            planner_offset_cursor: 0,
+            planner_bucket_cursor: 0,
+            resident_scan_cursor: 0,
+            oversize_logged: HashSet::new(),
             land_quadtree: QuadTree::default(),
             horizon,
         }
+    }
+
+    /// Applies one acknowledged client resource transition to every quadtree placement.
+    pub fn apply_residency_commit(&mut self, commit: ResidencyCommit) -> Result<(), HostError> {
+        let resource_id = commit.resource_id as usize;
+        let Some(resource) = self.residency_resources.get(resource_id) else {
+            return Err(HostError::listen(format!(
+                "Residency resource {} not found",
+                commit.resource_id
+            )));
+        };
+        let refs = resource.mesh_refs.clone();
+        match commit.state {
+            0 | 2 => {
+                for reference in refs {
+                    let mesh = self.world_spaces[reference.world]
+                        .tree_mut(reference.tree)
+                        .mesh_mut(reference.mesh);
+                    mesh.resident = false;
+                    mesh.render_mesh.v_buffer = 0;
+                    mesh.render_mesh.i_buffer = 0;
+                    mesh.render_mesh.faces = 0;
+                    mesh.far_faces = 0;
+                    mesh.very_far_faces = 0;
+                }
+                let resource = &mut self.residency_resources[resource_id];
+                resource.resident = false;
+                resource.unavailable = commit.state == 2;
+            }
+            1 => {
+                if commit.vbuffer == 0 || commit.ibuffer == 0 {
+                    return Err(HostError::listen("Resident commit supplied null buffer pointers"));
+                }
+                for reference in refs {
+                    let mesh = self.world_spaces[reference.world]
+                        .tree_mut(reference.tree)
+                        .mesh_mut(reference.mesh);
+                    mesh.render_mesh.v_buffer = commit.vbuffer;
+                    mesh.render_mesh.i_buffer = commit.ibuffer;
+                    mesh.render_mesh.faces = mesh.near_faces;
+                    mesh.far_faces = mesh.retained_far_faces;
+                    mesh.very_far_faces = mesh.retained_very_far_faces;
+                    mesh.resident = true;
+                }
+                let resource = &mut self.residency_resources[resource_id];
+                resource.resident = true;
+                resource.unavailable = false;
+            }
+            state => return Err(HostError::listen(format!("Unknown residency commit state {state}"))),
+        }
+        Ok(())
+    }
+
+    /// Rebuilds the exterior cell buckets after static initialization.
+    pub(super) fn rebuild_residency_index(&mut self) {
+        const CELL_SIZE: f32 = 8192.0;
+        self.residency_buckets.clear();
+        for (resource_id, resource) in self.residency_resources.iter().enumerate() {
+            if !resource.streamable {
+                continue;
+            }
+            let cell = (
+                (resource.center.x / CELL_SIZE).floor() as i32,
+                (resource.center.y / CELL_SIZE).floor() as i32,
+            );
+            self.residency_buckets.entry(cell).or_default().push(resource_id as u32);
+        }
+        self.planner_cell = None;
+        self.planner_offset_cursor = 0;
+        self.planner_bucket_cursor = 0;
+        self.resident_scan_cursor = 0;
+        self.oversize_logged.clear();
+    }
+
+    fn ensure_residency_offsets(&mut self, radius: f32) {
+        const CELL_SIZE: f32 = 8192.0;
+        let radius_cells = (radius / CELL_SIZE).ceil().max(0.0) as i32;
+        if self.residency_radius_cells == radius_cells {
+            return;
+        }
+        self.residency_radius_cells = radius_cells;
+        self.residency_offsets.clear();
+        for y in -radius_cells..=radius_cells {
+            for x in -radius_cells..=radius_cells {
+                if x * x + y * y <= radius_cells * radius_cells {
+                    self.residency_offsets.push((x, y));
+                }
+            }
+        }
+        self.residency_offsets.sort_unstable_by_key(|&(x, y)| (x * x + y * y, y, x));
+        self.planner_offset_cursor = 0;
+        self.planner_bucket_cursor = 0;
+    }
+
+    fn distance_sq(resource: &ResidencyResource, center: D3dxVector3) -> f64 {
+        let dx = f64::from(resource.center.x - center.x);
+        let dy = f64::from(resource.center.y - center.y);
+        dx * dx + dy * dy
+    }
+
+    fn farthest_replaceable(&mut self, center: D3dxVector3, retain_radius: f32, work_limit: usize) -> Option<(u32, f64)> {
+        if self.residency_resources.is_empty() {
+            return None;
+        }
+        let retain_sq = f64::from(retain_radius) * f64::from(retain_radius);
+        let mut farthest = None;
+        for _ in 0..work_limit.min(self.residency_resources.len()) {
+            let id = self.resident_scan_cursor % self.residency_resources.len();
+            self.resident_scan_cursor = (self.resident_scan_cursor + 1) % self.residency_resources.len();
+            let resource = &self.residency_resources[id];
+            if !resource.streamable || !resource.resident {
+                continue;
+            }
+            let distance = Self::distance_sq(resource, center);
+            if distance <= retain_sq {
+                continue;
+            }
+            if farthest.is_none_or(|(_, best)| distance > best) {
+                farthest = Some((id as u32, distance));
+            }
+        }
+        farthest
+    }
+
+    /// Advances the bounded radial residency planner and writes requests to `output`.
+    pub fn plan_residency(&mut self, output: &mut SharedVec, params: PlanResidencyParameters) -> Result<(), HostError> {
+        const CELL_SIZE: f32 = 8192.0;
+        output.reset();
+        let center = D3dxVector3 {
+            x: params.center_x,
+            y: params.center_y,
+            z: params.center_z,
+        };
+        if !center.x.is_finite()
+            || !center.y.is_finite()
+            || !center.z.is_finite()
+            || !params.admission_radius.is_finite()
+            || !params.retain_radius.is_finite()
+        {
+            return Err(HostError::listen("Residency planner received non-finite input"));
+        }
+        let exterior = self.world_space_indices.get(CellName::EXTERIOR.as_bytes()).copied();
+        if self.current_world_space.is_none() || self.current_world_space != exterior {
+            return Ok(());
+        }
+
+        self.ensure_residency_offsets(params.admission_radius);
+        let cell = ((center.x / CELL_SIZE).floor() as i32, (center.y / CELL_SIZE).floor() as i32);
+        if self.planner_cell != Some(cell) {
+            self.planner_cell = Some(cell);
+            self.planner_offset_cursor = 0;
+            self.planner_bucket_cursor = 0;
+        }
+
+        let resource_limit = params.max_resources.max(1) as usize;
+        if params.cap_debt_bytes != 0
+            && let Some((resource_id, _)) = self.farthest_replaceable(center, 0.0, resource_limit)
+        {
+            output.push(ResidencyPlan {
+                resource_id,
+                action: ResidencyPlanAction::Evict as u32,
+                plan_epoch: params.plan_epoch,
+                reserved: 0,
+            })?;
+            return Ok(());
+        }
+
+        let admission_sq = f64::from(params.admission_radius) * f64::from(params.admission_radius);
+        let cap_bytes = params.cap_bytes;
+        let retain_radius = params.retain_radius;
+        let mut available = params.available_bytes;
+        let mut cells_visited = 0usize;
+        let mut resources_visited = 0usize;
+        while self.planner_offset_cursor < self.residency_offsets.len()
+            && cells_visited < params.max_cells.max(1) as usize
+            && resources_visited < resource_limit
+        {
+            let offset = self.residency_offsets[self.planner_offset_cursor];
+            let bucket_key = (cell.0 + offset.0, cell.1 + offset.1);
+            let bucket_len = self.residency_buckets.get(&bucket_key).map_or(0, Vec::len);
+            while self.planner_bucket_cursor < bucket_len && resources_visited < resource_limit {
+                let resource_id = self.residency_buckets[&bucket_key][self.planner_bucket_cursor];
+                self.planner_bucket_cursor += 1;
+                resources_visited += 1;
+                let resource = &self.residency_resources[resource_id as usize];
+                if resource.resident || resource.unavailable || Self::distance_sq(resource, center) > admission_sq {
+                    continue;
+                }
+                if resource.geometry_bytes > cap_bytes {
+                    if self.oversize_logged.insert(resource_id) {
+                        warn!(
+                            resource_id,
+                            bytes = resource.geometry_bytes,
+                            cap = cap_bytes,
+                            "Merged static resource exceeds the total streaming cap"
+                        );
+                    }
+                    continue;
+                }
+                if resource.geometry_bytes <= available {
+                    output.push(ResidencyPlan {
+                        resource_id,
+                        action: ResidencyPlanAction::Admit as u32,
+                        plan_epoch: params.plan_epoch,
+                        reserved: 0,
+                    })?;
+                    available -= resource.geometry_bytes;
+                    continue;
+                }
+                let candidate_distance = Self::distance_sq(resource, center);
+                if let Some((evict_id, evict_distance)) = self.farthest_replaceable(center, retain_radius, resource_limit)
+                    && candidate_distance < evict_distance
+                {
+                    output.push(ResidencyPlan {
+                        resource_id: evict_id,
+                        action: ResidencyPlanAction::Evict as u32,
+                        plan_epoch: params.plan_epoch,
+                        reserved: 0,
+                    })?;
+                    return Ok(());
+                }
+            }
+            if self.planner_bucket_cursor >= bucket_len {
+                self.planner_bucket_cursor = 0;
+                self.planner_offset_cursor += 1;
+                cells_visited += 1;
+            }
+        }
+        Ok(())
     }
 
     pub fn prepare_horizon(&mut self, view_sphere: D3dxVector4) {
