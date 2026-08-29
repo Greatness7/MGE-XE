@@ -1823,26 +1823,35 @@ void DistantLand::pumpUploadTick(int budgetMs) {
             // Existing accessors that return zero on an invalid player pointer are forbidden
             // as planner inputs: (0,0,0) is a valid-looking centre in the Bitter Coast.
             float position[3] = {};
-            if (MWBridge::get()->tryGetPlayerPosition(position)) {
-                const D3DXVECTOR3 center(position[0], position[1], position[2]);
-                DistantLoaders::planResidency(center);
-                DistantLoaders::tickResidencyAdmission(
-                    static_cast<double>(budgetMs),
-                    kResidencyDrainBudgetBytes,
-                    kResidencyDrainBudgetResources
-                );
-                DistantLoaders::tickResidencyEviction(static_cast<double>(budgetMs), kResidencyDrainBudgetResources);
-                if (DistantLoaders::residencyQuiescent()) {
-                    uploadPhase = UploadPhase::Done;
-                }
+            if (!MWBridge::get()->tryGetPlayerPosition(position)) {
+                // No player cell yet. On a cold start the pump runs across menu frames, before
+                // any save is loaded, so this is the normal path and waiting cannot help: the
+                // centre only appears long after the pump is gone. Prefetch is skipped and the
+                // first gameplay frames admit from zero.
+                LOG::logline("-- Merged-static residency bootstrap skipped: no player cell yet, admitting from gameplay");
+                uploadPhase = UploadPhase::Done;
                 break;
             }
 
+            const D3DXVECTOR3 center(position[0], position[1], position[2]);
+            DistantLoaders::planResidency(center);
+            DistantLoaders::tickResidencyAdmission(
+                static_cast<double>(budgetMs),
+                kResidencyDrainBudgetBytes,
+                kResidencyDrainBudgetResources
+            );
+            DistantLoaders::tickResidencyEviction(static_cast<double>(budgetMs), kResidencyDrainBudgetResources);
+            if (DistantLoaders::residencyQuiescent()) {
+                uploadPhase = UploadPhase::Done;
+                break;
+            }
+
+            // A centre exists but the nearest ring is still draining. Cap the prefetch so a
+            // large or slow dataset cannot hold the load screen open indefinitely.
             const int waitedMs = HighResolutionTimer::getMilliseconds() - residencyBootstrapStartedMs;
             if (waitedMs >= kResidencyBootstrapTimeoutMs) {
                 LOG::logline(
-                    "-- Merged-static residency bootstrap timed out after %dms with no valid centre; "
-                    "entering with pop-in rather than stalling",
+                    "-- Merged-static residency bootstrap capped at %dms; entering with pop-in rather than stalling",
                     waitedMs
                 );
                 uploadPhase = UploadPhase::Done;

@@ -1186,3 +1186,99 @@ fn world_spaces_with_distinct_high_byte_names_select_distinct_indices() {
     assert!(!state.set_current_world_space(b"\xc1\xe0\xeb"));
     assert_eq!(state.current_world_space, None);
 }
+
+/// Builds an exterior-only state holding `count` streamable resources, all inside the
+/// planner's first cell so one sweep covers them without depending on the offset order.
+fn residency_state(count: u32) -> DistantLandState {
+    let mut state = DistantLandState::new(Configuration::default());
+    state.world_space_indices.insert(CellName::EXTERIOR, 0);
+    state.world_spaces.push(WorldSpace::default());
+    state.current_world_space = Some(0);
+    state.residency_resources = (0..count)
+        .map(|i| ResidencyResource {
+            geometry_bytes: 1024,
+            streamable: true,
+            center: D3dxVector3 {
+                x: 100.0 + f32::from(i as u16),
+                y: 100.0,
+                z: 0.0,
+            },
+            ..ResidencyResource::default()
+        })
+        .collect();
+    state.rebuild_residency_index();
+    state
+}
+
+fn plan_params(max_resources: u32) -> PlanResidencyParameters {
+    PlanResidencyParameters {
+        plan: 0,
+        plan_epoch: 1,
+        center_x: 100.0,
+        center_y: 100.0,
+        center_z: 0.0,
+        admission_radius: 8192.0,
+        retain_radius: 16384.0,
+        max_cells: 64,
+        max_resources,
+        reserved: 0,
+        cap_bytes: u64::MAX,
+        available_bytes: u64::MAX,
+        cap_debt_bytes: 0,
+    }
+}
+
+fn admitted_ids(output: &mut SharedVec) -> Vec<u32> {
+    output
+        .read_all::<ResidencyPlan>()
+        .unwrap()
+        .into_iter()
+        .filter(|plan| plan.action == ResidencyPlanAction::Admit as u32)
+        .map(|plan| plan.resource_id)
+        .collect()
+}
+
+/// The client accepts far fewer admissions per frame than a sweep offers and silently drops
+/// the surplus, so a one-shot sweep strands most of the draw distance until the player
+/// crosses a cell. An admitting sweep must rewind and re-offer what was never committed.
+#[test]
+fn an_admitting_sweep_rewinds_and_re_offers_uncommitted_resources() {
+    let mut state = residency_state(4);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+
+    // Two resources per call, and nothing is ever committed resident: the client dropped
+    // every admission. One sweep of the four takes three calls, so eight covers more than
+    // two sweeps.
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        state.plan_residency(&mut output, plan_params(2)).unwrap();
+        seen.extend(admitted_ids(&mut output));
+    }
+
+    assert_eq!(&seen[..4], &[0, 1, 2, 3], "one sweep should offer every resource once");
+    assert!(
+        seen.len() > 4,
+        "the cursor parked after its first sweep instead of re-offering: {seen:?}"
+    );
+}
+
+/// The counterpart: a sweep that admits nothing must leave the cursor parked, because
+/// re-offering resources the client cannot take is the tight retry the design forbids.
+#[test]
+fn a_sweep_that_admits_nothing_parks_the_cursor() {
+    let mut state = residency_state(4);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    for resource in &mut state.residency_resources {
+        resource.resident = true;
+    }
+
+    for _ in 0..8 {
+        state.plan_residency(&mut output, plan_params(2)).unwrap();
+        assert!(admitted_ids(&mut output).is_empty());
+    }
+    assert_eq!(
+        state.planner_offset_cursor,
+        state.residency_offsets.len(),
+        "the cursor rewound despite admitting nothing"
+    );
+}

@@ -575,6 +575,9 @@ struct DistantLand::StaticsLoader {
     size_t totalVeryFarFaces = 0;
     std::uint64_t totalVertexBytes = 0;
     std::uint64_t totalIndexBytes = 0;
+    // Of the totals above, the share published without buffers for the residency planner to
+    // stream later. Everything else was uploaded here and is resident for the device session.
+    std::uint64_t streamedGeometryBytes = 0;
     bool currentStaticMerged = false;
     size_t mergedStatics = 0;
     size_t mergedSubsets = 0;
@@ -1048,6 +1051,10 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.geometryBytes = vertexBytes + indexBytes;
             subset.resourceId = static_cast<std::uint32_t>(L.distantSubsets.size());
             subset.resourceFlags = L.currentStaticMerged ? DISTANT_SUBSET_STREAMABLE_MERGED : 0;
+            // Merged geometry is published without buffers while a cap binds; the residency
+            // planner owns its lifetime from here on. Textures stay resident either way.
+            const bool streamThisSubset = L.currentStaticMerged && DistantLand::streamingCapOverrideActive;
+
             ++L.totalSubsets;
             L.totalVertices += subsetRecord.vertex_count;
             L.totalFaces += subsetRecord.triangle_count;
@@ -1055,6 +1062,9 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             L.totalVeryFarFaces += veryFarFaceCount;
             L.totalVertexBytes += vertexBytes;
             L.totalIndexBytes += indexBytes;
+            if (streamThisSubset) {
+                L.streamedGeometryBytes += static_cast<std::uint64_t>(vertexBytes) + indexBytes;
+            }
             if (L.currentStaticMerged) {
                 ++L.mergedSubsets;
                 L.mergedVertices += subsetRecord.vertex_count;
@@ -1062,10 +1072,6 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
                 L.mergedVertexBytes += vertexBytes;
                 L.mergedIndexBytes += indexBytes;
             }
-
-            // Merged geometry is published without buffers while a cap binds; the residency
-            // planner owns its lifetime from here on. Textures stay resident either way.
-            const bool streamThisSubset = L.currentStaticMerged && DistantLand::streamingCapOverrideActive;
 
             IDirect3DVertexBuffer9* vb = nullptr;
             IDirect3DIndexBuffer9* ib = nullptr;
@@ -1393,11 +1399,14 @@ bool DistantLand::finishStaticsPhase() {
     DistantLoadInstrumentation::log_timing("static_meshes.create_index_buffers", L.createIndexBuffersMs);
     DistantLoadInstrumentation::log_timing("static_meshes.load_textures", L.loadTexturesMs);
     const std::uint64_t totalGeometryBytes = L.totalVertexBytes + L.totalIndexBytes;
+    const std::uint64_t uploadedGeometryBytes = totalGeometryBytes - L.streamedGeometryBytes;
     LOG::logline(
-        "-- Distant load summary: static_meshes metadata_prefix_bytes=%llu geometry_window_bytes=%llu geometry_bytes_copied=%llu",
+        "-- Distant load summary: static_meshes metadata_prefix_bytes=%llu geometry_window_bytes=%llu "
+        "geometry_bytes_copied=%llu geometry_bytes_deferred=%llu",
         static_cast<unsigned long long>(L.totalMetadataPrefixBytes),
         static_cast<unsigned long long>(StaticMeshesGeometryWindowBytes),
-        static_cast<unsigned long long>(totalGeometryBytes)
+        static_cast<unsigned long long>(uploadedGeometryBytes),
+        static_cast<unsigned long long>(L.streamedGeometryBytes)
     );
     LOG::logline(
         "-- Distant load summary: static_meshes statics=%lu subsets=%zu total_vertices=%zu total_faces=%zu total_geometry_bytes=%llu",
@@ -1426,7 +1435,14 @@ bool DistantLand::finishStaticsPhase() {
         L.totalFaces != 0 ? 100.0 * static_cast<double>(L.totalFaces - L.totalVeryFarFaces) / static_cast<double>(L.totalFaces) : 0.0
     );
 
-    LOG::logline("-- Distant static geometry memory use: %llu MB", static_cast<unsigned long long>(totalGeometryBytes / (1ull << 20)));
+    // Only the uploaded share is in VRAM at this point. Under a streaming cap the deferred
+    // share is on disk, and its resident portion is reported by the residency summary instead.
+    LOG::logline(
+        "-- Distant static geometry memory use: %llu MB uploaded (%llu MB deferred to streaming, %llu MB total)",
+        static_cast<unsigned long long>(uploadedGeometryBytes / (1ull << 20)),
+        static_cast<unsigned long long>(L.streamedGeometryBytes / (1ull << 20)),
+        static_cast<unsigned long long>(totalGeometryBytes / (1ull << 20))
+    );
     std::uint64_t totalTextureBytes = 0;
     for (size_t pageIndex = 0; pageIndex < atlasPages.size(); ++pageIndex) {
         D3DSURFACE_DESC desc = {};

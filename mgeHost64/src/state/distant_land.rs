@@ -87,6 +87,11 @@ pub struct DistantLandState {
     planner_cell: Option<(i32, i32)>,
     planner_offset_cursor: usize,
     planner_bucket_cursor: usize,
+    /// Whether the in-progress sweep of `residency_offsets` has emitted an admission.
+    /// A sweep that admitted something is rewound at its end so resources the client
+    /// dropped get re-offered; a sweep that admitted nothing leaves the cursor parked,
+    /// because re-offering the same unadmittable resources every frame is a tight retry.
+    planner_sweep_admitted: bool,
     resident_scan_cursor: usize,
     oversize_logged: HashSet<u32>,
     pub land_quadtree: QuadTree,
@@ -109,6 +114,7 @@ impl DistantLandState {
             planner_cell: None,
             planner_offset_cursor: 0,
             planner_bucket_cursor: 0,
+            planner_sweep_admitted: false,
             resident_scan_cursor: 0,
             oversize_logged: HashSet::new(),
             land_quadtree: QuadTree::default(),
@@ -184,6 +190,7 @@ impl DistantLandState {
         self.planner_cell = None;
         self.planner_offset_cursor = 0;
         self.planner_bucket_cursor = 0;
+        self.planner_sweep_admitted = false;
         self.resident_scan_cursor = 0;
         self.oversize_logged.clear();
     }
@@ -206,6 +213,7 @@ impl DistantLandState {
         self.residency_offsets.sort_unstable_by_key(|&(x, y)| (x * x + y * y, y, x));
         self.planner_offset_cursor = 0;
         self.planner_bucket_cursor = 0;
+        self.planner_sweep_admitted = false;
     }
 
     fn distance_sq(resource: &ResidencyResource, center: D3dxVector3) -> f64 {
@@ -266,6 +274,7 @@ impl DistantLandState {
             self.planner_cell = Some(cell);
             self.planner_offset_cursor = 0;
             self.planner_bucket_cursor = 0;
+            self.planner_sweep_admitted = false;
         }
 
         let resource_limit = params.max_resources.max(1) as usize;
@@ -321,6 +330,7 @@ impl DistantLandState {
                         reserved: 0,
                     })?;
                     available -= resource.geometry_bytes;
+                    self.planner_sweep_admitted = true;
                     continue;
                 }
                 let candidate_distance = Self::distance_sq(resource, center);
@@ -341,6 +351,17 @@ impl DistantLandState {
                 self.planner_offset_cursor += 1;
                 cells_visited += 1;
             }
+        }
+
+        // The client admits far fewer resources per frame than one sweep offers and silently
+        // drops the surplus once its ready queue fills, so a single pass leaves most of the
+        // draw distance unadmitted. Rewind only after a sweep that admitted something: once
+        // everything in range is resident, or the cap refuses the rest, the next sweep admits
+        // nothing and the cursor parks until the player crosses a cell.
+        if self.planner_offset_cursor >= self.residency_offsets.len() && self.planner_sweep_admitted {
+            self.planner_offset_cursor = 0;
+            self.planner_bucket_cursor = 0;
+            self.planner_sweep_admitted = false;
         }
         Ok(())
     }
