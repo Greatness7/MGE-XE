@@ -267,6 +267,9 @@ void DistantLand::renderStage0() {
     IDirect3DStateBlock9* stateSaved;
     UINT passes;
 
+    // Release evicted merged statics before this frame's shadow/cull queries can copy them.
+    evictResidencyAtStage0();
+
     // Update current cell and select distant static set
     selectDistantCell();
 

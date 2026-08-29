@@ -304,6 +304,10 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
         VideoPatch::monitor(realDevice);
     }
 
+    // Capture whether stage0 ran this frame before the per-frame reset below: menu and
+    // load-screen frames never reach it, so residency eviction needs a fallback boundary.
+    const bool stage0RanThisFrame = stage0Complete;
+
     // Reset scene identifiers
     sceneCount = -1;
     stage0Complete = false;
@@ -317,6 +321,8 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
     // point to create D3D resources. The budget keeps menu frames responsive.
     if (DistantLand::pumpActive && !DistantLand::pumpDraining) {
         DistantLand::pumpUploadTick(DistantLand::kUploadPumpBudgetMs);
+    } else if (!DistantLand::pumpDraining) {
+        DistantLand::tickResidency(stage0RanThisFrame);
     }
 
     return ProxyDevice::Present(a, b, c, d);

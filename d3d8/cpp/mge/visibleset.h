@@ -11,6 +11,10 @@ using StaticUvBoundPaletteMap = std::unordered_map<IDirect3DVertexBuffer9*, std:
 
 namespace DistantLoaders {
     const StaticUvBoundPaletteMap& staticUvBoundPaletteMap();
+
+    // A palette miss for a non-null static VB is a defect, not a silently accepted identity
+    // palette: the streaming path must insert and erase each entry with its buffer.
+    void noteMissingPalette();
 }
 
 

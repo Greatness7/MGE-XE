@@ -114,10 +114,25 @@ public:
         Statics,          // resumable distant-statics upload (the dominant phase)
         Grass,            // single-slice grass setup, overlapping the host's statics build
         StaticsHostWait,  // collect InitDistantStatics and free its staging vectors
+        ResidencyBootstrap,  // capped session only: drain the nearest merged ring before rendering
         Done,             // all phases uploaded
     };
     static constexpr int kUploadPumpBudgetMs = 8;
     static constexpr int kDrainBudgetMs = 40;
+
+    // Provisional residency budgets. The byte and record limits are mandatory because a
+    // wall-clock check cannot interrupt one D3D allocation; an oversize resource is processed
+    // alone and logged. Revisit from measured p99/max crossings, not average inflow.
+    static constexpr double kResidencyAdmitBudgetMs = 2.0;
+    static constexpr std::uint64_t kResidencyAdmitBudgetBytes = 2ull * 1024 * 1024;
+    static constexpr std::uint32_t kResidencyAdmitBudgetResources = 2;
+    static constexpr double kResidencyEvictBudgetMs = 1.0;
+    static constexpr std::uint32_t kResidencyEvictBudgetResources = 2;
+    static constexpr std::uint64_t kResidencyDrainBudgetBytes = 10ull * 1024 * 1024;
+    static constexpr std::uint32_t kResidencyDrainBudgetResources = 14;
+    // Give up on an unresolvable bootstrap centre rather than hanging the load screen; the
+    // world then enters with temporary merged-static pop-in, which the plan prefers to a hitch.
+    static constexpr int kResidencyBootstrapTimeoutMs = 5000;
     static UploadPhase uploadPhase;
     static bool pumpActive;        // pump armed and ticking from Present
     static bool pumpDraining;      // pump is being drained synchronously during load
@@ -128,6 +143,7 @@ public:
     static bool streamingCapOverrideActive;
     static std::uint64_t mergedStreamingCapBytes;
     static bool staticsPhaseStarted;  // beginStaticsPhase() has run for the current pump
+    static int residencyBootstrapStartedMs;
     static bool outputStatusQueryPending;
     static int outputWaitStartedMs;
     static int outputWaitNextLogMs;
@@ -310,6 +326,11 @@ public:
     static void abortUploadPump();
     static void failUpload();
     static void finalizeUploadIfReady();
+    // End-of-frame residency tick. `stage0RanThisFrame` selects the eviction boundary:
+    // renderStage0 already evicted, so this only admits; otherwise both run here.
+    static void tickResidency(bool stage0RanThisFrame);
+    // Eviction boundary at the entry of renderStage0, before this frame's cull queries.
+    static void evictResidencyAtStage0();
     static bool beginStaticsPhase();
     static bool stepStaticsPhase(int budgetMs, bool& phaseDone);
     static bool finishStaticsPhase();

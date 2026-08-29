@@ -38,6 +38,17 @@ namespace DistantLoaders {
     bool queryStaticsSkipResult(bool& result);
     void releaseTerrainResources();
     void releaseStaticsResources();
+
+    // Merged-static residency runtime (distantstatics.cpp).
+    void beginResidency();
+    void haltResidency();
+    bool residencyActive();
+    bool residencyHasPendingEviction();
+    bool residencyQuiescent();
+    void planResidency(const D3DXVECTOR3& center);
+    void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uint32_t budgetResources);
+    void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources);
+    void logResidencySummary();
 }
 
 DistantLand::InitState DistantLand::state = DistantLand::InitState::Uninitialized;
@@ -73,6 +84,7 @@ bool DistantLand::uploadComplete = false;
 bool DistantLand::streamingCapOverrideActive = false;
 std::uint64_t DistantLand::mergedStreamingCapBytes = 0;
 bool DistantLand::staticsPhaseStarted = false;
+int DistantLand::residencyBootstrapStartedMs = 0;
 bool DistantLand::outputStatusQueryPending = false;
 int DistantLand::outputWaitStartedMs = 0;
 int DistantLand::outputWaitNextLogMs = 30000;
@@ -465,6 +477,29 @@ bool DistantLand::uploadDistantLand() {
         subsetsHostVecId = IPC::InvalidVector;
         if (!verifyResidencyProtocol()) {
             return false;
+        }
+        DistantLoaders::beginResidency();
+
+        // In-world renderer restart: a valid centre already exists, so run the capped
+        // nearest-ring bootstrap here. It never drains the full merged dataset.
+        if (DistantLoaders::residencyActive()) {
+            const int bootstrapStartMs = HighResolutionTimer::getMilliseconds();
+            float position[3] = {};
+            while (MWBridge::get()->tryGetPlayerPosition(position)) {
+                const D3DXVECTOR3 center(position[0], position[1], position[2]);
+                DistantLoaders::planResidency(center);
+                DistantLoaders::tickResidencyAdmission(
+                    static_cast<double>(kDrainBudgetMs),
+                    kResidencyDrainBudgetBytes,
+                    kResidencyDrainBudgetResources
+                );
+                DistantLoaders::tickResidencyEviction(static_cast<double>(kDrainBudgetMs), kResidencyDrainBudgetResources);
+                if (DistantLoaders::residencyQuiescent()
+                    || HighResolutionTimer::getMilliseconds() - bootstrapStartMs >= kResidencyBootstrapTimeoutMs) {
+                    break;
+                }
+                Sleep(1);
+            }
         }
     }
 
@@ -1412,6 +1447,9 @@ float DistantLand::drainProgressPct() {
     case UploadPhase::StaticsHostWait:
         return 95.0f;
 
+    case UploadPhase::ResidencyBootstrap:
+        return 98.0f;
+
     case UploadPhase::Done:
         return 100.0f;
 
@@ -1466,8 +1504,10 @@ void DistantLand::drainUploadPump() {
         pumpRan = true;
         pumpUploadTick(kDrainBudgetMs);
         const bool waitingForGeneration = uploadPhase == UploadPhase::HostWait || uploadPhase == UploadPhase::OutputWait;
+        // The bootstrap phase is I/O-bound on the reader thread, so yield rather than spinning.
         const bool waitingForHost = waitingForGeneration
-            || uploadPhase == UploadPhase::StaticsHostWait;
+            || uploadPhase == UploadPhase::StaticsHostWait
+            || uploadPhase == UploadPhase::ResidencyBootstrap;
         const char* loadingText = waitingForGeneration ? "MGE XE generating..." : buffer;
         const float progress = drainProgressPct();
 
@@ -1503,6 +1543,8 @@ void DistantLand::drainUploadPump() {
 
 // Abort an in-flight pump and drop any partial statics-loader state.
 void DistantLand::abortUploadPump() {
+    // Join the reader before anything it reads from can go away. Idempotent.
+    DistantLoaders::haltResidency();
     pumpActive = false;
     uploadPhase = UploadPhase::None;
     staticsPhaseStarted = false;
@@ -1541,6 +1583,56 @@ void DistantLand::finalizeUploadIfReady() {
     isRenderCached = false;
     LOG::logline("<< Completed Distant Land init");
     LOG::logline("-- Distant land render path enabled");
+}
+
+// Eviction boundary at the entry of renderStage0, before this frame's shadow/cull queries.
+// Both persistent visible vectors are cleared first, so no RenderMesh copy can reference a
+// buffer that is about to be released.
+void DistantLand::evictResidencyAtStage0() {
+    if (!DistantLoaders::residencyHasPendingEviction()) {
+        return;
+    }
+    // The previous frame's parallel-read shadow path can still hold an RPC. Never clear a
+    // shared vector the host may be writing; defer the whole batch to the next boundary.
+    if (ipcClient.pollRpcCompletion() != IPC::Complete) {
+        return;
+    }
+
+    visDistantShared.RemoveAll();
+    visExtraShared.RemoveAll();
+    DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources);
+}
+
+// End-of-frame residency tick, after rendering has ended. Admission is always safe here; the
+// eviction fallback runs only on frames that never reached renderStage0 (menu/load screens).
+void DistantLand::tickResidency(bool stage0RanThisFrame) {
+    if (!canRenderDistantLand() || !DistantLoaders::residencyActive()) {
+        return;
+    }
+    // Every residency RPC below begins with a blocking wait on any outstanding command. Skip
+    // the whole tick instead, so a still-running render query can never stall a frame.
+    if (ipcClient.pollRpcCompletion() != IPC::Complete) {
+        return;
+    }
+
+    if (!stage0RanThisFrame && DistantLoaders::residencyHasPendingEviction()) {
+        // Eviction runs before admission here so the freed headroom is available to the
+        // same tick.
+        visDistantShared.RemoveAll();
+        visExtraShared.RemoveAll();
+        DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources);
+    }
+
+    float position[3] = {};
+    if (MWBridge::get()->tryGetPlayerPosition(position)) {
+        DistantLoaders::planResidency(D3DXVECTOR3(position[0], position[1], position[2]));
+    }
+
+    DistantLoaders::tickResidencyAdmission(
+        kResidencyAdmitBudgetMs,
+        kResidencyAdmitBudgetBytes,
+        kResidencyAdmitBudgetResources
+    );
 }
 
 // Advance the upload pump by one budgeted slice. Driven from Present across idle
@@ -1710,7 +1802,47 @@ void DistantLand::pumpUploadTick(int budgetMs) {
                 failUpload();
                 return;
             }
+            DistantLoaders::beginResidency();
+            residencyBootstrapStartedMs = HighResolutionTimer::getMilliseconds();
+            uploadPhase = UploadPhase::ResidencyBootstrap;
+        }
+        break;
+
+    case UploadPhase::ResidencyBootstrap:
+        // A fitting or unsupported-budget session leaves the planner idle and every merged
+        // resource already resident, so this phase is a no-op there.
+        if (!DistantLoaders::residencyActive()) {
             uploadPhase = UploadPhase::Done;
+            break;
+        }
+        {
+            // Existing accessors that return zero on an invalid player pointer are forbidden
+            // as planner inputs: (0,0,0) is a valid-looking centre in the Bitter Coast.
+            float position[3] = {};
+            if (MWBridge::get()->tryGetPlayerPosition(position)) {
+                const D3DXVECTOR3 center(position[0], position[1], position[2]);
+                DistantLoaders::planResidency(center);
+                DistantLoaders::tickResidencyAdmission(
+                    static_cast<double>(budgetMs),
+                    kResidencyDrainBudgetBytes,
+                    kResidencyDrainBudgetResources
+                );
+                DistantLoaders::tickResidencyEviction(static_cast<double>(budgetMs), kResidencyDrainBudgetResources);
+                if (DistantLoaders::residencyQuiescent()) {
+                    uploadPhase = UploadPhase::Done;
+                }
+                break;
+            }
+
+            const int waitedMs = HighResolutionTimer::getMilliseconds() - residencyBootstrapStartedMs;
+            if (waitedMs >= kResidencyBootstrapTimeoutMs) {
+                LOG::logline(
+                    "-- Merged-static residency bootstrap timed out after %dms with no valid centre; "
+                    "entering with pop-in rather than stalling",
+                    waitedMs
+                );
+                uploadPhase = UploadPhase::Done;
+            }
         }
         break;
 

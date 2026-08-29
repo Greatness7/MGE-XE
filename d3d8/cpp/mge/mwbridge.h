@@ -87,6 +87,10 @@ public:
     float PlayerPositionX();
     float PlayerPositionY();
     float PlayerPositionZ();
+    // Explicitly optional player position for callers that run outside a rendered frame
+    // (menu / load-screen Present ticks). Validates the environment, cell and position
+    // pointers, unlike PlayerPositionX/Y/Z which return a valid-looking zero on failure.
+    bool tryGetPlayerPosition(float outPosition[3]);
     float PlayerHeight();
     bool IsPlayerWaiting();
     D3DXVECTOR3* PCam3Offset();

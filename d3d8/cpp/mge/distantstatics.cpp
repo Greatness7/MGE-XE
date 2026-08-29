@@ -11,11 +11,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -49,6 +53,8 @@ namespace {
         std::uint32_t vertexBytes = 0;
         std::uint32_t indexBytes = 0;
         bool merged = false;
+        bool streamed = false;   // published without buffers; admission owns its lifetime
+        bool readmitRequested = false;
         StaticResourceState state = StaticResourceState::Resident;
         std::uint32_t planEpoch = 0;
         std::vector<IndexCopySpan> indexCopyPlan;
@@ -56,6 +62,10 @@ namespace {
 
         StaticResource(IDirect3DVertexBuffer9* _vb, IDirect3DIndexBuffer9* _ib, IDirect3DTexture9* _tex)
             : vb(_vb), ib(_ib), tex(_tex) {}
+
+        std::uint64_t geometryBytes() const {
+            return static_cast<std::uint64_t>(vertexBytes) + indexBytes;
+        }
     };
 
     const char* d3dFormatName(D3DFORMAT format) {
@@ -138,6 +148,278 @@ namespace {
 
     constexpr std::uint64_t StaticMeshesGeometryWindowBytes = 64ull * 1024ull * 1024ull;
     constexpr std::uint32_t StaticMeshShardCount = MGE_STATIC_MESH_SHARD_COUNT;
+
+    // Provisional calibration inputs, not contracts (plan section "Spatial planner with no
+    // cell-change burst"). The caller supplies the per-tick byte/time/record budgets.
+    constexpr std::uint64_t kReadyQueueLimitBytes = 20ull * 1024 * 1024;
+    constexpr std::uint32_t kPlannerMaxCells = 64;
+    constexpr std::uint32_t kPlannerMaxResources = 64;
+
+    std::string staticMeshShardPath(std::uint32_t shardId);
+
+    // Bounded background reader for capped admission. Owns nothing D3D: it produces already
+    // reordered vertex/index bytes in heap buffers that the main thread uploads from.
+    //
+    // The startup loader's memory-mapped shard views are deliberately not reused here. Retaining
+    // 128 geometry windows would exhaust the 32-bit address space, so this worker keeps a small
+    // handle cache and issues positional ReadFile calls instead.
+    class ResidencyIoWorker {
+    public:
+        struct Request {
+            std::uint32_t resourceId = 0;
+            std::uint32_t planEpoch = 0;
+            std::uint32_t shardId = 0;
+            std::uint64_t vertexOffset = 0;
+            std::uint64_t indexOffset = 0;
+            std::uint32_t vertexBytes = 0;
+            std::uint32_t indexBytes = 0;
+            std::vector<IndexCopySpan> indexCopyPlan;
+        };
+
+        struct Result {
+            std::uint32_t resourceId = 0;
+            std::uint32_t planEpoch = 0;
+            bool ok = false;
+            std::vector<std::uint8_t> vertexData;
+            std::vector<std::uint8_t> indexData;
+        };
+
+        ~ResidencyIoWorker() { stop(); }
+
+        void start() {
+            if (thread.joinable()) {
+                return;
+            }
+            stopping = false;
+            thread = std::thread([this] { run(); });
+        }
+
+        void stop() {
+            if (!thread.joinable()) {
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                stopping = true;
+                pending.clear();
+            }
+            wake.notify_all();
+            thread.join();
+            std::lock_guard<std::mutex> lock(mutex);
+            ready.clear();
+            readyBytes = 0;
+        }
+
+        bool running() const { return thread.joinable(); }
+
+        void submit(Request&& request) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending.push_back(std::move(request));
+            }
+            wake.notify_one();
+        }
+
+        // Drops queued work for superseded plan epochs. In-flight output is discarded on
+        // collection instead, so the worker never has to be interrupted mid-read.
+        void cancelOlderEpochs(std::uint32_t epoch, std::vector<std::uint32_t>& cancelled) {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (auto it = pending.begin(); it != pending.end();) {
+                if (it->planEpoch != epoch) {
+                    cancelled.push_back(it->resourceId);
+                    it = pending.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            for (auto it = ready.begin(); it != ready.end();) {
+                if (it->planEpoch != epoch) {
+                    cancelled.push_back(it->resourceId);
+                    readyBytes -= std::min<std::uint64_t>(readyBytes, it->vertexData.size() + it->indexData.size());
+                    it = ready.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        bool tryCollect(Result& out) {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (ready.empty()) {
+                return false;
+            }
+            out = std::move(ready.front());
+            ready.pop_front();
+            readyBytes -= std::min<std::uint64_t>(readyBytes, out.vertexData.size() + out.indexData.size());
+            return true;
+        }
+
+        std::uint64_t queuedBytes() {
+            std::lock_guard<std::mutex> lock(mutex);
+            return readyBytes;
+        }
+
+        bool idle() {
+            std::lock_guard<std::mutex> lock(mutex);
+            return pending.empty() && ready.empty() && !working;
+        }
+
+    private:
+        void run() {
+            for (;;) {
+                Request request;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    wake.wait(lock, [this] { return stopping || !pending.empty(); });
+                    if (stopping) {
+                        break;
+                    }
+                    request = std::move(pending.front());
+                    pending.pop_front();
+                    working = true;
+                }
+
+                Result result;
+                result.resourceId = request.resourceId;
+                result.planEpoch = request.planEpoch;
+                result.ok = fulfil(request, result);
+
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    readyBytes += result.vertexData.size() + result.indexData.size();
+                    ready.push_back(std::move(result));
+                    working = false;
+                }
+            }
+            closeHandles();
+        }
+
+        HANDLE shardHandle(std::uint32_t shardId) {
+            for (auto& entry : handleCache) {
+                if (entry.handle != INVALID_HANDLE_VALUE && entry.shardId == shardId) {
+                    return entry.handle;
+                }
+            }
+            const std::string path = staticMeshShardPath(shardId);
+            HANDLE handle = CreateFile(path.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+            if (handle == INVALID_HANDLE_VALUE) {
+                return INVALID_HANDLE_VALUE;
+            }
+            if (handleCache[handleCursor].handle != INVALID_HANDLE_VALUE) {
+                CloseHandle(handleCache[handleCursor].handle);
+            }
+            handleCache[handleCursor] = { shardId, handle };
+            handleCursor = (handleCursor + 1) % handleCache.size();
+            return handle;
+        }
+
+        void closeHandles() {
+            for (auto& entry : handleCache) {
+                if (entry.handle != INVALID_HANDLE_VALUE) {
+                    CloseHandle(entry.handle);
+                    entry.handle = INVALID_HANDLE_VALUE;
+                }
+            }
+        }
+
+        static bool readAt(HANDLE handle, std::uint64_t offset, void* destination, std::uint32_t bytes) {
+            auto* output = static_cast<std::uint8_t*>(destination);
+            std::uint32_t remaining = bytes;
+            while (remaining != 0) {
+                OVERLAPPED overlapped = {};
+                overlapped.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFull);
+                overlapped.OffsetHigh = static_cast<DWORD>(offset >> 32);
+                DWORD read = 0;
+                if (!ReadFile(handle, output, remaining, &read, &overlapped) || read == 0) {
+                    return false;
+                }
+                output += read;
+                offset += read;
+                remaining -= read;
+            }
+            return true;
+        }
+
+        bool fulfil(const Request& request, Result& result) {
+            HANDLE handle = shardHandle(request.shardId);
+            if (handle == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+
+            result.vertexData.resize(request.vertexBytes);
+            if (!readAt(handle, request.vertexOffset, result.vertexData.data(), request.vertexBytes)) {
+                return false;
+            }
+
+            result.indexData.resize(request.indexBytes);
+            if (request.indexCopyPlan.empty()) {
+                return readAt(handle, request.indexOffset, result.indexData.data(), request.indexBytes);
+            }
+
+            // Merged subsets are reordered into very-far/far/near tier runs, matching the
+            // startup path's copyTier(2)/copyTier(1)/copyTier(0) sequence.
+            scratch.resize(request.indexBytes);
+            if (!readAt(handle, request.indexOffset, scratch.data(), request.indexBytes)) {
+                return false;
+            }
+            std::size_t written = 0;
+            for (const auto& span : request.indexCopyPlan) {
+                if (static_cast<std::uint64_t>(span.sourceOffset) + span.byteCount > request.indexBytes
+                    || written + span.byteCount > request.indexBytes) {
+                    return false;
+                }
+                std::memcpy(result.indexData.data() + written, scratch.data() + span.sourceOffset, span.byteCount);
+                written += span.byteCount;
+            }
+            return written == request.indexBytes;
+        }
+
+        struct CachedHandle {
+            std::uint32_t shardId = 0;
+            HANDLE handle = INVALID_HANDLE_VALUE;
+        };
+
+        std::thread thread;
+        std::mutex mutex;
+        std::condition_variable wake;
+        std::deque<Request> pending;
+        std::deque<Result> ready;
+        std::vector<std::uint8_t> scratch;
+        std::array<CachedHandle, 4> handleCache = {};
+        std::size_t handleCursor = 0;
+        std::uint64_t readyBytes = 0;
+        bool stopping = false;
+        bool working = false;
+    };
+
+    ResidencyIoWorker residencyIo;
+
+    // Client-authoritative byte ledger. Covers every merged resource that owns or has reserved
+    // GPU bytes: io-queued, ready-for-gpu, commit-pending, resident, evict-queued and
+    // removal-in-flight. Decremented only after Release, never on eviction request.
+    std::uint64_t logicalReservedMergedBytes = 0;
+    std::uint32_t residencyPlanEpoch = 0;
+    bool residencyIdle = true;              // no cap binds: the planner is never asked to run
+    bool residencyFrozen = false;           // an unacknowledged removal poisoned the session
+    std::vector<std::uint32_t> residencyEvictQueue;
+    std::vector<std::uint32_t> residencyRemovalInFlight;
+    // Resources holding live buffers whose commit RPC has not been acknowledged yet. Tracked
+    // explicitly so the per-frame tick never scans the whole catalog.
+    std::vector<std::uint32_t> residencyCommitPending;
+
+    // Permanent low-cost session counters, summarised at teardown.
+    struct ResidencyStats {
+        std::uint64_t admittedBytes = 0;
+        std::uint64_t evictedBytes = 0;
+        std::uint32_t admittedCount = 0;
+        std::uint32_t evictedCount = 0;
+        std::uint32_t unavailableCount = 0;
+        std::uint32_t cancelledCount = 0;
+        std::uint32_t nonCompleteRemovals = 0;
+        std::uint32_t paletteMisses = 0;
+        std::uint64_t peakReservedBytes = 0;
+    };
+    ResidencyStats residencyStats;
 
     std::string staticMeshShardPath(std::uint32_t shardId) {
         char path[64] = {};
@@ -781,115 +1063,127 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
                 L.mergedIndexBytes += indexBytes;
             }
 
+            // Merged geometry is published without buffers while a cap binds; the residency
+            // planner owns its lifetime from here on. Textures stay resident either way.
+            const bool streamThisSubset = L.currentStaticMerged && DistantLand::streamingCapOverrideActive;
+
             IDirect3DVertexBuffer9* vb = nullptr;
             IDirect3DIndexBuffer9* ib = nullptr;
             void* lockdata = nullptr;
 
-            auto vbStart = DistantLoadInstrumentation::counter_now();
-            HRESULT hr = device->CreateVertexBuffer(vertexUploadBytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vb, 0);
-            if (FAILED(hr)) {
-                LOG::logline(
-                    "!! Failed to create distant static vertex buffer: static=%lu subset=%lu verts=%d bytes=%u hr=0x%08lx",
-                    L.staticIndex,
-                    subsetTableIndex,
-                    subset.verts,
-                    vertexUploadBytes,
-                    hr
-                );
-                return false;
-            }
-            hr = vb->Lock(0, 0, &lockdata, 0);
-            if (FAILED(hr)) {
-                LOG::logline(
-                    "!! Failed to lock distant static vertex buffer: static=%lu subset=%lu verts=%d bytes=%u hr=0x%08lx",
-                    L.staticIndex,
-                    subsetTableIndex,
-                    subset.verts,
-                    vertexUploadBytes,
-                    hr
-                );
-                vb->Release();
-                return false;
-            }
-            if (!L.activeShard->mapping.copyRange(subsetRecord.vertex_offset, vertexBytes, lockdata)) {
+            // Startup geometry upload from the shard's mapped window. Skipped entirely for a
+            // streamed merged subset: the residency planner reads those bytes from disk later.
+            auto uploadGeometryFromMapping = [&]() -> bool {
+                auto vbStart = DistantLoadInstrumentation::counter_now();
+                HRESULT hr = device->CreateVertexBuffer(vertexUploadBytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vb, 0);
+                if (FAILED(hr)) {
+                    LOG::logline(
+                        "!! Failed to create distant static vertex buffer: static=%lu subset=%lu verts=%d bytes=%u hr=0x%08lx",
+                        L.staticIndex,
+                        subsetTableIndex,
+                        subset.verts,
+                        vertexUploadBytes,
+                        hr
+                    );
+                    return false;
+                }
+                hr = vb->Lock(0, 0, &lockdata, 0);
+                if (FAILED(hr)) {
+                    LOG::logline(
+                        "!! Failed to lock distant static vertex buffer: static=%lu subset=%lu verts=%d bytes=%u hr=0x%08lx",
+                        L.staticIndex,
+                        subsetTableIndex,
+                        subset.verts,
+                        vertexUploadBytes,
+                        hr
+                    );
+                    vb->Release();
+                    return false;
+                }
+                if (!L.activeShard->mapping.copyRange(subsetRecord.vertex_offset, vertexBytes, lockdata)) {
+                    vb->Unlock();
+                    vb->Release();
+                    MappedFileUtil::LogMappingFailure("Distant statics: failed to map static shard vertex data", L.activeShard->mapping);
+                    LOG::flush();
+                    return false;
+                }
                 vb->Unlock();
-                vb->Release();
-                MappedFileUtil::LogMappingFailure("Distant statics: failed to map static shard vertex data", L.activeShard->mapping);
-                LOG::flush();
-                return false;
-            }
-            vb->Unlock();
-            L.createVertexBuffersMs += DistantLoadInstrumentation::elapsed_ms(vbStart);
+                L.createVertexBuffersMs += DistantLoadInstrumentation::elapsed_ms(vbStart);
 
-            auto ibStart = DistantLoadInstrumentation::counter_now();
-            hr = device->CreateIndexBuffer(indexUploadBytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &ib, 0);
-            if (FAILED(hr)) {
-                LOG::logline(
-                    "!! Failed to create distant static index buffer: static=%lu subset=%lu faces=%d bytes=%u hr=0x%08lx",
-                    L.staticIndex,
-                    subsetTableIndex,
-                    subset.faces,
-                    indexUploadBytes,
-                    hr
-                );
-                vb->Release();
-                return false;
-            }
-            hr = ib->Lock(0, 0, &lockdata, 0);
-            if (FAILED(hr)) {
-                LOG::logline(
-                    "!! Failed to lock distant static index buffer: static=%lu subset=%lu faces=%d bytes=%u hr=0x%08lx",
-                    L.staticIndex,
-                    subsetTableIndex,
-                    subset.faces,
-                    indexUploadBytes,
-                    hr
-                );
-                ib->Release();
-                vb->Release();
-                return false;
-            }
-            if (subsetRecord.component_count == 0) {
-                if (!L.activeShard->mapping.copyRange(subsetRecord.index_offset, indexBytes, lockdata)) {
-                    ib->Unlock();
-                    ib->Release();
+                auto ibStart = DistantLoadInstrumentation::counter_now();
+                hr = device->CreateIndexBuffer(indexUploadBytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &ib, 0);
+                if (FAILED(hr)) {
+                    LOG::logline(
+                        "!! Failed to create distant static index buffer: static=%lu subset=%lu faces=%d bytes=%u hr=0x%08lx",
+                        L.staticIndex,
+                        subsetTableIndex,
+                        subset.faces,
+                        indexUploadBytes,
+                        hr
+                    );
                     vb->Release();
-                    MappedFileUtil::LogMappingFailure("Distant statics: failed to map static shard index data", L.activeShard->mapping);
-                    LOG::flush();
                     return false;
                 }
-            } else {
-                L.indexScratch.resize(static_cast<std::size_t>(indexBytes));
-                if (!L.activeShard->mapping.copyRange(subsetRecord.index_offset, indexBytes, L.indexScratch.data())) {
-                    ib->Unlock();
+                hr = ib->Lock(0, 0, &lockdata, 0);
+                if (FAILED(hr)) {
+                    LOG::logline(
+                        "!! Failed to lock distant static index buffer: static=%lu subset=%lu faces=%d bytes=%u hr=0x%08lx",
+                        L.staticIndex,
+                        subsetTableIndex,
+                        subset.faces,
+                        indexUploadBytes,
+                        hr
+                    );
                     ib->Release();
                     vb->Release();
-                    MappedFileUtil::LogMappingFailure("Distant statics: failed to map static shard index data", L.activeShard->mapping);
-                    LOG::flush();
                     return false;
                 }
-
-                auto* output = static_cast<std::uint8_t*>(lockdata);
-                auto copyTier = [&](int tier) {
-                    for (std::uint32_t componentIndex = 0; componentIndex < subsetRecord.component_count; ++componentIndex) {
-                        const auto& component = components[componentIndex];
-                        if (classifyStaticComponent(component, Configuration.DL.FarStaticMinSize, Configuration.DL.VeryFarStaticMinSize) != tier) {
-                            continue;
-                        }
-                        const std::size_t sourceOffset =
-                            static_cast<std::size_t>(component.first_triangle) * 3u * StaticMeshesBin::IndexElementSize;
-                        const std::size_t byteCount =
-                            static_cast<std::size_t>(component.triangle_count) * 3u * StaticMeshesBin::IndexElementSize;
-                        std::memcpy(output, L.indexScratch.data() + sourceOffset, byteCount);
-                        output += byteCount;
+                if (subsetRecord.component_count == 0) {
+                    if (!L.activeShard->mapping.copyRange(subsetRecord.index_offset, indexBytes, lockdata)) {
+                        ib->Unlock();
+                        ib->Release();
+                        vb->Release();
+                        MappedFileUtil::LogMappingFailure("Distant statics: failed to map static shard index data", L.activeShard->mapping);
+                        LOG::flush();
+                        return false;
                     }
-                };
-                copyTier(2);
-                copyTier(1);
-                copyTier(0);
+                } else {
+                    L.indexScratch.resize(static_cast<std::size_t>(indexBytes));
+                    if (!L.activeShard->mapping.copyRange(subsetRecord.index_offset, indexBytes, L.indexScratch.data())) {
+                        ib->Unlock();
+                        ib->Release();
+                        vb->Release();
+                        MappedFileUtil::LogMappingFailure("Distant statics: failed to map static shard index data", L.activeShard->mapping);
+                        LOG::flush();
+                        return false;
+                    }
+
+                    auto* output = static_cast<std::uint8_t*>(lockdata);
+                    auto copyTier = [&](int tier) {
+                        for (std::uint32_t componentIndex = 0; componentIndex < subsetRecord.component_count; ++componentIndex) {
+                            const auto& component = components[componentIndex];
+                            if (classifyStaticComponent(component, Configuration.DL.FarStaticMinSize, Configuration.DL.VeryFarStaticMinSize) != tier) {
+                                continue;
+                            }
+                            const std::size_t sourceOffset =
+                                static_cast<std::size_t>(component.first_triangle) * 3u * StaticMeshesBin::IndexElementSize;
+                            const std::size_t byteCount =
+                                static_cast<std::size_t>(component.triangle_count) * 3u * StaticMeshesBin::IndexElementSize;
+                            std::memcpy(output, L.indexScratch.data() + sourceOffset, byteCount);
+                            output += byteCount;
+                        }
+                    };
+                    copyTier(2);
+                    copyTier(1);
+                    copyTier(0);
+                }
+                ib->Unlock();
+                L.createIndexBuffersMs += DistantLoadInstrumentation::elapsed_ms(ibStart);
+                return true;
+            };
+            if (!streamThisSubset && !uploadGeometryFromMapping()) {
+                return false;
             }
-            ib->Unlock();
-            L.createIndexBuffersMs += DistantLoadInstrumentation::elapsed_ms(ibStart);
 
             auto textureStart = DistantLoadInstrumentation::counter_now();
             IDirect3DTexture9* tex = BSA::loadTexture(device, reinterpret_cast<const char*>(texturePathBytesView));
@@ -918,6 +1212,8 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             resource.vertexBytes = vertexUploadBytes;
             resource.indexBytes = indexUploadBytes;
             resource.merged = L.currentStaticMerged;
+            resource.streamed = streamThisSubset;
+            resource.state = streamThisSubset ? StaticResourceState::Unloaded : StaticResourceState::Resident;
             resource.palette = std::move(palette);
             if (resource.merged) {
                 for (int tier = 2; tier >= 0; --tier) {
@@ -1075,8 +1371,16 @@ bool DistantLand::finishStaticsPhase() {
     }
     staticUvBoundPalettes.reserve(staticUvBoundPalettes.size() + L.loadedResources.size());
     for (auto& resource : L.loadedResources) {
-        staticUvBoundPalettes.emplace(resource.vb, resource.palette);
+        // A streamed resource has no VB yet; its palette is inserted at admission and erased
+        // before the buffer is released, keeping the map's keys and the live buffers paired.
+        if (resource.vb) {
+            staticUvBoundPalettes.emplace(resource.vb, resource.palette);
+        }
+        if (resource.merged && resource.state == StaticResourceState::Resident) {
+            logicalReservedMergedBytes += resource.geometryBytes();
+        }
     }
+    residencyStats.peakReservedBytes = std::max(residencyStats.peakReservedBytes, logicalReservedMergedBytes);
     staticResourceCatalog.insert(
         staticResourceCatalog.end(),
         std::make_move_iterator(L.loadedResources.begin()),
@@ -1246,6 +1550,8 @@ bool DistantLand::loadVisGroupsClient(HANDLE h) {
 // Arm the frame-budgeted upload pump at startup (createScene), before the menu.
 namespace DistantLoaders {
 
+void logResidencySummary();
+
 float staticsProgressRatio() {
     if (!DistantLand::staticsLoader || DistantLand::staticsLoader->totalStaticCount == 0) {
         return 0.0f;
@@ -1270,6 +1576,10 @@ const StaticUvBoundPaletteMap& staticUvBoundPaletteMap() {
 }
 
 void releaseStaticsResources() {
+    // Join the reader before its catalog and shard handles go away.
+    residencyIo.stop();
+    DistantLoaders::logResidencySummary();
+
     for (auto& mesh : staticResourceCatalog) {
         if (mesh.vb) { mesh.vb->Release(); }
         if (mesh.ib) { mesh.ib->Release(); }
@@ -1278,6 +1588,514 @@ void releaseStaticsResources() {
     staticResourceCatalog.clear();
     // Keyed on the vertex buffers just released; the keys are dangling from here on.
     staticUvBoundPalettes.clear();
+
+    logicalReservedMergedBytes = 0;
+    residencyPlanEpoch = 0;
+    residencyIdle = true;
+    residencyFrozen = false;
+    residencyEvictQueue.clear();
+    residencyRemovalInFlight.clear();
+    residencyCommitPending.clear();
+    residencyStats = ResidencyStats();
 }
 
 }
+
+//-----------------------------------------------------------------------------
+// Merged-static residency runtime.
+//
+// The client is the sole byte-ledger authority: the host tracks spatial priority and committed
+// resident state, but never a byte total or an admission reservation. Every D3D call below runs
+// on Morrowind's main thread; the reader thread only produces bytes.
+
+namespace {
+
+std::uint64_t activeMergedCapBytes() {
+    return DistantLand::streamingCapOverrideActive
+        ? DistantLand::mergedStreamingCapBytes
+        : std::numeric_limits<std::uint64_t>::max();
+}
+
+std::uint64_t availableMergedBytes() {
+    const std::uint64_t cap = activeMergedCapBytes();
+    return cap > logicalReservedMergedBytes ? cap - logicalReservedMergedBytes : 0;
+}
+
+std::uint64_t mergedCapDebtBytes() {
+    const std::uint64_t cap = activeMergedCapBytes();
+    return logicalReservedMergedBytes > cap ? logicalReservedMergedBytes - cap : 0;
+}
+
+StaticResource* findResource(std::uint32_t resourceId) {
+    if (resourceId >= staticResourceCatalog.size()) {
+        return nullptr;
+    }
+    // The catalog is filled in global subset order, so the index is the resource id. Verify it
+    // rather than trusting a host-supplied index into a client-owned array.
+    StaticResource& resource = staticResourceCatalog[resourceId];
+    return resource.resourceId == resourceId ? &resource : nullptr;
+}
+
+// Submits one acknowledged batch of state transitions. Returns false when the RPC did not
+// complete, in which case the caller must not release anything.
+bool commitResidency(const std::vector<IPC::ResidencyCommit>& commits) {
+    if (commits.empty()) {
+        return true;
+    }
+    if (DistantLand::residencyCommitSharedId == IPC::InvalidVector) {
+        return false;
+    }
+
+    DistantLand::residencyCommitShared.clear();
+    for (const auto& commit : commits) {
+        if (!DistantLand::residencyCommitShared.push_back(commit)) {
+            return false;
+        }
+    }
+    if (!DistantLand::ipcClient.updateResidency(DistantLand::residencyCommitSharedId)) {
+        return false;
+    }
+    if (DistantLand::ipcClient.waitForCompletion() != IPC::Complete) {
+        return false;
+    }
+    return DistantLand::ipcClient.lastUpdateResidencySucceeded();
+}
+
+void markUnavailable(StaticResource& resource, const char* reason) {
+    resource.state = StaticResourceState::Unavailable;
+    ++residencyStats.unavailableCount;
+    LOG::logline(
+        "!! Distant static resource %lu is unavailable for this device session (%s)",
+        resource.resourceId,
+        reason
+    );
+
+    IPC::ResidencyCommit commit = {};
+    commit.resourceId = resource.resourceId;
+    commit.state = IPC::ResidencyUnavailable;
+    commit.vbuffer = nullptr;
+    commit.ibuffer = nullptr;
+    std::vector<IPC::ResidencyCommit> commits { commit };
+    commitResidency(commits);
+}
+
+// Creates both buffers from prepared bytes, inserts the palette, then commits the pointers.
+// The host may only restore face counts after this whole sequence succeeds.
+bool admitPreparedResource(StaticResource& resource, ResidencyIoWorker::Result& prepared) {
+    IDirect3DVertexBuffer9* vb = nullptr;
+    IDirect3DIndexBuffer9* ib = nullptr;
+    void* lockdata = nullptr;
+
+    if (prepared.vertexData.size() != resource.vertexBytes || prepared.indexData.size() != resource.indexBytes) {
+        markUnavailable(resource, "prepared byte count does not match the catalog");
+        return false;
+    }
+
+    if (FAILED(DistantLand::device->CreateVertexBuffer(resource.vertexBytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vb, 0))) {
+        markUnavailable(resource, "vertex buffer creation failed");
+        return false;
+    }
+    if (FAILED(vb->Lock(0, 0, &lockdata, 0))) {
+        vb->Release();
+        markUnavailable(resource, "vertex buffer lock failed");
+        return false;
+    }
+    std::memcpy(lockdata, prepared.vertexData.data(), resource.vertexBytes);
+    vb->Unlock();
+
+    if (FAILED(DistantLand::device->CreateIndexBuffer(resource.indexBytes, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &ib, 0))) {
+        vb->Release();
+        markUnavailable(resource, "index buffer creation failed");
+        return false;
+    }
+    if (FAILED(ib->Lock(0, 0, &lockdata, 0))) {
+        ib->Release();
+        vb->Release();
+        markUnavailable(resource, "index buffer lock failed");
+        return false;
+    }
+    std::memcpy(lockdata, prepared.indexData.data(), resource.indexBytes);
+    ib->Unlock();
+
+    resource.vb = vb;
+    resource.ib = ib;
+    resource.state = StaticResourceState::CommitPending;
+    residencyCommitPending.push_back(resource.resourceId);
+    staticUvBoundPalettes[vb] = resource.palette;
+
+    IPC::ResidencyCommit commit = {};
+    commit.resourceId = resource.resourceId;
+    commit.state = IPC::ResidencyResident;
+    commit.vbuffer = vb;
+    commit.ibuffer = ib;
+    std::vector<IPC::ResidencyCommit> commits { commit };
+    if (!commitResidency(commits)) {
+        // Retain the buffers in commit-pending and retry at a later boundary; the host may
+        // still be holding the request, so the pointers must stay valid.
+        return false;
+    }
+
+    residencyCommitPending.pop_back();
+    resource.state = StaticResourceState::Resident;
+    ++residencyStats.admittedCount;
+    residencyStats.admittedBytes += resource.geometryBytes();
+    return true;
+}
+
+void queueAdmission(StaticResource& resource) {
+    if (resource.state != StaticResourceState::Unloaded) {
+        return;
+    }
+    if (residencyIo.queuedBytes() >= kReadyQueueLimitBytes) {
+        return;
+    }
+
+    ResidencyIoWorker::Request request;
+    request.resourceId = resource.resourceId;
+    request.planEpoch = residencyPlanEpoch;
+    request.shardId = resource.shardId;
+    request.vertexOffset = resource.vertexOffset;
+    request.indexOffset = resource.indexOffset;
+    request.vertexBytes = resource.vertexBytes;
+    request.indexBytes = resource.indexBytes;
+    request.indexCopyPlan = resource.indexCopyPlan;
+
+    resource.state = StaticResourceState::IoQueued;
+    resource.planEpoch = residencyPlanEpoch;
+    logicalReservedMergedBytes += resource.geometryBytes();
+    residencyStats.peakReservedBytes = std::max(residencyStats.peakReservedBytes, logicalReservedMergedBytes);
+    residencyIo.submit(std::move(request));
+}
+
+void queueEviction(StaticResource& resource) {
+    switch (resource.state) {
+    case StaticResourceState::IoQueued:
+    case StaticResourceState::ReadyForGpu:
+        // Never committed to the host, so no removal RPC is needed.
+        resource.state = StaticResourceState::Unloaded;
+        logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resource.geometryBytes());
+        ++residencyStats.cancelledCount;
+        return;
+    case StaticResourceState::Resident:
+        resource.state = StaticResourceState::EvictQueued;
+        resource.planEpoch = residencyPlanEpoch;
+        residencyEvictQueue.push_back(resource.resourceId);
+        return;
+    default:
+        return;
+    }
+}
+
+int plannerCellX = INT_MIN;
+int plannerCellY = INT_MIN;
+
+}   // namespace
+
+namespace DistantLoaders {
+
+void logResidencySummary() {
+    if (residencyIdle && residencyStats.admittedCount == 0 && residencyStats.evictedCount == 0) {
+        return;
+    }
+    LOG::logline(
+        "-- Distant static residency summary: admitted=%lu/%llu B evicted=%lu/%llu B peak_reserved=%llu B "
+        "cap=%llu B epochs=%lu cancelled=%lu unavailable=%lu palette_misses=%lu removal_non_complete=%lu frozen=%d",
+        residencyStats.admittedCount,
+        static_cast<unsigned long long>(residencyStats.admittedBytes),
+        residencyStats.evictedCount,
+        static_cast<unsigned long long>(residencyStats.evictedBytes),
+        static_cast<unsigned long long>(residencyStats.peakReservedBytes),
+        static_cast<unsigned long long>(activeMergedCapBytes()),
+        residencyPlanEpoch,
+        residencyStats.cancelledCount,
+        residencyStats.unavailableCount,
+        residencyStats.paletteMisses,
+        residencyStats.nonCompleteRemovals,
+        residencyFrozen ? 1 : 0
+    );
+}
+
+void noteMissingPalette() {
+    ++residencyStats.paletteMisses;
+}
+
+bool residencyActive() {
+    return !residencyIdle && !residencyFrozen;
+}
+
+bool residencyHasPendingEviction() {
+    return residencyActive() && (!residencyEvictQueue.empty() || !residencyRemovalInFlight.empty());
+}
+
+bool residencyQuiescent() {
+    if (!residencyActive()) {
+        return true;
+    }
+    if (!residencyEvictQueue.empty() || !residencyRemovalInFlight.empty()) {
+        return false;
+    }
+    if (!residencyCommitPending.empty()) {
+        return false;
+    }
+    return residencyIo.idle();
+}
+
+// Idempotent teardown of the reader thread and every in-flight residency intent. Safe to call
+// from a partial-init abort; the catalog and its buffers are released separately.
+void haltResidency() {
+    residencyIo.stop();
+    residencyIdle = true;
+    residencyEvictQueue.clear();
+    residencyRemovalInFlight.clear();
+    residencyCommitPending.clear();
+}
+
+void beginResidency() {
+    residencyIdle = !DistantLand::streamingCapOverrideActive;
+    residencyFrozen = false;
+    plannerCellX = INT_MIN;
+    plannerCellY = INT_MIN;
+    if (residencyIdle) {
+        LOG::logline("-- Merged-static residency idle: no cap binds, every merged resource is resident");
+        return;
+    }
+    residencyIo.start();
+    LOG::logline(
+        "-- Merged-static residency armed: cap=%llu B resident_merged=%llu B",
+        static_cast<unsigned long long>(activeMergedCapBytes()),
+        static_cast<unsigned long long>(logicalReservedMergedBytes)
+    );
+}
+
+// Asks the host for the next bounded batch of admit/evict requests around `center`.
+// A quantized cell change starts a new plan epoch, cancelling superseded queued I/O.
+void planResidency(const D3DXVECTOR3& center) {
+    if (!residencyActive() || DistantLand::residencyPlanSharedId == IPC::InvalidVector) {
+        return;
+    }
+
+    const int cellX = static_cast<int>(std::floor(center.x / DistantLand::kCellSize));
+    const int cellY = static_cast<int>(std::floor(center.y / DistantLand::kCellSize));
+    if (cellX != plannerCellX || cellY != plannerCellY) {
+        plannerCellX = cellX;
+        plannerCellY = cellY;
+        ++residencyPlanEpoch;
+
+        std::vector<std::uint32_t> cancelled;
+        residencyIo.cancelOlderEpochs(residencyPlanEpoch, cancelled);
+        for (std::uint32_t resourceId : cancelled) {
+            StaticResource* resource = findResource(resourceId);
+            if (resource && resource->state == StaticResourceState::IoQueued) {
+                resource->state = StaticResourceState::Unloaded;
+                logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resource->geometryBytes());
+                ++residencyStats.cancelledCount;
+            }
+        }
+    }
+
+    const float admissionRadius = Configuration.DL.DrawDist * DistantLand::kCellSize + DistantLand::kCellSize;
+    const float retainRadius = admissionRadius + DistantLand::kCellSize;
+    if (!DistantLand::ipcClient.planResidency(
+            DistantLand::residencyPlanSharedId,
+            residencyPlanEpoch,
+            center,
+            admissionRadius,
+            retainRadius,
+            kPlannerMaxCells,
+            kPlannerMaxResources,
+            activeMergedCapBytes(),
+            availableMergedBytes(),
+            mergedCapDebtBytes())) {
+        return;
+    }
+    if (DistantLand::ipcClient.waitForCompletion() != IPC::Complete) {
+        return;
+    }
+
+    const std::uint32_t requestCount = DistantLand::residencyPlanShared.size();
+    for (std::uint32_t i = 0; i < requestCount; ++i) {
+        const IPC::ResidencyPlan& request = DistantLand::residencyPlanShared[i];
+        StaticResource* resource = findResource(request.resourceId);
+        if (!resource || !resource->streamed) {
+            continue;
+        }
+        if (request.action == IPC::ResidencyAdmit) {
+            if (resource->state == StaticResourceState::EvictQueued) {
+                // Cancellable only while the removal RPC has not been submitted.
+                resource->state = StaticResourceState::Resident;
+                residencyEvictQueue.erase(
+                    std::remove(residencyEvictQueue.begin(), residencyEvictQueue.end(), request.resourceId),
+                    residencyEvictQueue.end()
+                );
+            } else if (resource->state == StaticResourceState::RemovalInFlight) {
+                resource->readmitRequested = true;
+            } else if (resource->geometryBytes() <= availableMergedBytes()) {
+                queueAdmission(*resource);
+            }
+        } else if (request.action == IPC::ResidencyEvict) {
+            queueEviction(*resource);
+        }
+    }
+}
+
+// Bounded main-thread upload of prepared bytes. Textures are already resident, so no
+// filesystem probing or D3DX texture creation happens here.
+void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uint32_t budgetResources) {
+    if (!residencyActive()) {
+        return;
+    }
+
+    const auto start = DistantLoadInstrumentation::counter_now();
+    std::uint64_t bytesThisTick = 0;
+    std::uint32_t resourcesThisTick = 0;
+
+    // Retry any resource whose admission commit did not complete earlier; its buffers are live.
+    while (!residencyCommitPending.empty()) {
+        StaticResource* resource = findResource(residencyCommitPending.back());
+        if (!resource || resource->state != StaticResourceState::CommitPending) {
+            residencyCommitPending.pop_back();
+            continue;
+        }
+        IPC::ResidencyCommit commit = {};
+        commit.resourceId = resource->resourceId;
+        commit.state = IPC::ResidencyResident;
+        commit.vbuffer = resource->vb;
+        commit.ibuffer = resource->ib;
+        std::vector<IPC::ResidencyCommit> commits { commit };
+        if (!commitResidency(commits)) {
+            return;
+        }
+        residencyCommitPending.pop_back();
+        resource->state = StaticResourceState::Resident;
+        ++residencyStats.admittedCount;
+        residencyStats.admittedBytes += resource->geometryBytes();
+        if (++resourcesThisTick >= budgetResources) {
+            return;
+        }
+    }
+
+    ResidencyIoWorker::Result prepared;
+    while (resourcesThisTick < budgetResources && bytesThisTick < budgetBytes) {
+        if (!residencyIo.tryCollect(prepared)) {
+            return;
+        }
+
+        StaticResource* resource = findResource(prepared.resourceId);
+        if (!resource || resource->state != StaticResourceState::IoQueued) {
+            continue;
+        }
+
+        const std::uint64_t resourceBytes = resource->geometryBytes();
+        if (!prepared.ok) {
+            logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resourceBytes);
+            markUnavailable(*resource, "shard read failed");
+            continue;
+        }
+        if (prepared.planEpoch != residencyPlanEpoch) {
+            // Superseded before any GPU allocation.
+            resource->state = StaticResourceState::Unloaded;
+            logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resourceBytes);
+            ++residencyStats.cancelledCount;
+            continue;
+        }
+
+        resource->state = StaticResourceState::ReadyForGpu;
+        if (!admitPreparedResource(*resource, prepared)) {
+            if (resource->state == StaticResourceState::Unavailable) {
+                logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resourceBytes);
+            }
+            return;
+        }
+
+        bytesThisTick += resourceBytes;
+        ++resourcesThisTick;
+
+        const double elapsed = DistantLoadInstrumentation::elapsed_ms(start);
+        if (elapsed >= budgetMs) {
+            if (resourceBytes > budgetBytes) {
+                LOG::logline(
+                    "-- Distant static residency admitted an oversize resource alone: id=%lu bytes=%llu elapsed=%.2fms",
+                    resource->resourceId,
+                    static_cast<unsigned long long>(resourceBytes),
+                    elapsed
+                );
+            }
+            return;
+        }
+    }
+}
+
+// Acknowledged removal at a quiescent boundary. Release is forbidden unless the removal RPC
+// returns Complete: on timeout or server loss the buffers, palette and ledger bytes stay in
+// removal-in-flight and residency freezes for the device session.
+void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
+    if (!residencyActive() || (residencyEvictQueue.empty() && residencyRemovalInFlight.empty())) {
+        return;
+    }
+
+    const auto start = DistantLoadInstrumentation::counter_now();
+
+    if (residencyRemovalInFlight.empty()) {
+        const std::size_t batch = std::min<std::size_t>(residencyEvictQueue.size(), budgetResources);
+        residencyRemovalInFlight.assign(residencyEvictQueue.begin(), residencyEvictQueue.begin() + batch);
+        residencyEvictQueue.erase(residencyEvictQueue.begin(), residencyEvictQueue.begin() + batch);
+        for (std::uint32_t resourceId : residencyRemovalInFlight) {
+            StaticResource* resource = findResource(resourceId);
+            if (resource) {
+                resource->state = StaticResourceState::RemovalInFlight;
+            }
+        }
+    }
+
+    std::vector<IPC::ResidencyCommit> commits;
+    commits.reserve(residencyRemovalInFlight.size());
+    for (std::uint32_t resourceId : residencyRemovalInFlight) {
+        IPC::ResidencyCommit commit = {};
+        commit.resourceId = resourceId;
+        commit.state = IPC::ResidencyUnloaded;
+        commit.vbuffer = nullptr;
+        commit.ibuffer = nullptr;
+        commits.push_back(commit);
+    }
+
+    if (!commitResidency(commits)) {
+        // Do not cancel, return to resident, or submit a second RPC: the host may still
+        // execute the queued removal later, which would leave it holding a released pointer.
+        ++residencyStats.nonCompleteRemovals;
+        if (residencyStats.nonCompleteRemovals >= 3) {
+            residencyFrozen = true;
+            LOG::logline("!! Distant static removal was not acknowledged; freezing residency for this device session");
+        }
+        return;
+    }
+
+    for (std::uint32_t resourceId : residencyRemovalInFlight) {
+        StaticResource* resource = findResource(resourceId);
+        if (!resource) {
+            continue;
+        }
+        if (resource->readmitRequested) {
+            // The pointers and face counts are still live; re-commit without I/O or allocation.
+            resource->readmitRequested = false;
+            resource->state = StaticResourceState::CommitPending;
+            residencyCommitPending.push_back(resourceId);
+            continue;
+        }
+
+        staticUvBoundPalettes.erase(resource->vb);
+        if (resource->ib) { resource->ib->Release(); resource->ib = nullptr; }
+        if (resource->vb) { resource->vb->Release(); resource->vb = nullptr; }
+        logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resource->geometryBytes());
+        resource->state = StaticResourceState::Unloaded;
+        ++residencyStats.evictedCount;
+        residencyStats.evictedBytes += resource->geometryBytes();
+    }
+    residencyRemovalInFlight.clear();
+
+    // Carry any remainder to the next quiescent point rather than overrunning further. One slow
+    // Release can exceed the wall-clock limit, but it is processed alone.
+    (void)budgetMs;
+    (void)start;
+}
+
+}   // namespace DistantLoaders

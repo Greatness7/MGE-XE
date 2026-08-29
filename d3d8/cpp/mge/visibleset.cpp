@@ -117,6 +117,9 @@ void VisibleSet::Render(IDirect3DDevice9* device,
                     );
                 }
                 else {
+                    if (mesh.vBuffer) {
+                        DistantLoaders::noteMissingPalette();
+                    }
                     effectPool->SetVectorArray(*uv_bound_palette_handle, &identityUvBound, 1);
                 }
             }
