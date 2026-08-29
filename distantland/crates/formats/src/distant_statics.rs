@@ -1,4 +1,4 @@
-//! MGE-XE `static_meshes` v5 POD structures, serialization layout, and decoding.
+//! MGE-XE `static_meshes` v6 POD structures, serialization layout, and decoding.
 
 use std::borrow::Cow;
 use std::fs;
@@ -68,7 +68,18 @@ pub struct HorizonFootprint {
     pub footprint_xy: [[f32; 2]; HORIZON_FOOTPRINT_MAX_VERTS],
 }
 
-/// One source-component range in a v5 merged static subset.
+/// One atlas rect in a subset's UV-bound palette, in lane order `[min_v, max_u, min_u, max_v]`.
+///
+/// Static vertices select an entry by the ordinal stored in `PackedVertex.position[3]`; the
+/// vertex shader resolves it and forwards the rect to the pixel shader's atlas clamp.
+#[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
+#[repr(C)]
+pub struct UvBoundRecord {
+    /// Atlas rect in lane order `[min_v, max_u, min_u, max_v]`.
+    pub bound: [f32; 4],
+}
+
+/// One source-component range in a merged static subset.
 #[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
 #[repr(C)]
 pub struct ComponentRecord {
@@ -88,7 +99,10 @@ pub struct ComponentRecord {
 #[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
 #[repr(C)]
 pub struct PackedVertex {
-    /// Homogeneous position with packed `f16` components.
+    /// Position in `xyz`; `w` holds the subset-local UV-bound palette ordinal.
+    ///
+    /// Ordinals run `0..UV_BOUND_PALETTE_CAP`, which `f16` represents exactly. Grass carries
+    /// no palette and stores `f16::ONE` here instead.
     pub position: [f16; 4],
     /// Packed normalized normal vector.
     pub normal: [u8; 4],
@@ -96,8 +110,6 @@ pub struct PackedVertex {
     pub color: [u8; 4],
     /// Primary UV coordinate.
     pub uv: [f16; 2],
-    /// Atlas UV bounds.
-    pub uv_bound: [f16; 4],
 }
 
 /// Quantizes a normalized floating-point channel to its nearest byte value.
@@ -112,7 +124,7 @@ pub const fn pack_d3dcolor_vclr(red: u8, green: u8, blue: u8, alpha: u8) -> [u8;
 }
 
 impl PackedVertex {
-    /// Projects this vertex onto the 20-byte grass layout, dropping `uv_bound`.
+    /// Projects this vertex onto the grass layout.
     pub fn to_grass(&self) -> PackedGrassVertex {
         PackedGrassVertex {
             position: self.position,
@@ -122,8 +134,8 @@ impl PackedVertex {
         }
     }
 
-    /// Returns a reference to the first 20 bytes of this vertex, reinterpreted as a
-    /// [`PackedGrassVertex`]. Zero-cost: no copy, no allocation.
+    /// Reinterprets this vertex's leading bytes as a [`PackedGrassVertex`].
+    /// Zero-cost: no copy, no allocation.
     ///
     /// Both structs are `#[repr(C)]` with the same field prefix in the same order,
     /// so the first `size_of::<PackedGrassVertex>()` bytes are a valid grass vertex.
@@ -145,14 +157,15 @@ impl PackedVertex {
     }
 }
 
-/// Packed grass vertex as written to `static_meshes` (20 bytes, omits `uv_bound`).
+/// Packed grass vertex as written to `static_meshes` (20 bytes).
 ///
-/// Grass meshes share `PackedVertex` in memory throughout the pipeline; only the final
-/// geometry serialization projects each vertex into this tightly packed grass layout.
+/// Layout-identical to [`PackedVertex`], but kept distinct because `position[3]` means
+/// "palette ordinal" for statics and a constant `1.0` for grass. The C++ loader declares
+/// the two strides separately for the same reason.
 #[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
 #[repr(C)]
 pub struct PackedGrassVertex {
-    /// Homogeneous position with packed `f16` components.
+    /// Homogeneous position with packed `f16` components; `w` is always `1.0`.
     pub position: [f16; 4],
     /// Packed normalized normal vector.
     pub normal: [u8; 4],
@@ -173,8 +186,12 @@ pub struct PackedSubset {
     pub vertices: Vec<PackedVertex>,
     /// Triangle index buffer.
     pub triangles: Vec<[u16; 3]>,
-    /// Component provenance for v5 merged synthetic statics.
+    /// Component provenance for merged synthetic statics.
     pub components: Vec<ComponentRecord>,
+    /// Distinct atlas rects this subset samples, indexed by `PackedVertex.position[3]`.
+    ///
+    /// Empty for grass, which never indexes a palette.
+    pub palette: Vec<UvBoundRecord>,
     /// Non-zero when this subset uses alpha blending.
     pub has_alpha: u8,
     /// Non-zero when this subset uses an animated UV controller.
@@ -193,6 +210,7 @@ impl Default for PackedSubset {
             vertices: Vec::default(),
             triangles: Vec::default(),
             components: Vec::default(),
+            palette: Vec::default(),
             has_alpha: 0,
             has_uv_controller: 0,
             horizon_footprint: HorizonFootprint::default(),
@@ -214,18 +232,28 @@ pub struct PackedDistantStatic {
     pub subsets: Vec<PackedSubset>,
 }
 
-/// Magic bytes for the v5 static-meshes file.
-pub const STATIC_MESHES_MAGIC: &[u8; 8] = b"XESTAT05";
-/// V5 file-format version.
-pub const STATIC_MESHES_VERSION: u32 = 5;
+/// Magic bytes for the v6 static-meshes file.
+pub const STATIC_MESHES_MAGIC: &[u8; 8] = b"XESTAT06";
+/// V6 file-format version.
+pub const STATIC_MESHES_VERSION: u32 = 6;
 /// Byte size of the file header.
-pub const HEADER_SIZE: usize = 136;
+pub const HEADER_SIZE: usize = 160;
 /// Byte size of one `StaticRecord`.
 pub const STATIC_RECORD_SIZE: usize = 52;
 /// Byte size of one `SubsetRecord`.
-pub const SUBSET_RECORD_SIZE: usize = 144;
+pub const SUBSET_RECORD_SIZE: usize = 152;
 /// Byte size of one `ComponentRecord`.
 pub const COMPONENT_RECORD_SIZE: usize = 16;
+/// Byte size of one `UvBoundRecord`.
+pub const PALETTE_RECORD_SIZE: usize = 16;
+/// Maximum UV-bound palette entries in one subset.
+///
+/// This is an interlock across three languages and all three must move together:
+/// this constant, `StaticMeshesBin::MaxPaletteEntries` in `d3d8/cpp/mge/dlformat.h`, and the
+/// `uvBoundPalette[N]` array size in `assets/Data Files/shaders/core/XE Common.fx`. Rust and C++
+/// disagreeing fails loudly at load; HLSL disagreeing does not — a smaller array silently reads
+/// garbage constants for high ordinals and shows as wrong atlas tiles.
+pub const UV_BOUND_PALETTE_CAP: u32 = 128;
 /// Byte stride of one regular (non-grass) `PackedVertex` in the geometry blob.
 pub const STATIC_VERTEX_STRIDE: usize = std::mem::size_of::<PackedVertex>();
 /// Byte stride of one grass `PackedGrassVertex` in the geometry blob.
@@ -233,21 +261,21 @@ pub const GRASS_VERTEX_STRIDE: usize = std::mem::size_of::<PackedGrassVertex>();
 /// Byte size of one index element (`u16`).
 pub const INDEX_ELEMENT_SIZE: usize = 2;
 
-/// V5 static-meshes file header (136 bytes).
+/// V6 static-meshes file header (160 bytes).
 #[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
 #[repr(C)]
 pub struct StaticMeshesFileHeader {
-    /// Magic `XESTAT05`.
+    /// Magic `XESTAT06`.
     pub magic: [u8; 8],
-    /// File-format version (5).
+    /// File-format version (6).
     pub version: u32,
-    /// Header byte size (136).
+    /// Header byte size (160).
     pub header_size: u32,
     /// `StaticRecord` byte size (52).
     pub static_record_size: u32,
-    /// `SubsetRecord` byte size (144).
+    /// `SubsetRecord` byte size (152).
     pub subset_record_size: u32,
-    /// Regular (non-grass) vertex byte stride (28).
+    /// Regular (non-grass) vertex byte stride (20).
     pub vertex_stride: u32,
     /// Index element byte size (2).
     pub index_element_size: u32,
@@ -283,6 +311,14 @@ pub struct StaticMeshesFileHeader {
     pub component_record_size: u32,
     /// Number of component records across all subsets.
     pub component_count: u32,
+    /// File-absolute offset of the palette table (8-byte aligned).
+    pub palette_table_offset: u64,
+    /// Total bytes of the palette table (`palette_count * palette_record_size`).
+    pub palette_table_size: u64,
+    /// `UvBoundRecord` byte size (16).
+    pub palette_record_size: u32,
+    /// Number of palette records across all subsets.
+    pub palette_count: u32,
 }
 
 /// One top-level static entry in the static table (52 bytes).
@@ -301,7 +337,7 @@ pub struct StaticRecord {
     pub subset_count: u32,
 }
 
-/// One subset entry in the subset table (144 bytes).
+/// One subset entry in the subset table (152 bytes).
 #[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
 #[repr(C)]
 pub struct SubsetRecord {
@@ -329,14 +365,19 @@ pub struct SubsetRecord {
     pub first_component_index: u32,
     /// Number of components owned by this subset.
     pub component_count: u32,
+    /// Index of the first palette entry owned by this subset.
+    pub first_palette_index: u32,
+    /// Number of palette entries owned by this subset. Zero for grass.
+    pub palette_count: u32,
 }
 
-/// Deserializes a complete v5 `static_meshes` file into its stored static records.
+/// Deserializes a complete v6 `static_meshes` file into its stored static records.
 ///
 /// Source mesh keys are not present in the file, so the returned vector follows the file's
 /// static-table order. All file offsets, table sizes, record ranges, texture strings, component
-/// ranges, vertex strides, and triangle indices are validated before a value is returned.
-/// Grass vertices have no stored `uv_bound`; that field is reconstructed as zero.
+/// ranges, palette ranges, vertex strides, and triangle indices are validated before a value is
+/// returned. Per-vertex palette ordinals are not validated: a wrong-but-in-range ordinal selects
+/// the wrong atlas tile, which the writer's cap check already rejects at the producer.
 ///
 /// # Errors
 ///
@@ -360,9 +401,11 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
         COMPONENT_RECORD_SIZE,
         "static_meshes component table size",
     )?;
+    let palette_table_size = checked_product(header.palette_count, PALETTE_RECORD_SIZE, "static_meshes palette table size")?;
     require_size(header.static_table_size, static_table_size, "static table")?;
     require_size(header.subset_table_size, subset_table_size, "subset table")?;
     require_size(header.component_table_size, component_table_size, "component table")?;
+    require_size(header.palette_table_size, palette_table_size, "palette table")?;
 
     let static_range = checked_file_range(
         header.static_table_offset,
@@ -381,6 +424,12 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
         header.component_table_size,
         bytes.len(),
         "component table",
+    )?;
+    let palette_range = checked_file_range(
+        header.palette_table_offset,
+        header.palette_table_size,
+        bytes.len(),
+        "palette table",
     )?;
     let texture_range = checked_file_range(
         header.texture_blob_offset,
@@ -405,6 +454,7 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
         ("static table", header.static_table_offset),
         ("subset table", header.subset_table_offset),
         ("component table", header.component_table_offset),
+        ("palette table", header.palette_table_offset),
         ("geometry blob", header.geometry_blob_offset),
     ] {
         if offset % 8 != 0 {
@@ -418,6 +468,7 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
             ("static table", &static_range),
             ("subset table", &subset_range),
             ("component table", &component_range),
+            ("palette table", &palette_range),
             ("texture blob", &texture_range),
             ("geometry blob", &geometry_range),
         ],
@@ -428,9 +479,11 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
     let subset_records = read_pod_table::<SubsetRecord>(bytes, subset_range, header.subset_count, "subset table")?;
     let component_records =
         read_pod_table::<ComponentRecord>(bytes, component_range, header.component_count, "component table")?;
+    let palette_records = read_pod_table::<UvBoundRecord>(bytes, palette_range, header.palette_count, "palette table")?;
 
     let mut expected_subset = 0_u32;
     let mut expected_component = 0_u32;
+    let mut expected_palette = 0_u32;
     let mut geometry_cursor = geometry_range.start;
     let mut statics = Vec::with_capacity(static_records.len());
 
@@ -467,10 +520,12 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
                 &texture_range,
                 &geometry_range,
                 &component_records,
+                &palette_records,
                 subset_index,
                 static_type,
                 subset_record,
                 &mut expected_component,
+                &mut expected_palette,
                 &mut geometry_cursor,
             )?;
             subsets.push(decoded);
@@ -494,6 +549,12 @@ pub fn deserialize_static_meshes(bytes: &[u8]) -> io::Result<Vec<PackedDistantSt
         return Err(invalid_data(format!(
             "static_meshes subset ranges cover {expected_component} of {} components",
             header.component_count
+        )));
+    }
+    if expected_palette != header.palette_count {
+        return Err(invalid_data(format!(
+            "static_meshes subset ranges cover {expected_palette} of {} palette entries",
+            header.palette_count
         )));
     }
     if geometry_cursor != geometry_range.end {
@@ -527,10 +588,12 @@ fn decode_subset(
     texture_blob: &Range<usize>,
     geometry_blob: &Range<usize>,
     component_records: &[ComponentRecord],
+    palette_records: &[UvBoundRecord],
     subset_index: u32,
     static_type: StaticType,
     record: SubsetRecord,
     expected_component: &mut u32,
+    expected_palette: &mut u32,
     geometry_cursor: &mut usize,
 ) -> io::Result<PackedSubset> {
     if record.flags & !0b11 != 0 {
@@ -561,6 +624,28 @@ fn decode_subset(
     let components = component_records[record.first_component_index as usize..component_end as usize].to_vec();
     validate_components(&components, record.triangle_count, subset_index)?;
     *expected_component = component_end;
+
+    if record.first_palette_index != *expected_palette {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} palette range begins at {}, expected {}",
+            record.first_palette_index, *expected_palette
+        )));
+    }
+    // These three predicates are the whole loader-side palette contract, and the C++ loader
+    // repeats them verbatim. The first is not implied by the second: these are unsigned, so
+    // with first_palette_index > palette_count the subtraction below would wrap.
+    if record.first_palette_index > header.palette_count
+        || record.palette_count > header.palette_count - record.first_palette_index
+        || record.palette_count > UV_BOUND_PALETTE_CAP
+    {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} palette range {}..+{} is out of the table of {} entries or exceeds the cap {UV_BOUND_PALETTE_CAP}",
+            record.first_palette_index, record.palette_count, header.palette_count
+        )));
+    }
+    let palette_end = record.first_palette_index + record.palette_count;
+    let palette = palette_records[record.first_palette_index as usize..palette_end as usize].to_vec();
+    *expected_palette = palette_end;
 
     if record.vertex_count > u16::MAX as u32 {
         return Err(invalid_data(format!(
@@ -607,7 +692,6 @@ fn decode_subset(
                 normal: vertex.normal,
                 color: vertex.color,
                 uv: vertex.uv,
-                uv_bound: [f16::ZERO; 4],
             })
             .collect()
     } else {
@@ -633,6 +717,7 @@ fn decode_subset(
         vertices,
         triangles,
         components,
+        palette,
         has_alpha: (record.flags & 1) as u8,
         has_uv_controller: ((record.flags >> 1) & 1) as u8,
         horizon_footprint: record.horizon_footprint,
@@ -663,6 +748,7 @@ fn validate_header(header: &StaticMeshesFileHeader) -> io::Result<()> {
             header.component_record_size,
             COMPONENT_RECORD_SIZE as u32,
         ),
+        ("palette record size", header.palette_record_size, PALETTE_RECORD_SIZE as u32),
         ("regular vertex stride", header.vertex_stride, STATIC_VERTEX_STRIDE as u32),
         ("grass vertex stride", header.grass_vertex_stride, GRASS_VERTEX_STRIDE as u32),
         ("index element size", header.index_element_size, INDEX_ELEMENT_SIZE as u32),
@@ -920,14 +1006,20 @@ const _: () = {
     assert!(std::mem::offset_of!(ComponentRecord, classification) == 12);
     assert!(std::mem::offset_of!(ComponentRecord, reserved) == 13);
 
-    assert!(STATIC_VERTEX_STRIDE == 28);
+    assert!(std::mem::size_of::<UvBoundRecord>() == PALETTE_RECORD_SIZE);
+    assert!(std::mem::align_of::<UvBoundRecord>() == 4);
+    assert!(std::mem::offset_of!(UvBoundRecord, bound) == 0);
+
+    // Ordinals are stored in an f16 lane, which represents integers exactly only to 2048.
+    assert!(UV_BOUND_PALETTE_CAP <= 2048);
+
+    assert!(STATIC_VERTEX_STRIDE == 20);
     assert!(std::mem::size_of::<PackedVertex>() == STATIC_VERTEX_STRIDE);
     assert!(std::mem::align_of::<PackedVertex>() == 2);
     assert!(std::mem::offset_of!(PackedVertex, position) == 0);
     assert!(std::mem::offset_of!(PackedVertex, normal) == 8);
     assert!(std::mem::offset_of!(PackedVertex, color) == 12);
     assert!(std::mem::offset_of!(PackedVertex, uv) == 16);
-    assert!(std::mem::offset_of!(PackedVertex, uv_bound) == 20);
 
     assert!(GRASS_VERTEX_STRIDE == 20);
     assert!(std::mem::size_of::<PackedGrassVertex>() == 20);
@@ -966,6 +1058,10 @@ const _: () = {
     assert!(std::mem::offset_of!(StaticMeshesFileHeader, component_table_size) == 120);
     assert!(std::mem::offset_of!(StaticMeshesFileHeader, component_record_size) == 128);
     assert!(std::mem::offset_of!(StaticMeshesFileHeader, component_count) == 132);
+    assert!(std::mem::offset_of!(StaticMeshesFileHeader, palette_table_offset) == 136);
+    assert!(std::mem::offset_of!(StaticMeshesFileHeader, palette_table_size) == 144);
+    assert!(std::mem::offset_of!(StaticMeshesFileHeader, palette_record_size) == 152);
+    assert!(std::mem::offset_of!(StaticMeshesFileHeader, palette_count) == 156);
 
     assert!(std::mem::size_of::<StaticRecord>() == STATIC_RECORD_SIZE);
     assert!(std::mem::align_of::<StaticRecord>() == 4);
@@ -989,6 +1085,8 @@ const _: () = {
     assert!(std::mem::offset_of!(SubsetRecord, horizon_footprint) == 80);
     assert!(std::mem::offset_of!(SubsetRecord, first_component_index) == 136);
     assert!(std::mem::offset_of!(SubsetRecord, component_count) == 140);
+    assert!(std::mem::offset_of!(SubsetRecord, first_palette_index) == 144);
+    assert!(std::mem::offset_of!(SubsetRecord, palette_count) == 148);
 };
 
 #[cfg(test)]

@@ -31,6 +31,16 @@ shared float2 windVec;
 shared float niceWeather;
 shared float time;
 
+// Per-subset atlas rects for distant statics, indexed by the ordinal in StatVertIn.pos.w.
+// Lane order is [min_v, max_u, min_u, max_v].
+//
+// The array size is a cap interlocked across three languages, all of which must move together:
+// this array, UV_BOUND_PALETTE_CAP in distantland/crates/formats/src/distant_statics.rs, and
+// StaticMeshesBin::MaxPaletteEntries in d3d8/cpp/mge/dlformat.h. Rust and C++ disagreeing fails
+// loudly at load. This copy does NOT: too small an array silently reads garbage constants for
+// high ordinals and shows as wrong atlas tiles on a few subsets.
+shared float4 uvBoundPalette[128];
+
 
 //------------------------------------------------------------
 // Textures
@@ -50,12 +60,12 @@ sampler sampDepthSrc = sampler_state { texture = <texDepthSrc>; minfilter = poin
 // Distant land statics / grass
 // diffuse in color, emissive in normal.w
 
+// pos.w is a uvBoundPalette ordinal, not a homogeneous w: transform with float4(pos.xyz, 1).
 struct StatVertIn {
     float4 pos : POSITION;
     float4 normal : NORMAL;
     float4 color : COLOR0;
     float2 texcoords : TEXCOORD0;
-    float4 uvBounds : TEXCOORD1;
 };
 
 struct StatVertInstIn {

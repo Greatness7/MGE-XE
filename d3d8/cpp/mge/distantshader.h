@@ -43,5 +43,7 @@ enum RenderDepthID {
     PASS_RENDERMWDEPTH_INDEXED
 };
 
-static const int SIZEOFSTATICVERT = 28;
+// Both layouts are 20 bytes, but stay separate: for statics position.w is a UV-bound palette
+// ordinal, for grass it is a constant 1.0.
+static const int SIZEOFSTATICVERT = 20;
 static const int SIZEOFGRASSVERT = 20;

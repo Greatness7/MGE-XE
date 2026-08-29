@@ -16,7 +16,7 @@ reduce draw calls. Classifying only that merged static by its large combined
 radius makes every member survive too far, especially small alpha-tested
 objects such as vegetation.
 
-`XESTAT05` v5 therefore stores component provenance for each merged subset.
+`XESTAT06` v6 therefore stores component provenance for each merged subset.
 Every 16-byte `ComponentRecord` identifies one contiguous source triangle range
 and carries the classification inputs that existed before merging:
 

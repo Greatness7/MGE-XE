@@ -196,7 +196,7 @@ BSA (`d3d8/cpp/mge/morrowindbsa.cpp`). It does not enumerate and preload the atl
 ## 5. Component-level visibility-tier LOD
 
 Exterior merging preserves each source subset as a component range through model processing and
-packing. XESTAT05 v5 stores those ranges as `ComponentRecord` entries: a contiguous triangle range,
+packing. XESTAT06 v6 stores those ranges as `ComponentRecord` entries: a contiguous triangle range,
 the source-model radius multiplied by placement scale, and the source `StaticType`. The building
 size multiplier is deliberately not baked into the radius; MGE-XE applies it while classifying the
 component. Component records must tile their subset exactly, use consumer-valid non-grass
@@ -246,7 +246,7 @@ work (fail-closed full rebuild on any disagreement):
 5. **Dirty-shard decode** ([statics_stage/decode.rs](../../src/generation/statics_stage/decode.rs)).
    Before state invalidation, the stage opens and decodes only dirty prior shards
    concurrently on the global Rayon pool. Each shard keeps the same inventory-length + full-BLAKE3,
-   XESTAT05, and positional-key validation order; after all workers join, the lowest failing shard
+   XESTAT06, and positional-key validation order; after all workers join, the lowest failing shard
    id selects the deterministic fallback reason. Splice remains serial.
 6. **Dirty merge geometry + pack.** Build merged geometry only for dirty cells (LOD identity is
    mesh key, not positional map index). Merged vertices are baked at absolute world positions, so
@@ -271,7 +271,7 @@ work (fail-closed full rebuild on any disagreement):
    source statics are cloned for conversion rather than moved: if splice validation fails, the
    fail-closed full rebuild still needs the original source set.
 8. **Publication plan.** Clean shards keep committed inventory entries unopened; dirty shards
-   serialize as independent XESTAT05 v5 containers. Usage is prepared from the assembly
+   serialize as independent XESTAT06 v6 containers. Usage is prepared from the assembly
    ([crates/usage/src/write.rs](../../crates/usage/src/write.rs)). During publication, usage is written first and
    one background thread serializes/writes dirty shards sequentially while terrain materializes.
 

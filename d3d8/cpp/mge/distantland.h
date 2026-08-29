@@ -228,6 +228,7 @@ public:
     static D3DXHANDLE ehVertexBlendState, ehVertexBlendPalette;
     static D3DXHANDLE ehAlphaRef, ehMaterialAlpha;
     static D3DXHANDLE ehHasAlpha, ehHasBones, ehHasVCol;
+    static D3DXHANDLE ehUvBoundPalette;
     static D3DXHANDLE ehTex0, ehTex1, ehTex2, ehTex3, ehTex4, ehTex5;
     static D3DXHANDLE ehDepthSrc, ehSourceM33, ehSourceM43;
     static D3DXHANDLE ehEyePos, ehFootPos;

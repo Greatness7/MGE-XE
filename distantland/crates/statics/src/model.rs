@@ -79,6 +79,24 @@ pub struct UvBound {
     pub max_y: f32,
 }
 
+impl UvBound {
+    /// Returns the palette identity of this bound: its four lanes as raw bits.
+    ///
+    /// Every place that compares, dedupes, or counts distinct bounds uses this one key. Do not
+    /// substitute `PartialEq`: float equality disagrees with bit equality on signed zero
+    /// (`-0.0 == 0.0`) and on NaN (`NaN != NaN`), so a sidecar set built one way and a palette
+    /// deduped the other can diverge in count — exactly the divergence the writer's cap check
+    /// would then trip on.
+    pub fn bits(self) -> [u32; 4] {
+        [
+            self.min_y.to_bits(),
+            self.max_x.to_bits(),
+            self.min_x.to_bits(),
+            self.max_y.to_bits(),
+        ]
+    }
+}
+
 /// Configuration for meshopt simplification and merge-stage error limits.
 ///
 /// UV weight is computed dynamically per subset rather than configured globally.
@@ -147,11 +165,47 @@ pub struct Subset {
     /// Empty means this subset has no provenance and should render at all tiers.
     /// Non-empty records are sorted, contiguous, and tile `triangles` exactly.
     pub components: Vec<MergedComponent>,
+    /// Bit-distinct set of the `UvBound`s this subset's vertices carry, maintained incrementally.
+    ///
+    /// It bounds the palette that packing will build, so merges are refused when the union would
+    /// exceed [`UV_BOUND_PALETTE_CAP`]. It may over-approximate — culling can drop every vertex
+    /// of a contribution — which is safe: over-approximation only refuses a merge that would have
+    /// fit. It must never under-approximate, which is why `extract` seeds it rather than the
+    /// atlas stage (see `atlas::uv::update_uv_bounds_from_maps`).
+    pub uv_bounds: Vec<UvBound>,
     pub has_alpha: bool,
     pub has_uv_controller: bool,
     /// Average emissive material contribution packed into `PackedVertex.normal[3]`.
     pub emissive: f32,
     pub texture: SubsetTexture,
+}
+
+/// Returns whether the bit-distinct union of two subsets' bounds still fits the palette cap.
+///
+/// Both inputs are already bit-distinct, and both are capped, so the linear scan is bounded by
+/// `UV_BOUND_PALETTE_CAP` squared in the worst case and by the ~6-entry mean in practice.
+pub(crate) fn uv_bound_union_fits(a: &[UvBound], b: &[UvBound]) -> bool {
+    let mut keys: Vec<[u32; 4]> = a.iter().map(|bound| bound.bits()).collect();
+    for bound in b {
+        let key = bound.bits();
+        if !keys.contains(&key) {
+            keys.push(key);
+            if keys.len() > UV_BOUND_PALETTE_CAP as usize {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Unions `source` into `destination`, keeping the destination bit-distinct.
+pub(crate) fn union_uv_bounds(destination: &mut Vec<UvBound>, source: &[UvBound]) {
+    for bound in source {
+        let key = bound.bits();
+        if !destination.iter().any(|existing| existing.bits() == key) {
+            destination.push(*bound);
+        }
+    }
 }
 
 /// Provenance of one appended run of source geometry inside a merged subset.
@@ -206,6 +260,7 @@ impl Default for Subset {
             vertices: Vec::default(),
             triangles: Vec::default(),
             components: Vec::default(),
+            uv_bounds: Vec::default(),
             has_alpha: false,
             has_uv_controller: false,
             emissive: 0.0,
@@ -283,10 +338,18 @@ impl DistantStatic {
                     let has_uv_controller_same = merged.has_uv_controller == subset.has_uv_controller;
                     let emissive_same = merged.emissive == subset.emissive;
 
+                    // This runs post-atlas, so `texture` equality compares atlas *page* ordinals,
+                    // not source textures. Two subsets that came from different source textures
+                    // therefore merge freely while carrying different UV bounds — which is the
+                    // mechanism that produces multi-bound subsets in the first place. Refuse when
+                    // the union would outgrow the shader's fixed palette array; refusal starts a
+                    // new output subset through the existing path below.
+                    let palette_fits = uv_bound_union_fits(&merged.uv_bounds, &subset.uv_bounds);
+
                     // Important: even though textures are later packed into a global atlas,
                     // `texture` here still identifies which atlas page/file UVs were computed
                     // for. Merging across different pages leads to wrong UV interpretation.
-                    if !has_alpha_same || !texture_same || !has_uv_controller_same || !emissive_same {
+                    if !has_alpha_same || !texture_same || !has_uv_controller_same || !emissive_same || !palette_fits {
                         self.subsets.push(subset);
                         continue;
                     }
@@ -304,6 +367,7 @@ impl DistantStatic {
                     let triangle_offset = merged.triangles.len() as u32;
                     merged.append_triangles(&subset.triangles);
                     merged.append_vertices(&subset.vertices);
+                    union_uv_bounds(&mut merged.uv_bounds, &subset.uv_bounds);
                     if !mixed_provenance {
                         merged.append_components_shifted(&subset.components, triangle_offset);
                     }
@@ -415,8 +479,13 @@ impl Subset {
     ///
     /// Two subsets are mergeable only when their alpha flags agree so that they end up on the
     /// same atlas and the joint index buffer stays within `u16` range.
+    ///
+    /// The palette-cap test sits outside the empty-vertex short circuit deliberately: a
+    /// contribution that culling emptied still unions its bounds into the destination, so
+    /// skipping the test for it could push the destination past the cap.
     pub fn can_merge_with(&self, other: &Subset) -> bool {
         self.can_merge_vertices(other)
+            && uv_bound_union_fits(&self.uv_bounds, &other.uv_bounds)
             && (self.vertices.is_empty()
                 || (self.is_opaque() == other.is_opaque()
                     && self.texture == other.texture
@@ -561,11 +630,16 @@ impl Subset {
 
     /// Copies atlas-identity fields even when culling empties the subset, so merging stays
     /// partitioned like the source.
+    ///
+    /// The UV-bound set is a full union, never a single-bound insert: an incoming contribution
+    /// has already been through `DistantStatic::merge_subsets` post-atlas, so it may itself carry
+    /// several bounds. `Subset::can_merge_with` has already established that the union fits.
     fn adopt_source_identity(&mut self, subset: &Subset, opaque: bool) {
         self.has_alpha = !opaque; // Ensure this as default() does not
         self.has_uv_controller = subset.has_uv_controller;
         self.emissive = subset.emissive;
         self.texture = subset.texture;
+        union_uv_bounds(&mut self.uv_bounds, &subset.uv_bounds);
     }
 }
 

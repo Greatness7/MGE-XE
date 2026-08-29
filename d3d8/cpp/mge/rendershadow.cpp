@@ -228,7 +228,7 @@ void DistantLand::renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const 
         // Render statics with their texture-atlas UV bounds
         effectShadow->BeginPass(PASS_RENDERSTATICSHADOWMAP);
         device->SetVertexDeclaration(StaticDecl);
-        visible_set.Render(device, effectShadow, effect, &ehTex0, &ehHasAlpha, &ehHasVCol, &ehWorld, SIZEOFSTATICVERT, true);
+        visible_set.Render(device, effectShadow, effect, &ehTex0, &ehHasAlpha, &ehHasVCol, &ehWorld, &ehUvBoundPalette, SIZEOFSTATICVERT, true);
         effectShadow->EndPass();
     }
 }

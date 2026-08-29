@@ -37,12 +37,19 @@ void VisibleSet::Render(IDirect3DDevice9* device,
                         const D3DXHANDLE* has_alpha_handle,
                         const D3DXHANDLE* animate_uv_handle,
                         const D3DXHANDLE* world_matrix_handle,
+                        const D3DXHANDLE* uv_bound_palette_handle,
                         unsigned int vertex_size,
                         bool parallelRead) {
     IDirect3DTexture9* last_texture = nullptr;
     IDirect3DVertexBuffer9* last_buffer = nullptr;
     bool last_animateUV = false;
     bool last_hasAlpha = false;
+
+    // Identity rect, in the shader's lane order [min_v, max_u, min_u, max_v]. Bound when a
+    // subset has no palette entry, so the atlas clamp degrades to a passthrough sample.
+    static const D3DXVECTOR4 identityUvBound(0.0f, 1.0f, 0.0f, 1.0f);
+    const StaticUvBoundPaletteMap* palettes =
+        uv_bound_palette_handle ? &DistantLoaders::staticUvBoundPaletteMap() : nullptr;
 
     if (animate_uv_handle) {
         effectPool->SetBool(*animate_uv_handle, false);
@@ -96,6 +103,23 @@ void VisibleSet::Render(IDirect3DDevice9* device,
             device->SetIndices(mesh.iBuffer);
             device->SetStreamSource(0, mesh.vBuffer, 0, vertex_size);
             last_buffer = mesh.vBuffer;
+
+            // The palette is per-subset, and the vertex buffer is the subset's identity, so this
+            // boundary is exactly where it changes. It already re-sets stream source, indices,
+            // and usually the texture, so one small SetVectorArray rides along.
+            if (palettes) {
+                auto entry = palettes->find(mesh.vBuffer);
+                if (entry != palettes->end() && !entry->second.empty()) {
+                    effectPool->SetVectorArray(
+                        *uv_bound_palette_handle,
+                        entry->second.data(),
+                        static_cast<UINT>(entry->second.size())
+                    );
+                }
+                else {
+                    effectPool->SetVectorArray(*uv_bound_palette_handle, &identityUvBound, 1);
+                }
+            }
         }
 
         effectPool->SetMatrix(*world_matrix_handle, &mesh.transform);

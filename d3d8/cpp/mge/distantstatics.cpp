@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using std::vector;
@@ -100,6 +101,14 @@ namespace {
 
     vector<MeshResources> meshCollectionStatics;
 
+    // Per-subset UV-bound palettes, keyed on the subset's vertex buffer.
+    //
+    // The vertex buffer is a valid subset identity because stepStaticsPhase creates exactly one
+    // VB per subset and never shares or recreates one within a device session; RenderMesh already
+    // carries that pointer, so no IPC field is needed. If a second consumer ever needs explicit
+    // subset identity, add subset_index to RenderMesh then.
+    StaticUvBoundPaletteMap staticUvBoundPalettes;
+
     constexpr std::uint64_t StaticMeshesGeometryWindowBytes = 64ull * 1024ull * 1024ull;
     constexpr std::uint32_t StaticMeshShardCount = MGE_STATIC_MESH_SHARD_COUNT;
 
@@ -179,7 +188,6 @@ const D3DVERTEXELEMENT9 StaticElem[] = {
     {0, 8,  D3DDECLTYPE_UBYTE4N,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0},
     {0, 12, D3DDECLTYPE_D3DCOLOR,  D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,    0},
     {0, 16, D3DDECLTYPE_FLOAT16_2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-    {0, 20, D3DDECLTYPE_FLOAT16_4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
     D3DDECL_END()
 };
 
@@ -192,6 +200,7 @@ struct StaticShardView {
     const StaticMeshesBin::StaticRecord* staticRecords = nullptr;
     const StaticMeshesBin::SubsetRecord* subsetRecords = nullptr;
     const StaticMeshesBin::ComponentRecord* componentRecords = nullptr;
+    const StaticMeshesBin::PaletteRecord* paletteRecords = nullptr;
     std::string path;
 };
 
@@ -203,11 +212,14 @@ struct DistantLand::StaticsLoader {
     const StaticMeshesBin::StaticRecord* staticRecords = nullptr;
     const StaticMeshesBin::SubsetRecord* subsetRecords = nullptr;
     const StaticMeshesBin::ComponentRecord* componentRecords = nullptr;
+    const StaticMeshesBin::PaletteRecord* paletteRecords = nullptr;
     IDirect3DTexture9* errorTexture = nullptr;
 
     std::vector<DistantStatic> distantStatics;
     std::vector<DistantSubset> distantSubsets;
     std::vector<MeshResources> loadedMeshResources;
+    // Parallel to loadedMeshResources; committed together in finishStaticsPhase.
+    std::vector<std::vector<D3DXVECTOR4>> loadedPalettes;
     std::vector<std::uint8_t> indexScratch;
 
     // Resumable cursors.
@@ -218,6 +230,7 @@ struct DistantLand::StaticsLoader {
     DistantStatic runtimeStatic = {};        // in-progress static (valid while subsetOffset > 0)
     std::uint32_t expectedFirstSubsetIndex = 0;
     std::uint32_t expectedFirstComponentIndex = 0;
+    std::uint32_t expectedFirstPaletteIndex = 0;
     std::uint64_t expectedGeometryOffset = 0;
     std::uint64_t textureBlobEnd = 0;
     std::uint64_t geometryBlobEnd = 0;
@@ -232,10 +245,12 @@ struct DistantLand::StaticsLoader {
         staticRecords = activeShard->staticRecords;
         subsetRecords = activeShard->subsetRecords;
         componentRecords = activeShard->componentRecords;
+        paletteRecords = activeShard->paletteRecords;
         staticIndex = 0;
         subsetOffset = 0;
         expectedFirstSubsetIndex = 0;
         expectedFirstComponentIndex = 0;
+        expectedFirstPaletteIndex = 0;
         expectedGeometryOffset = header.geometry_blob_offset;
         StaticMeshesBin::TryAdd(header.texture_blob_offset, header.texture_blob_size, textureBlobEnd);
         StaticMeshesBin::TryAdd(header.geometry_blob_offset, header.geometry_blob_size, geometryBlobEnd);
@@ -401,7 +416,12 @@ bool DistantLand::beginStaticsPhase() {
         shard->componentRecords = reinterpret_cast<const StaticMeshesBin::ComponentRecord*>(
             shard->mapping.getPersistentRange(shard->header.component_table_offset, shard->header.component_table_size)
         );
-        if (!shard->staticRecords || !shard->subsetRecords || !shard->componentRecords) {
+        // The palette table sits before geometry_blob_offset, so the prefix mapped above already
+        // covers it.
+        shard->paletteRecords = reinterpret_cast<const StaticMeshesBin::PaletteRecord*>(
+            shard->mapping.getPersistentRange(shard->header.palette_table_offset, shard->header.palette_table_size)
+        );
+        if (!shard->staticRecords || !shard->subsetRecords || !shard->componentRecords || !shard->paletteRecords) {
             LOG::logline("!! %s metadata tables are not fully covered by the mapped prefix.", shard->path.c_str());
             LOG::flush();
             return false;
@@ -432,6 +452,7 @@ bool DistantLand::beginStaticsPhase() {
     L.distantStatics.reserve(L.totalStaticCount);
     L.distantSubsets.reserve(L.totalSubsetCount);
     L.loadedMeshResources.reserve(L.totalSubsetCount);
+    L.loadedPalettes.reserve(L.totalSubsetCount);
 
     // Bright yellow error texture
     if (FAILED(device->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &L.errorTexture, NULL))) {
@@ -577,6 +598,37 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
                     "!! static_meshes subset %lu component range overflows component_count=%lu.",
                     subsetTableIndex,
                     L.header.component_count
+                );
+                LOG::flush();
+                return false;
+            }
+
+            if (subsetRecord.first_palette_index != L.expectedFirstPaletteIndex) {
+                LOG::logline(
+                    "!! static_meshes subset %lu starts at palette entry %lu, expected %lu for contiguous palette ownership.",
+                    subsetTableIndex,
+                    subsetRecord.first_palette_index,
+                    L.expectedFirstPaletteIndex
+                );
+                LOG::flush();
+                return false;
+            }
+            // These three predicates are the whole palette contract. The first is not implied by
+            // the second: these are unsigned, so with first_palette_index > palette_count the
+            // subtraction would wrap and the second would pass. Nothing else is checked here --
+            // no rect finiteness, no tiling rule, no per-vertex ordinal scan. The writer already
+            // hard-fails on an over-cap palette, publication is complete-or-absent, and a
+            // wrong-but-in-range ordinal shows as a wrong atlas tile rather than a crash.
+            if (subsetRecord.first_palette_index > L.header.palette_count
+                || subsetRecord.palette_count > L.header.palette_count - subsetRecord.first_palette_index
+                || subsetRecord.palette_count > StaticMeshesBin::MaxPaletteEntries) {
+                LOG::logline(
+                    "!! static_meshes subset %lu palette range %lu+%lu is outside palette_count=%lu or exceeds the cap of %lu.",
+                    subsetTableIndex,
+                    subsetRecord.first_palette_index,
+                    subsetRecord.palette_count,
+                    L.header.palette_count,
+                    StaticMeshesBin::MaxPaletteEntries
                 );
                 LOG::flush();
                 return false;
@@ -800,9 +852,20 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.ibuffer = ib;
             subset.tex = tex;
             L.loadedMeshResources.push_back(MeshResources(vb, ib, tex));
+
+            std::vector<D3DXVECTOR4> palette;
+            palette.reserve(subsetRecord.palette_count);
+            const auto* paletteEntries = L.paletteRecords + subsetRecord.first_palette_index;
+            for (std::uint32_t paletteIndex = 0; paletteIndex < subsetRecord.palette_count; ++paletteIndex) {
+                const auto& entry = paletteEntries[paletteIndex];
+                palette.push_back(D3DXVECTOR4(entry.bound[0], entry.bound[1], entry.bound[2], entry.bound[3]));
+            }
+            L.loadedPalettes.push_back(std::move(palette));
+
             L.distantSubsets.push_back(subset);
             L.expectedGeometryOffset = nextGeometryOffset;
             L.expectedFirstComponentIndex += subsetRecord.component_count;
+            L.expectedFirstPaletteIndex += subsetRecord.palette_count;
 
             ++L.subsetOffset;
 
@@ -822,9 +885,10 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
 
         if (L.expectedFirstSubsetIndex != L.header.subset_count
             || L.expectedFirstComponentIndex != L.header.component_count
+            || L.expectedFirstPaletteIndex != L.header.palette_count
             || L.expectedGeometryOffset != L.geometryBlobEnd) {
             LOG::logline(
-                "!! %s did not fully consume its declared subset, component, or geometry ranges.",
+                "!! %s did not fully consume its declared subset, component, palette, or geometry ranges.",
                 L.activeShard->path.c_str()
             );
             LOG::flush();
@@ -933,6 +997,11 @@ bool DistantLand::finishStaticsPhase() {
         L.errorTexture->Release();
         L.errorTexture = nullptr;
     }
+    staticUvBoundPalettes.reserve(staticUvBoundPalettes.size() + L.loadedMeshResources.size());
+    for (std::size_t i = 0; i < L.loadedMeshResources.size(); ++i) {
+        staticUvBoundPalettes.emplace(L.loadedMeshResources[i].vb, std::move(L.loadedPalettes[i]));
+    }
+    L.loadedPalettes.clear();
     meshCollectionStatics.insert(meshCollectionStatics.end(), L.loadedMeshResources.begin(), L.loadedMeshResources.end());
     L.loadedMeshResources.clear();
 
@@ -1106,6 +1175,10 @@ bool queryStaticsSkipResult(bool& result) {
     return true;
 }
 
+const StaticUvBoundPaletteMap& staticUvBoundPaletteMap() {
+    return staticUvBoundPalettes;
+}
+
 void releaseStaticsResources() {
     for (auto& mesh : meshCollectionStatics) {
         if (mesh.vb) { mesh.vb->Release(); }
@@ -1113,6 +1186,8 @@ void releaseStaticsResources() {
         if (mesh.tex) { mesh.tex->Release(); }
     }
     meshCollectionStatics.clear();
+    // Keyed on the vertex buffers just released; the keys are dangling from here on.
+    staticUvBoundPalettes.clear();
 }
 
 }

@@ -226,7 +226,7 @@ void DistantLand::renderReflectedStatics(const D3DXMATRIX* view, const D3DXMATRI
     device->SetVertexDeclaration(StaticDecl);
 
     ipcClient.waitForCompletion();
-    visExtraShared.Render(device, effect, effect, &ehTex0, nullptr, &ehHasVCol, &ehWorld, SIZEOFSTATICVERT);
+    visExtraShared.Render(device, effect, effect, &ehTex0, nullptr, &ehHasVCol, &ehWorld, &ehUvBoundPalette, SIZEOFSTATICVERT);
 }
 
 void DistantLand::clearReflection() {

@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 
 /// MGE XE distant land format version (must match `d3d8/cpp/mge/mgeversion.h`;
 /// `mgeHost64/src/abi/constants.rs` asserts the two are equal).
-pub const MGE_DL_VERSION: u8 = 17;
+pub const MGE_DL_VERSION: u8 = 18;
 /// Filename prefix shared by every opaque static-atlas page.
 pub const OPAQUE_ATLAS_PREFIX: &str = "_mge_xe_atlas";
 
-/// Fixed number of XESTAT05 static-mesh shards owned by the current output format.
+/// Fixed number of XESTAT06 static-mesh shards owned by the current output format.
 pub const STATIC_MESH_SHARD_COUNT: usize = 128;
 
 /// Fixed numeric width used in sharded static-mesh file names.

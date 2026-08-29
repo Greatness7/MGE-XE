@@ -28,63 +28,71 @@ no journal, generation index, or epoch-named payload directory. See
 ## `static_meshes` ([distant_statics.rs](../../crates/formats/src/distant_statics.rs))
 
 The packed static-mesh cache is a fixed set of 128 canonical files at
-`distantland\statics\static_meshes_000..127`, each with magic `XESTAT05` and version 5. Empty
+`distantland\statics\static_meshes_000..127`, each with magic `XESTAT06` and version 6. Empty
 shards are valid complete containers. Shard assignment hashes the normalized static key with BLAKE3 over the
 domain `tes3-distantland-static-shard-assignment-v2\0`, shard count `u32_le(128)`, key length
 `u64_le`, and key bytes; the low seven bits of the digest choose the shard. Global runtime order is
 shard id, then key bytes within the shard. Each file has this layout:
 
-- **Header** (`StaticMeshesFileHeader`, 136 bytes): magic, version, counts, record sizes,
-  section offsets/sizes for the static table, subset table, component table, texture-path
-  blob, and geometry blob. The header also carries both vertex strides, `vertex_stride`
-  (regular statics, 28) and `grass_vertex_stride` (grass, 20), plus a `reserved` u32
-  (must be 0). Sections are alignment-padded (`serialize_static_meshes` in
-  [crates/statics/src/write.rs](../../crates/statics/src/write.rs)). v5 appends
-  `component_table_offset`, `component_table_size`, `component_record_size` (16), and
-  `component_count` after the v4 fields.
+- **Header** (`StaticMeshesFileHeader`, 160 bytes): magic, version, counts, record sizes,
+  section offsets/sizes for the static table, subset table, component table, palette table,
+  texture-path blob, and geometry blob. The header also carries both vertex strides,
+  `vertex_stride` (regular statics) and `grass_vertex_stride` (grass), both 20 today, plus a
+  `reserved` u32 (must be 0). Sections are alignment-padded (`serialize_static_meshes` in
+  [crates/statics/src/write.rs](../../crates/statics/src/write.rs)). v6 appends
+  `palette_table_offset`, `palette_table_size`, `palette_record_size` (16), and `palette_count`
+  after the v5 component fields.
 - **`StaticRecord`** (52 bytes/entry): whole-static bounding sphere + AABB, `StaticType`
   classification, subset range.
-- **`SubsetRecord`** (144 bytes/entry): per-subset bounds, vertex/index ranges, alpha and
+- **`SubsetRecord`** (152 bytes/entry): per-subset bounds, vertex/index ranges, alpha and
   UV-controller flags, the NUL-terminated texture path (atlas page name or passthrough path),
-  a 56-byte generated `HorizonFootprint` at offset 80, then `first_component_index` at
-  offset 136 and `component_count` at offset 140.
+  a 56-byte generated `HorizonFootprint` at offset 80, `first_component_index` at offset 136,
+  `component_count` at offset 140, then `first_palette_index` at offset 144 and `palette_count`
+  at offset 148.
 - **`ComponentRecord`** (16 bytes/entry): one merged source-component range in subset
   triangle units: `first_triangle: u32`, `triangle_count: u32`, `radius: f32`
   (source-model radius times placement scale; building doubling is not baked),
   `classification: u8` (source `StaticType`; grass is invalid here), and three zero
   reserved bytes. Component records tile their owning subset exactly. Component-less
   subsets are valid and render full geometry in all runtime tiers.
+- **`UvBoundRecord`** (16 bytes/entry): one atlas clamp rect as `[f32; 4]` in lane order
+  `[min_v, max_u, min_u, max_v]`. A subset's palette is the distinct set of rects its vertices
+  sample from; a vertex selects one by the ordinal in `position[3]`. At most
+  `UV_BOUND_PALETTE_CAP` (128) entries per subset — an interlock with
+  `StaticMeshesBin::MaxPaletteEntries` in `d3d8/cpp/mge/dlformat.h` and the `uvBoundPalette[N]`
+  array in `assets/Data Files/shaders/core/XE Common.fx`; all three move together. Grass carries
+  no palette.
 - **`HorizonFootprint`** (56 bytes, optional): `max_z: f32`, `vertex_count: u8`, three zero
   padding bytes, and up to six subset-local XY vertices as `[[f32; 2]; 6]`. `vertex_count == 0`
   means no generated footprint and the host falls back to box-derived horizon bounds.
-- **`PackedVertex`** (28-byte stride, `#[repr(C)]` POD) for regular (non-grass) statics:
+- **`PackedVertex`** (20-byte stride, `#[repr(C)]` POD) for regular (non-grass) statics:
 
   | Field | Format | Notes |
   |---|---|---|
-  | `position` | `[f16; 4]` | homogeneous position |
+  | `position` | `[f16; 4]` | `xyz` position; `w` is the subset's palette ordinal |
   | `normal` | `[u8; 4]` | packed normalized normal |
   | `color` | `[u8; 4]` | vertex color |
   | `uv` | `[f16; 2]` | primary UV |
-  | `uv_bound` | `[f16; 4]` | atlas clamp rect, lane order `[min_y, max_x, min_x, max_y]` |
 
-  The `uv_bound` lane order is shader-coupled. See the packing in
+  The palette lane order is shader-coupled. See the packing in
   [crates/statics/src/model/pack.rs](../../crates/statics/src/model/pack.rs); do not "fix" it.
   Fields here stay `[f32; N]`-style arrays rather than `glam` vector types on purpose.
   `Vec4`'s 16-byte alignment would change the wire layout.
 - **`PackedGrassVertex`** (20-byte stride, `#[repr(C)]` POD) for grass (`StaticType::StaticGrass`)
-  subsets. Identical to `PackedVertex` minus the trailing `uv_bound` field (`position`,
-  `normal`, `color`, `uv`); grass never atlases so it does not need the clamp rect. The writer
-  selects the stride per static via `vertex_stride_for`, and the reader/host pick it via
-  `grass_vertex_stride`.
+  subsets. Byte-identical in layout to `PackedVertex`, but the two stay separate types because
+  `position[3]` is a palette ordinal for statics and a constant `1.0` for grass; grass never
+  atlases and carries no palette. The writer selects the stride per static via
+  `vertex_stride_for`, and the reader/host pick it via `grass_vertex_stride`.
 - **Index blob**: `u16` triangle indices (subsets are split so 16-bit indexing always
   suffices).
 
 `deserialize_static_meshes` is the bounds-checked production reader. It validates fixed sizes and
 strides, aligned/non-overlapping section ranges, checked count products, file-absolute offsets,
-UTF-8 NUL-terminated texture paths, static/subset/component coverage, flags and reserved fields,
-the regular/grass vertex stride choice, and every triangle index. Because source mesh keys are
-not serialized, it returns statics in file-table order. It reconstructs grass `uv_bound` as zero
-because those bytes do not exist on disk.
+UTF-8 NUL-terminated texture paths, static/subset/component/palette coverage, flags and reserved
+fields, the regular/grass vertex stride choice, and every triangle index. Because source mesh keys
+are not serialized, it returns statics in file-table order. It does not validate per-vertex palette
+ordinals: the writer hard-fails on an over-cap palette, publication is complete-or-absent, and a
+wrong-but-in-range ordinal selects the wrong atlas tile rather than reading out of bounds.
 
 ## `usage.data` ([usage_data.rs](../../crates/formats/src/usage_data.rs))
 

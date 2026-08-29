@@ -6,7 +6,8 @@ use half::f16;
 use tes3::nif::NiBound;
 
 use crate::mge_xe::distant_statics::{
-    ComponentRecord, PackedDistantStatic, PackedSubset, PackedVertex, float_to_u8, pack_d3dcolor_vclr,
+    ComponentRecord, PackedDistantStatic, PackedSubset, PackedVertex, StaticType, UvBoundRecord, float_to_u8,
+    pack_d3dcolor_vclr,
 };
 use crate::vfs::TextureSym;
 
@@ -28,6 +29,10 @@ impl DistantStatic {
         ds.bounding_box = self.bounding_box;
         ds.subsets.reserve(self.subsets.len());
         let horizon_footprint_eligible = self.horizon_footprint_eligible;
+        // Grass never indexes a palette: `XE Mod Grass.fx` transforms the full `pos` through
+        // instancing, and grass never reaches the atlas path. Serializing an identity record for
+        // it would be dead bytes, and `position.w` must stay 1.0.
+        let is_grass = self.static_type == StaticType::StaticGrass;
 
         for subset32 in self.subsets {
             let emissive = (255.0 * subset32.emissive) as u8;
@@ -39,14 +44,41 @@ impl DistantStatic {
             }
             subset.vertices.reserve(subset32.vertices.len());
 
+            // The authoritative palette is rebuilt from the vertices themselves in
+            // first-appearance order, so a stale `Subset::uv_bounds` cannot ship a wrong palette.
+            // It is deterministic because vertex order is already deterministic after
+            // `optimize_vertex_fetch_in_place`. The linear find is over a Vec bounded by
+            // `UV_BOUND_PALETTE_CAP` — mean ~6 entries — so no hash map is warranted; the writer
+            // hard-fails if the rebuilt palette exceeds the cap.
+            let mut palette_keys: Vec<[u32; 4]> = Vec::new();
+
             for vertex in subset32.vertices {
                 let mut cv = PackedVertex::default();
+
+                let ordinal = if is_grass {
+                    f16::ONE
+                } else {
+                    let key = vertex.uv_bound.bits();
+                    let index = palette_keys.iter().position(|existing| *existing == key).unwrap_or_else(|| {
+                        palette_keys.push(key);
+                        subset.palette.push(UvBoundRecord {
+                            bound: [
+                                vertex.uv_bound.min_y,
+                                vertex.uv_bound.max_x,
+                                vertex.uv_bound.min_x,
+                                vertex.uv_bound.max_y,
+                            ],
+                        });
+                        palette_keys.len() - 1
+                    });
+                    f16::from_f32(index as f32)
+                };
 
                 cv.position = [
                     f16::from_f32(vertex.position.x),
                     f16::from_f32(vertex.position.y),
                     f16::from_f32(vertex.position.z),
-                    f16::ONE,
+                    ordinal,
                 ];
 
                 cv.uv = [
@@ -67,13 +99,6 @@ impl DistantStatic {
                     float_to_u8(vertex.color.z),
                     float_to_u8(vertex.color.w),
                 );
-
-                cv.uv_bound = [
-                    f16::from_f32(vertex.uv_bound.min_y),
-                    f16::from_f32(vertex.uv_bound.max_x),
-                    f16::from_f32(vertex.uv_bound.min_x),
-                    f16::from_f32(vertex.uv_bound.max_y),
-                ];
 
                 subset.vertices.push(cv);
             }

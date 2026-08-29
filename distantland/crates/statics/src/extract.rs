@@ -358,6 +358,19 @@ impl DistantStatic {
                 .map(|material| material.diffuse_color.extend(material.alpha))
                 .unwrap_or(Vec4::ONE);
 
+            // Every vertex below gets the identity bound, so the subset's distinct set is that
+            // one entry. Seeding it here rather than at the atlas stage makes the invariant
+            // unconditional: `update_uv_bounds_from_maps` skips grass entirely and skips
+            // `has_uv_controller` subsets, and an empty set *under*-counts — the one direction
+            // that can let a merge exceed the palette cap.
+            let identity_bound = UvBound {
+                min_y: 0.0,
+                max_x: 1.0,
+                min_x: 0.0,
+                max_y: 1.0,
+            };
+            subset.uv_bounds = vec![identity_bound];
+
             // `uv_set` yields exactly `data.vertices.len()` values, so every vertex is
             // written here; collecting sizes the buffer once instead of zero-filling it.
             subset.vertices = data
@@ -374,12 +387,7 @@ impl DistantStatic {
                     },
                     uv: *uv,
                     color: if has_colors { data.vertex_colors[i] } else { material_color },
-                    uv_bound: UvBound {
-                        min_y: 0.0,
-                        max_x: 1.0,
-                        min_x: 0.0,
-                        max_y: 1.0,
-                    },
+                    uv_bound: identity_bound,
                 })
                 .collect();
 

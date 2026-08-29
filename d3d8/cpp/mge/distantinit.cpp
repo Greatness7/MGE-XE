@@ -169,6 +169,7 @@ D3DXHANDLE DistantLand::ehMaterialAlpha;
 D3DXHANDLE DistantLand::ehHasAlpha;
 D3DXHANDLE DistantLand::ehHasBones;
 D3DXHANDLE DistantLand::ehHasVCol;
+D3DXHANDLE DistantLand::ehUvBoundPalette;
 D3DXHANDLE DistantLand::ehTex0;
 D3DXHANDLE DistantLand::ehTex1;
 D3DXHANDLE DistantLand::ehTex2;
@@ -776,6 +777,7 @@ bool DistantLand::initShader() {
     ehHasAlpha = effect->GetParameterByName(0, "hasAlpha");
     ehHasBones = effect->GetParameterByName(0, "hasBones");
     ehHasVCol = effect->GetParameterByName(0, "hasVCol");
+    ehUvBoundPalette = effect->GetParameterByName(0, "uvBoundPalette");
     ehTex0 = effect->GetParameterByName(0, "tex0");
     ehTex1 = effect->GetParameterByName(0, "tex1");
     ehTex2 = effect->GetParameterByName(0, "tex2");

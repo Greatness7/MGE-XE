@@ -92,7 +92,7 @@ pub struct ReverseIndexes {
 /// Complete final-input identity, geometry totals, and ordered record keys for one fixed static-mesh shard.
 #[derive(Clone, Debug, Default, Eq, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct StaticShardState {
-    /// Digest over every final packed value passed to the XESTAT05 serializer.
+    /// Digest over every final packed value passed to the XESTAT06 serializer.
     pub input_digest: [u8; 32],
     /// Number of static records declared by the shard header.
     pub record_count: u32,

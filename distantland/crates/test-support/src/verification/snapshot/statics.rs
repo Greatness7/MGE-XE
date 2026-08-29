@@ -22,7 +22,7 @@ use crate::mge_xe::distant_statics::{
 };
 use crate::statics::atlas::{ALPHA_ATLAS_PREFIX, OPAQUE_ATLAS_PREFIX};
 use crate::verification::current::{DecodedDdsFormat, DecodedStaticOutput};
-use crate::verification::logical::{compact_json, f16_bits};
+use crate::verification::logical::{compact_json, f32_bits};
 use crate::verification::snapshot::crop_rgba_digest;
 
 type Digest = [u8; 32];
@@ -144,7 +144,7 @@ fn triangle_digests<'a>(
                     .with_context(|| format!("{context} triangle {triangle_index} index {index} is out of range"))
             };
             let vertices = [vertex(indices[0])?, vertex(indices[1])?, vertex(indices[2])?];
-            let bound = triangle_uv_bound(static_type, &vertices, context, triangle_index)?;
+            let bound = triangle_uv_bound(static_type, subset, &vertices, context, triangle_index)?;
             let material = materials.resolve(static_type, subset, bound, context, triangle_index)?;
             let corners = canonical_triangle_corners(vertices.map(corner_bytes));
 
@@ -187,29 +187,43 @@ fn canonical_triangle_corners(corners: [CornerBytes; 3]) -> [CornerBytes; 3] {
     *rotations.iter().min().expect("three rotations are present")
 }
 
-/// Returns one regular triangle's uniform stored atlas bound.
+/// Returns one regular triangle's uniform atlas bound, resolved through the subset palette.
 ///
-/// Bounds are linearly interpolated by MGE-XE's static shader, so accepting different
-/// corner values would hide runtime-visible sampling. Grass uses a different wire vertex
-/// declaration and therefore has no bound to retain.
+/// Each corner stores a palette ordinal in `position[3]`. Bounds are linearly interpolated by
+/// MGE-XE's static shader, so accepting different corner ordinals would hide runtime-visible
+/// sampling. Grass stores no ordinal and carries no palette.
 fn triangle_uv_bound(
     static_type: StaticType,
+    subset: &PackedSubset,
     vertices: &[&PackedVertex; 3],
     context: &str,
     triangle_index: usize,
-) -> Result<Option<[f16; 4]>> {
+) -> Result<Option<[f32; 4]>> {
     if static_type == StaticType::StaticGrass {
         return Ok(None);
     }
-    let first = vertices.first().context("a triangle must contain a corner")?.uv_bound;
-    let expected = first.map(f16::to_bits);
+    let ordinal_bits = vertices.first().context("a triangle must contain a corner")?.position[3].to_bits();
     for (corner, vertex) in vertices.iter().enumerate().skip(1) {
         ensure!(
-            vertex.uv_bound.map(f16::to_bits) == expected,
-            "{context} triangle {triangle_index} corner {corner} uv_bound differs from corner 0; a triangle must store one uniform bound"
+            vertex.position[3].to_bits() == ordinal_bits,
+            "{context} triangle {triangle_index} corner {corner} palette ordinal differs from corner 0; a triangle must select one bound"
         );
     }
-    Ok(Some(first))
+
+    let ordinal = f16::from_bits(ordinal_bits).to_f32();
+    ensure!(
+        ordinal >= 0.0 && ordinal.fract() == 0.0,
+        "{context} triangle {triangle_index} palette ordinal {ordinal} is not a non-negative integer"
+    );
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = ordinal as usize;
+    let entry = subset.palette.get(index).with_context(|| {
+        format!(
+            "{context} triangle {triangle_index} palette ordinal {index} is outside the subset palette of {} entries",
+            subset.palette.len()
+        )
+    })?;
+    Ok(Some(entry.bound))
 }
 
 /// Resolves component ranges through the serialized triangles they cover.
@@ -352,7 +366,7 @@ struct MaterialKey<'a> {
     texture: &'a str,
     family: Option<AtlasFamily>,
     has_alpha: bool,
-    bound: Option<[u16; 4]>,
+    bound: Option<[u32; 4]>,
 }
 
 /// Resolves and interns static materials so large decoded frames are stored once.
@@ -375,7 +389,7 @@ impl<'a> MaterialResolver<'a> {
         &mut self,
         static_type: StaticType,
         subset: &'a PackedSubset,
-        bound: Option<[f16; 4]>,
+        bound: Option<[f32; 4]>,
         context: &str,
         triangle_index: usize,
     ) -> Result<Digest> {
@@ -386,7 +400,7 @@ impl<'a> MaterialResolver<'a> {
             texture: &subset.texture,
             family,
             has_alpha: subset.has_alpha != 0,
-            bound: bound.map(|value| value.map(f16::to_bits)),
+            bound: bound.map(|value| value.map(f32::to_bits)),
         };
         if let Some(digest) = self.cache.get(&key) {
             return Ok(*digest);
@@ -451,7 +465,7 @@ fn resolve_material(
     static_type: StaticType,
     subset: &PackedSubset,
     family: Option<AtlasFamily>,
-    bound: Option<[f16; 4]>,
+    bound: Option<[f32; 4]>,
     context: &str,
 ) -> Result<Value> {
     if let Some(family) = family {
@@ -472,7 +486,7 @@ fn resolve_material(
         let bound = bound.with_context(|| format!("{context} regular triangle has no uv_bound"))?;
         map.insert(
             "uv_bound".to_owned(),
-            Value::Array(bound.iter().copied().map(f16_bits).collect()),
+            Value::Array(bound.iter().copied().map(f32_bits).collect()),
         );
     }
     Ok(Value::Object(map))
@@ -485,10 +499,10 @@ fn resolve_material(
 /// non-integral product means the tree was not produced by the current pipeline and decoding
 /// fails rather than guessing. Equal edges are valid after half-float quantization on large
 /// pages and are widened separately by [`sampling_frame_range`].
-fn integral_frame_edges(min: f16, max: f16, extent: u32, context: &str, axis: &str) -> Result<(u32, u32)> {
+fn integral_frame_edges(min: f32, max: f32, extent: u32, context: &str, axis: &str) -> Result<(u32, u32)> {
     ensure!(extent > 0, "{context} {axis} extent must be nonzero");
-    let min_px = min.to_f64_const() * f64::from(extent);
-    let max_px = max.to_f64_const() * f64::from(extent);
+    let min_px = f64::from(min) * f64::from(extent);
+    let max_px = f64::from(max) * f64::from(extent);
     ensure!(
         min_px.is_finite() && max_px.is_finite() && min_px.fract() == 0.0 && max_px.fract() == 0.0,
         "{context} {axis} bounds [{min}, {max}] do not recover integral mip-0 frame edges on extent {extent}"
@@ -522,7 +536,7 @@ fn resolve_atlas_material(
     decoded: &DecodedStaticOutput,
     subset: &PackedSubset,
     family: AtlasFamily,
-    bound: [f16; 4],
+    bound: [f32; 4],
     context: &str,
 ) -> Result<Value> {
     let page = decoded

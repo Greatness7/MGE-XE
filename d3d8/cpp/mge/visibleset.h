@@ -3,6 +3,15 @@
 #include "ipc/vecwrap.h"
 
 #include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Per-subset UV-bound palettes owned by the statics loader, keyed on the subset's vertex buffer.
+using StaticUvBoundPaletteMap = std::unordered_map<IDirect3DVertexBuffer9*, std::vector<D3DXVECTOR4>>;
+
+namespace DistantLoaders {
+    const StaticUvBoundPaletteMap& staticUvBoundPaletteMap();
+}
 
 
 
@@ -15,6 +24,9 @@ public:
                 unsigned int vertex_size,
                 bool parallelRead = false);
 
+    // `uv_bound_palette_handle` is non-null only for distant statics, whose vertex shaders
+    // resolve an atlas rect from a shared palette array indexed by position.w. Terrain and
+    // grass pass nullptr.
     void Render(IDirect3DDevice9* device,
                 ID3DXEffect* effect,
                 ID3DXEffect* effectPool,
@@ -22,6 +34,7 @@ public:
                 const D3DXHANDLE* has_alpha_handle,
                 const D3DXHANDLE* animate_uv_handle,
                 const D3DXHANDLE* world_matrix_handle,
+                const D3DXHANDLE* uv_bound_palette_handle,
                 unsigned int vertex_size,
                 bool parallelRead = false);
 
