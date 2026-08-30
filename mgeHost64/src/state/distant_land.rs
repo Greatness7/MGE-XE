@@ -84,6 +84,7 @@ pub struct DistantLandState {
     residency_buckets: HashMap<(i32, i32), Vec<u32>>,
     residency_offsets: Vec<(i32, i32)>,
     residency_radius_cells: i32,
+    planner_epoch: Option<u32>,
     planner_cell: Option<(i32, i32)>,
     planner_offset_cursor: usize,
     planner_bucket_cursor: usize,
@@ -111,6 +112,7 @@ impl DistantLandState {
             residency_buckets: HashMap::new(),
             residency_offsets: Vec::new(),
             residency_radius_cells: -1,
+            planner_epoch: None,
             planner_cell: None,
             planner_offset_cursor: 0,
             planner_bucket_cursor: 0,
@@ -187,6 +189,7 @@ impl DistantLandState {
             );
             self.residency_buckets.entry(cell).or_default().push(resource_id as u32);
         }
+        self.planner_epoch = None;
         self.planner_cell = None;
         self.planner_offset_cursor = 0;
         self.planner_bucket_cursor = 0;
@@ -270,7 +273,8 @@ impl DistantLandState {
 
         self.ensure_residency_offsets(params.admission_radius);
         let cell = ((center.x / CELL_SIZE).floor() as i32, (center.y / CELL_SIZE).floor() as i32);
-        if self.planner_cell != Some(cell) {
+        if self.planner_epoch != Some(params.plan_epoch) || self.planner_cell != Some(cell) {
+            self.planner_epoch = Some(params.plan_epoch);
             self.planner_cell = Some(cell);
             self.planner_offset_cursor = 0;
             self.planner_bucket_cursor = 0;

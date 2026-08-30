@@ -1262,6 +1262,38 @@ fn an_admitting_sweep_rewinds_and_re_offers_uncommitted_resources() {
     );
 }
 
+/// A live save load can resolve to the same exterior cell. Its fresh client epoch must restart
+/// the host sweep instead of continuing from the old save's cursor.
+#[test]
+fn a_new_epoch_restarts_the_sweep_within_the_same_cell() {
+    let mut state = residency_state(4);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    let mut params = plan_params(1);
+
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(admitted_ids(&mut output), vec![0]);
+
+    params.plan_epoch += 1;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(admitted_ids(&mut output), vec![0]);
+}
+
+#[test]
+fn residency_planner_holds_a_new_epoch_in_interiors() {
+    let mut state = residency_state(4);
+    state.world_spaces.push(WorldSpace::default());
+    state.current_world_space = Some(1);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    let mut params = plan_params(4);
+    params.plan_epoch += 1;
+
+    state.plan_residency(&mut output, params).unwrap();
+
+    assert!(admitted_ids(&mut output).is_empty());
+    assert_eq!(state.planner_epoch, None);
+    assert_eq!(state.planner_cell, None);
+}
+
 /// The counterpart: a sweep that admits nothing must leave the cursor parked, because
 /// re-offering resources the client cannot take is the tight retry the design forbids.
 #[test]

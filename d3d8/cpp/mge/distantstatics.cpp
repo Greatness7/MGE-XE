@@ -443,6 +443,124 @@ namespace {
     };
     ResidencyStats residencyStats;
 
+    enum class ResidencyTransitionTrigger {
+        Bootstrap,
+        Cell,
+        Load,
+    };
+
+    enum class ResidencySampleSource {
+        Pump,
+        Present,
+        Resolve,
+    };
+
+    struct ResidencyTransitionStats {
+        bool active = false;
+        ResidencyTransitionTrigger trigger = ResidencyTransitionTrigger::Bootstrap;
+        ResidencySampleSource sampleSource = ResidencySampleSource::Pump;
+        std::uint32_t epoch = 0;
+        D3DXVECTOR3 destination = {};
+        std::uint64_t samplePresent = 0;
+        bool firstAdmissionCommitted = false;
+        std::uint32_t firstAdmissionResource = 0;
+        std::uint64_t firstAdmissionPresent = 0;
+        bool usedStage0Eviction = false;
+        bool usedPresentEviction = false;
+        double maxPlannerMs = 0.0;
+        double maxUploadMs = 0.0;
+        std::uint32_t oversizeCount = 0;
+        std::uint32_t largestOversizeResource = 0;
+        std::uint64_t largestOversizeBytes = 0;
+    };
+    ResidencyTransitionStats residencyTransition;
+    std::uint64_t residencyPresentSerial = 0;
+    bool liveLoadTransitionPending = false;
+    bool liveLoadDestinationValid = false;
+    D3DXVECTOR3 liveLoadDestination = {};
+    std::uint64_t liveLoadSamplePresent = 0;
+
+    const char* transitionTriggerName(ResidencyTransitionTrigger trigger) {
+        switch (trigger) {
+        case ResidencyTransitionTrigger::Bootstrap: return "bootstrap";
+        case ResidencyTransitionTrigger::Cell: return "cell";
+        case ResidencyTransitionTrigger::Load: return "load";
+        default: return "unknown";
+        }
+    }
+
+    const char* sampleSourceName(ResidencySampleSource source) {
+        switch (source) {
+        case ResidencySampleSource::Pump: return "pump";
+        case ResidencySampleSource::Present: return "present";
+        case ResidencySampleSource::Resolve: return "resolve";
+        default: return "unknown";
+        }
+    }
+
+    void logResidencyTransitionSummary(const char* reason) {
+        if (!residencyTransition.active) {
+            return;
+        }
+        const std::uint64_t leadFrames = residencyTransition.firstAdmissionCommitted
+            ? residencyTransition.firstAdmissionPresent - residencyTransition.samplePresent
+            : 0;
+        LOG::logline(
+            "-- Distant static transition summary: epoch=%lu trigger=%s reason=%s sample_source=%s "
+            "sample_present=%llu destination=(%.2f,%.2f,%.2f) first_admit=%d first_admit_resource=%lu "
+            "lead_frames=%llu evict_stage0=%d evict_present=%d planner_max=%.2fms upload_max=%.2fms "
+            "oversize_count=%lu oversize_resource=%lu oversize_bytes=%llu",
+            residencyTransition.epoch,
+            transitionTriggerName(residencyTransition.trigger),
+            reason,
+            sampleSourceName(residencyTransition.sampleSource),
+            static_cast<unsigned long long>(residencyTransition.samplePresent),
+            residencyTransition.destination.x,
+            residencyTransition.destination.y,
+            residencyTransition.destination.z,
+            residencyTransition.firstAdmissionCommitted ? 1 : 0,
+            residencyTransition.firstAdmissionResource,
+            static_cast<unsigned long long>(leadFrames),
+            residencyTransition.usedStage0Eviction ? 1 : 0,
+            residencyTransition.usedPresentEviction ? 1 : 0,
+            residencyTransition.maxPlannerMs,
+            residencyTransition.maxUploadMs,
+            residencyTransition.oversizeCount,
+            residencyTransition.largestOversizeResource,
+            static_cast<unsigned long long>(residencyTransition.largestOversizeBytes)
+        );
+    }
+
+    void resetResidencyTransitionRuntime() {
+        residencyTransition = ResidencyTransitionStats();
+        residencyPresentSerial = 0;
+        liveLoadTransitionPending = false;
+        liveLoadDestinationValid = false;
+        liveLoadDestination = D3DXVECTOR3();
+        liveLoadSamplePresent = 0;
+    }
+
+    void noteTransitionAdmission(const StaticResource& resource) {
+        if (!residencyTransition.active || resource.planEpoch != residencyTransition.epoch ||
+            residencyTransition.firstAdmissionCommitted) {
+            return;
+        }
+        residencyTransition.firstAdmissionCommitted = true;
+        residencyTransition.firstAdmissionResource = resource.resourceId;
+        residencyTransition.firstAdmissionPresent = residencyPresentSerial;
+    }
+
+    void noteTransitionOversize(const StaticResource& resource) {
+        if (!residencyTransition.active || resource.planEpoch != residencyTransition.epoch) {
+            return;
+        }
+        ++residencyTransition.oversizeCount;
+        if (resource.geometryBytes() > residencyTransition.largestOversizeBytes) {
+            residencyTransition.largestOversizeResource = resource.resourceId;
+            residencyTransition.largestOversizeBytes = resource.geometryBytes();
+        }
+    }
+
     std::string staticMeshShardPath(std::uint32_t shardId) {
         char path[64] = {};
         std::snprintf(
@@ -1618,6 +1736,7 @@ const StaticUvBoundPaletteMap& staticUvBoundPaletteMap() {
 void releaseStaticsResources() {
     // Join the reader before its catalog and shard handles go away.
     residencyIo.stop();
+    logResidencyTransitionSummary("teardown");
     DistantLoaders::logResidencySummary();
 
     for (auto& mesh : staticResourceCatalog) {
@@ -1640,6 +1759,7 @@ void releaseStaticsResources() {
     residencyCommitPending.clear();
     fullDrain.reset();
     residencyStats = ResidencyStats();
+    resetResidencyTransitionRuntime();
 }
 
 }
@@ -1782,6 +1902,7 @@ bool admitPreparedResource(StaticResource& resource, ResidencyIoWorker::Result& 
     resource.state = StaticResourceState::Resident;
     ++residencyStats.admittedCount;
     residencyStats.admittedBytes += resource.geometryBytes();
+    noteTransitionAdmission(resource);
     return true;
 }
 
@@ -1892,6 +2013,56 @@ bool prepareMappedResource(StaticResource& resource, ResidencyIoWorker::Result& 
 int plannerCellX = INT_MIN;
 int plannerCellY = INT_MIN;
 
+void beginResidencyTransition(const D3DXVECTOR3& center) {
+    logResidencyTransitionSummary("next_epoch");
+
+    residencyTransition = ResidencyTransitionStats();
+    residencyTransition.active = true;
+    residencyTransition.epoch = residencyPlanEpoch;
+    if (liveLoadTransitionPending) {
+        residencyTransition.trigger = ResidencyTransitionTrigger::Load;
+        if (liveLoadDestinationValid) {
+            residencyTransition.sampleSource = ResidencySampleSource::Resolve;
+            residencyTransition.destination = liveLoadDestination;
+            residencyTransition.samplePresent = liveLoadSamplePresent;
+        } else {
+            residencyTransition.sampleSource = ResidencySampleSource::Present;
+            residencyTransition.destination = center;
+            residencyTransition.samplePresent = residencyPresentSerial;
+        }
+    } else if (residencyPresentSerial == 0) {
+        residencyTransition.trigger = ResidencyTransitionTrigger::Bootstrap;
+        residencyTransition.sampleSource = ResidencySampleSource::Pump;
+        residencyTransition.destination = center;
+    } else {
+        residencyTransition.trigger = ResidencyTransitionTrigger::Cell;
+        residencyTransition.sampleSource = ResidencySampleSource::Present;
+        residencyTransition.destination = center;
+        residencyTransition.samplePresent = residencyPresentSerial;
+    }
+
+    liveLoadTransitionPending = false;
+    liveLoadDestinationValid = false;
+}
+
+void noteTransitionPlannerElapsed(LARGE_INTEGER start) {
+    if (residencyTransition.active) {
+        residencyTransition.maxPlannerMs = std::max(
+            residencyTransition.maxPlannerMs,
+            DistantLoadInstrumentation::elapsed_ms(start)
+        );
+    }
+}
+
+void noteTransitionUploadElapsed(LARGE_INTEGER start) {
+    if (residencyTransition.active) {
+        residencyTransition.maxUploadMs = std::max(
+            residencyTransition.maxUploadMs,
+            DistantLoadInstrumentation::elapsed_ms(start)
+        );
+    }
+}
+
 }   // namespace
 
 namespace DistantLoaders {
@@ -1922,6 +2093,35 @@ void logResidencySummary() {
 
 void noteMissingPalette() {
     ++residencyStats.paletteMisses;
+}
+
+void armLiveLoadResidencyTransition(const D3DXVECTOR3* destination) {
+    if (residencyIdle || residencyFrozen) {
+        return;
+    }
+    liveLoadTransitionPending = true;
+    liveLoadDestinationValid = destination != nullptr;
+    if (destination) {
+        liveLoadDestination = *destination;
+        liveLoadSamplePresent = residencyPresentSerial;
+    }
+    plannerCellX = INT_MIN;
+    plannerCellY = INT_MIN;
+}
+
+void noteResidencyPresent() {
+    ++residencyPresentSerial;
+}
+
+void noteResidencyEvictionBoundary(bool stage0) {
+    if (!residencyTransition.active) {
+        return;
+    }
+    if (stage0) {
+        residencyTransition.usedStage0Eviction = true;
+    } else {
+        residencyTransition.usedPresentEviction = true;
+    }
 }
 
 bool residencyActive() {
@@ -2109,6 +2309,7 @@ void planResidency(const D3DXVECTOR3& center) {
         plannerCellX = cellX;
         plannerCellY = cellY;
         ++residencyPlanEpoch;
+        beginResidencyTransition(center);
 
         std::vector<std::uint32_t> cancelled;
         residencyIo.cancelOlderEpochs(residencyPlanEpoch, cancelled);
@@ -2122,6 +2323,7 @@ void planResidency(const D3DXVECTOR3& center) {
         }
     }
 
+    const auto plannerStart = DistantLoadInstrumentation::counter_now();
     const float admissionRadius = Configuration.DL.DrawDist * DistantLand::kCellSize + DistantLand::kCellSize;
     const float retainRadius = admissionRadius + DistantLand::kCellSize;
     if (!DistantLand::ipcClient.planResidency(
@@ -2135,9 +2337,11 @@ void planResidency(const D3DXVECTOR3& center) {
             activeMergedCapBytes(),
             availableMergedBytes(),
             mergedCapDebtBytes())) {
+        noteTransitionPlannerElapsed(plannerStart);
         return;
     }
     if (DistantLand::ipcClient.waitForCompletion() != IPC::Complete) {
+        noteTransitionPlannerElapsed(plannerStart);
         return;
     }
 
@@ -2158,6 +2362,7 @@ void planResidency(const D3DXVECTOR3& center) {
                 );
             } else if (resource->state == StaticResourceState::RemovalInFlight) {
                 resource->readmitRequested = true;
+                resource->planEpoch = residencyPlanEpoch;
             } else if (resource->geometryBytes() <= availableMergedBytes()) {
                 queueAdmission(*resource);
             }
@@ -2165,6 +2370,7 @@ void planResidency(const D3DXVECTOR3& center) {
             queueEviction(*resource);
         }
     }
+    noteTransitionPlannerElapsed(plannerStart);
 }
 
 // Bounded main-thread upload of prepared bytes. Textures are already resident, so no
@@ -2192,13 +2398,16 @@ void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uin
         commit.ibuffer = resource->ib;
         std::vector<IPC::ResidencyCommit> commits { commit };
         if (!commitResidency(commits)) {
+            noteTransitionUploadElapsed(start);
             return;
         }
         residencyCommitPending.pop_back();
         resource->state = StaticResourceState::Resident;
         ++residencyStats.admittedCount;
         residencyStats.admittedBytes += resource->geometryBytes();
+        noteTransitionAdmission(*resource);
         if (++resourcesThisTick >= budgetResources) {
+            noteTransitionUploadElapsed(start);
             return;
         }
     }
@@ -2206,6 +2415,7 @@ void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uin
     ResidencyIoWorker::Result prepared;
     while (resourcesThisTick < budgetResources && bytesThisTick < budgetBytes) {
         if (!residencyIo.tryCollect(prepared)) {
+            noteTransitionUploadElapsed(start);
             return;
         }
 
@@ -2233,11 +2443,15 @@ void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uin
             if (resource->state == StaticResourceState::Unavailable) {
                 logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resourceBytes);
             }
+            noteTransitionUploadElapsed(start);
             return;
         }
 
         bytesThisTick += resourceBytes;
         ++resourcesThisTick;
+        if (resourceBytes > budgetBytes) {
+            noteTransitionOversize(*resource);
+        }
 
         const double elapsed = DistantLoadInstrumentation::elapsed_ms(start);
         if (elapsed >= budgetMs) {
@@ -2249,20 +2463,23 @@ void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uin
                     elapsed
                 );
             }
+            noteTransitionUploadElapsed(start);
             return;
         }
     }
+    noteTransitionUploadElapsed(start);
 }
 
 // Acknowledged removal at a quiescent boundary. Release is forbidden unless the removal RPC
 // returns Complete: on timeout or server loss the buffers, palette and ledger bytes stay in
 // removal-in-flight and residency freezes for the device session.
-void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
+bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
     if (!residencyActive() || (residencyEvictQueue.empty() && residencyRemovalInFlight.empty())) {
-        return;
+        return false;
     }
 
     const auto start = DistantLoadInstrumentation::counter_now();
+    const std::uint32_t evictedBefore = residencyStats.evictedCount;
 
     if (residencyRemovalInFlight.empty()) {
         const std::size_t batch = std::min<std::size_t>(residencyEvictQueue.size(), budgetResources);
@@ -2295,7 +2512,7 @@ void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
             residencyFrozen = true;
             LOG::logline("!! Distant static removal was not acknowledged; freezing residency for this device session");
         }
-        return;
+        return false;
     }
 
     for (std::uint32_t resourceId : residencyRemovalInFlight) {
@@ -2326,6 +2543,7 @@ void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
     // Release can exceed the wall-clock limit, but it is processed alone.
     (void)budgetMs;
     (void)start;
+    return residencyStats.evictedCount != evictedBefore;
 }
 
 }   // namespace DistantLoaders

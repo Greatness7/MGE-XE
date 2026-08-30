@@ -50,9 +50,11 @@ namespace DistantLoaders {
     bool residencyActive();
     bool residencyHasPendingEviction();
     bool residencyQuiescent();
+    void noteResidencyPresent();
+    void noteResidencyEvictionBoundary(bool stage0);
     void planResidency(const D3DXVECTOR3& center);
     void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uint32_t budgetResources);
-    void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources);
+    bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources);
     void logResidencySummary();
 }
 
@@ -1843,7 +1845,9 @@ void DistantLand::evictResidencyAtStage0() {
 
     visDistantShared.RemoveAll();
     visExtraShared.RemoveAll();
-    DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources);
+    if (DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources)) {
+        DistantLoaders::noteResidencyEvictionBoundary(true);
+    }
 }
 
 // End-of-frame residency tick, after rendering has ended. Admission is always safe here; the
@@ -1856,6 +1860,7 @@ void DistantLand::tickResidency(bool stage0RanThisFrame) {
     if (!DistantLoaders::residencyActive()) {
         return;
     }
+    DistantLoaders::noteResidencyPresent();
     // Every residency RPC below begins with a blocking wait on any outstanding command. Skip
     // the whole tick instead, so a still-running render query can never stall a frame.
     if (ipcClient.pollRpcCompletion() != IPC::Complete) {
@@ -1867,7 +1872,9 @@ void DistantLand::tickResidency(bool stage0RanThisFrame) {
         // same tick.
         visDistantShared.RemoveAll();
         visExtraShared.RemoveAll();
-        DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources);
+        if (DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources)) {
+            DistantLoaders::noteResidencyEvictionBoundary(false);
+        }
     }
 
     float position[3] = {};
