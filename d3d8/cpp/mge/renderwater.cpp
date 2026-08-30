@@ -12,6 +12,13 @@
 
 void DistantLand::renderWaterReflection(const D3DXMATRIX* view, const D3DXMATRIX* proj) {
     auto mwBridge = MWBridge::get();
+    const bool reflectStatics = isDistantCell() && staticsUploaded && (Configuration.MGEFlags & REFLECT_NEAR);
+
+    // The shadow pass streams through the reflected-static vector in parallel. Preserve the
+    // previous complete reflection until that RPC finishes rather than clearing either resource.
+    if (reflectStatics && ipcClient.pollRpcCompletion() != IPC::Complete) {
+        return;
+    }
 
     // Switch to render target
     RenderTargetSwitcher rtsw(texReflection, surfReflectionZ);
@@ -75,7 +82,7 @@ void DistantLand::renderWaterReflection(const D3DXMATRIX* view, const D3DXMATRIX
         effect->EndPass();
     }
 
-    if (isDistantCell() && staticsUploaded && (Configuration.MGEFlags & REFLECT_NEAR)) {
+    if (reflectStatics) {
         // Draw statics reflection, with opposite culling and no dissolve
         DWORD p = (mwBridge->CellHasWeather() && !mwBridge->IsUnderwater(eyePos.z)) ? PASS_RENDERSTATICSEXTERIOR : PASS_RENDERSTATICSINTERIOR;
         effect->SetFloat(ehNearViewRange, 0);
@@ -221,11 +228,15 @@ void DistantLand::renderReflectedStatics(const D3DXMATRIX* view, const D3DXMATRI
     D3DXVECTOR4 viewsphere(eyePos.x, eyePos.y, eyePos.z, zf * cornerRay);
 
     visExtraShared.RemoveAll();
-    ipcClient.getVisibleMeshes(visExtraSharedId, range_frustum, viewsphere, VIS_STATIC, nearStaticEnd, farStaticEnd, VisibleSetSort::ByState);
+    if (!ipcClient.getVisibleMeshes(visExtraSharedId, range_frustum, viewsphere, VIS_STATIC, nearStaticEnd, farStaticEnd, VisibleSetSort::ByState)) {
+        return;
+    }
 
     device->SetVertexDeclaration(StaticDecl);
 
-    ipcClient.waitForCompletion();
+    if (ipcClient.waitForCompletion() != IPC::Complete) {
+        return;
+    }
     visExtraShared.Render(device, effect, effect, &ehTex0, nullptr, &ehHasVCol, &ehWorld, &ehUvBoundPalette, SIZEOFSTATICVERT);
 }
 
