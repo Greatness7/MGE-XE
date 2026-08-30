@@ -18,6 +18,7 @@
 
 struct MGEShader;
 struct IDxvkMorrowindInterop;
+struct IDxvkMorrowindMemoryInterop1;
 
 class DistantLand {
 public:
@@ -114,6 +115,7 @@ public:
         Statics,          // resumable distant-statics upload (the dominant phase)
         Grass,            // single-slice grass setup, overlapping the host's statics build
         StaticsHostWait,  // collect InitDistantStatics and free its staging vectors
+        ResidencyFullDrain,  // fitting/fallback session: ordered merged upload before rendering
         ResidencyBootstrap,  // capped session only: drain the nearest merged ring before rendering
         Done,             // all phases uploaded
     };
@@ -130,18 +132,30 @@ public:
     static constexpr std::uint32_t kResidencyEvictBudgetResources = 2;
     static constexpr std::uint64_t kResidencyDrainBudgetBytes = 10ull * 1024 * 1024;
     static constexpr std::uint32_t kResidencyDrainBudgetResources = 14;
-    // Give up on an unresolvable bootstrap centre rather than hanging the load screen; the
-    // world then enters with temporary merged-static pop-in, which the plan prefers to a hitch.
+    // Once a valid bootstrap centre exists, bound the synchronous nearest-ring drain rather
+    // than holding the load screen indefinitely. Waiting in menu frames does not start it.
     static constexpr int kResidencyBootstrapTimeoutMs = 5000;
+    static constexpr int kMergedBudgetSampleIntervalMs = 500;
+    static constexpr std::uint32_t kMergedBudgetRatchetSamples = 4;
+    static constexpr std::uint64_t kMergedBudgetMinHeadroomBytes = 256ull * 1024 * 1024;
+    static constexpr std::uint64_t kMergedBudgetMaxHeadroomBytes = 1024ull * 1024 * 1024;
     static UploadPhase uploadPhase;
     static bool pumpActive;        // pump armed and ticking from Present
     static bool pumpDraining;      // pump is being drained synchronously during load
     static bool worldResolved;     // save/new-game world data has resolved
     static bool uploadComplete;    // all upload phases finished
-    // Development-only forced merged-static cap. Phase 3 consumes this value; Phase 0 parses and
-    // logs it early so stress runs cannot silently use a misspelled or overflowing value.
+    // Active merged-static cap. The development override wins; otherwise DXVK supplies an
+    // allocator-policy-adjusted budget after fixed resources have been created.
     static bool streamingCapOverrideActive;
+    static bool automaticStreamingCapActive;
     static std::uint64_t mergedStreamingCapBytes;
+    static int nextMergedBudgetSampleMs;
+    static std::uint32_t lowerMergedBudgetSampleCount;
+    static std::uint32_t mergedBudgetSampleCount;
+    static std::uint32_t mergedBudgetRatchetCount;
+    static std::uint64_t pendingMergedCandidateCapBytes;
+    static std::uint64_t pendingMergedPeakMemoryUsedBytes;
+    static std::uint64_t peakMergedMemoryUsedBytes;
     static bool staticsPhaseStarted;  // beginStaticsPhase() has run for the current pump
     static int residencyBootstrapStartedMs;
     static bool outputStatusQueryPending;
@@ -292,6 +306,7 @@ public:
     };
     static NativeDepthBackend nativeDepthBackend;
     static IDxvkMorrowindInterop* dxvkMorrowindInterop;
+    static IDxvkMorrowindMemoryInterop1* dxvkMorrowindMemoryInterop;
     static bool stage1UsedNativeDepth;
     static bool nativeStage2Eligible;
     static bool dsvMayBeNoncanonical;
@@ -330,6 +345,9 @@ public:
     static void abortUploadPump();
     static void failUpload();
     static void finalizeUploadIfReady();
+    static bool selectInitialMergedStreamingCap();
+    static void sampleMergedStreamingCap();
+    static void logMergedStreamingBudgetSummary();
     // End-of-frame residency tick. `stage0RanThisFrame` selects the eviction boundary:
     // renderStage0 already evicted, so this only admits; otherwise both run here.
     static void tickResidency(bool stage0RanThisFrame);

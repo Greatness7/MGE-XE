@@ -398,6 +398,10 @@ namespace {
     // GPU bytes: io-queued, ready-for-gpu, commit-pending, resident, evict-queued and
     // removal-in-flight. Decremented only after Release, never on eviction request.
     std::uint64_t logicalReservedMergedBytes = 0;
+    // Live merged VB/IB bytes only. This deliberately excludes queued and prepared data: DXVK's
+    // memoryUsed rises with this value when buffers are created and falls when they are released.
+    std::uint64_t logicalGpuMergedBytes = 0;
+    std::uint64_t mergedGeometryBytesTotal = 0;
     std::uint32_t residencyPlanEpoch = 0;
     bool residencyIdle = true;              // no cap binds: the planner is never asked to run
     bool residencyFrozen = false;           // an unacknowledged removal poisoned the session
@@ -406,6 +410,23 @@ namespace {
     // Resources holding live buffers whose commit RPC has not been acknowledged yet. Tracked
     // explicitly so the per-frame tick never scans the whole catalog.
     std::vector<std::uint32_t> residencyCommitPending;
+
+    struct FullDrainState {
+        bool active = false;
+        std::size_t cursor = 0;
+        std::uint32_t shardId = std::numeric_limits<std::uint32_t>::max();
+        std::unique_ptr<ReadOnlyMappedFile> mapping;
+        std::vector<std::uint8_t> indexScratch;
+
+        void reset() {
+            active = false;
+            cursor = 0;
+            shardId = std::numeric_limits<std::uint32_t>::max();
+            mapping.reset();
+            indexScratch.clear();
+        }
+    };
+    FullDrainState fullDrain;
 
     // Permanent low-cost session counters, summarised at teardown.
     struct ResidencyStats {
@@ -418,6 +439,7 @@ namespace {
         std::uint32_t nonCompleteRemovals = 0;
         std::uint32_t paletteMisses = 0;
         std::uint64_t peakReservedBytes = 0;
+        std::uint64_t peakGpuBytes = 0;
     };
     ResidencyStats residencyStats;
 
@@ -1051,9 +1073,10 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             subset.geometryBytes = vertexBytes + indexBytes;
             subset.resourceId = static_cast<std::uint32_t>(L.distantSubsets.size());
             subset.resourceFlags = L.currentStaticMerged ? DISTANT_SUBSET_STREAMABLE_MERGED : 0;
-            // Merged geometry is published without buffers while a cap binds; the residency
-            // planner owns its lifetime from here on. Textures stay resident either way.
-            const bool streamThisSubset = L.currentStaticMerged && DistantLand::streamingCapOverrideActive;
+            // Every merged subset is published without buffers. After fixed resources exist,
+            // cap selection chooses either the ordered full drain or the capped radial
+            // bootstrap. Textures stay resident in both schedules.
+            const bool streamThisSubset = L.currentStaticMerged;
 
             ++L.totalSubsets;
             L.totalVertices += subsetRecord.vertex_count;
@@ -1077,8 +1100,8 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
             IDirect3DIndexBuffer9* ib = nullptr;
             void* lockdata = nullptr;
 
-            // Startup geometry upload from the shard's mapped window. Skipped entirely for a
-            // streamed merged subset: the residency planner reads those bytes from disk later.
+            // Startup geometry upload from the shard's mapped window. Skipped for a merged
+            // subset: the selected residency schedule reads those bytes after fixed uploads.
             auto uploadGeometryFromMapping = [&]() -> bool {
                 auto vbStart = DistantLoadInstrumentation::counter_now();
                 HRESULT hr = device->CreateVertexBuffer(vertexUploadBytes, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vb, 0);
@@ -1417,6 +1440,7 @@ bool DistantLand::finishStaticsPhase() {
         static_cast<unsigned long long>(totalGeometryBytes)
     );
     const std::uint64_t mergedGeometryBytes = L.mergedVertexBytes + L.mergedIndexBytes;
+    mergedGeometryBytesTotal = mergedGeometryBytes;
     LOG::logline(
         "-- Distant load summary: static_meshes ordinary_statics=%zu merged_statics=%zu merged_subsets=%zu merged_vertices=%zu merged_faces=%zu ordinary_geometry_bytes=%llu merged_geometry_bytes=%llu",
         static_cast<std::size_t>(L.totalStaticCount) - L.mergedStatics,
@@ -1435,8 +1459,8 @@ bool DistantLand::finishStaticsPhase() {
         L.totalFaces != 0 ? 100.0 * static_cast<double>(L.totalFaces - L.totalVeryFarFaces) / static_cast<double>(L.totalFaces) : 0.0
     );
 
-    // Only the uploaded share is in VRAM at this point. Under a streaming cap the deferred
-    // share is on disk, and its resident portion is reported by the residency summary instead.
+    // Only ordinary geometry is in VRAM at this point. The selected residency schedule runs
+    // after grass and host initialization; fitting sessions log their completed full drain.
     LOG::logline(
         "-- Distant static geometry memory use: %llu MB uploaded (%llu MB deferred to streaming, %llu MB total)",
         static_cast<unsigned long long>(uploadedGeometryBytes / (1ull << 20)),
@@ -1606,12 +1630,15 @@ void releaseStaticsResources() {
     staticUvBoundPalettes.clear();
 
     logicalReservedMergedBytes = 0;
+    logicalGpuMergedBytes = 0;
+    mergedGeometryBytesTotal = 0;
     residencyPlanEpoch = 0;
     residencyIdle = true;
     residencyFrozen = false;
     residencyEvictQueue.clear();
     residencyRemovalInFlight.clear();
     residencyCommitPending.clear();
+    fullDrain.reset();
     residencyStats = ResidencyStats();
 }
 
@@ -1627,9 +1654,7 @@ void releaseStaticsResources() {
 namespace {
 
 std::uint64_t activeMergedCapBytes() {
-    return DistantLand::streamingCapOverrideActive
-        ? DistantLand::mergedStreamingCapBytes
-        : std::numeric_limits<std::uint64_t>::max();
+    return DistantLand::mergedStreamingCapBytes;
 }
 
 std::uint64_t availableMergedBytes() {
@@ -1735,6 +1760,8 @@ bool admitPreparedResource(StaticResource& resource, ResidencyIoWorker::Result& 
 
     resource.vb = vb;
     resource.ib = ib;
+    logicalGpuMergedBytes += resource.geometryBytes();
+    residencyStats.peakGpuBytes = std::max(residencyStats.peakGpuBytes, logicalGpuMergedBytes);
     resource.state = StaticResourceState::CommitPending;
     residencyCommitPending.push_back(resource.resourceId);
     staticUvBoundPalettes[vb] = resource.palette;
@@ -1802,6 +1829,66 @@ void queueEviction(StaticResource& resource) {
     }
 }
 
+bool prepareMappedResource(StaticResource& resource, ResidencyIoWorker::Result& prepared) {
+    if (!fullDrain.mapping || fullDrain.shardId != resource.shardId) {
+        fullDrain.mapping = std::make_unique<ReadOnlyMappedFile>(StaticMeshesGeometryWindowBytes);
+        fullDrain.shardId = resource.shardId;
+        const std::string path = staticMeshShardPath(resource.shardId);
+        HANDLE file = CreateFile(path.c_str(), GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+        if (file == INVALID_HANDLE_VALUE) {
+            LOG::winerror("Distant statics full drain: failed to open %s", path.c_str());
+            return false;
+        }
+        std::uint64_t fileSize = 0;
+        const std::string sizeError = "Distant statics full drain: failed to query size for " + path;
+        const bool initialized = MappedFileUtil::QueryFileSize(file, fileSize, sizeError.c_str())
+            && fullDrain.mapping->initialize(file, fileSize);
+        CloseHandle(file);
+        if (!initialized) {
+            MappedFileUtil::LogMappingFailure("Distant statics full drain: failed to map shard", *fullDrain.mapping);
+            return false;
+        }
+    }
+
+    prepared = {};
+    prepared.resourceId = resource.resourceId;
+    prepared.planEpoch = residencyPlanEpoch;
+    prepared.vertexData.resize(resource.vertexBytes);
+    if (!fullDrain.mapping->copyRange(resource.vertexOffset, resource.vertexBytes, prepared.vertexData.data())) {
+        MappedFileUtil::LogMappingFailure("Distant statics full drain: failed to map vertex data", *fullDrain.mapping);
+        return false;
+    }
+
+    prepared.indexData.resize(resource.indexBytes);
+    if (resource.indexCopyPlan.empty()) {
+        if (!fullDrain.mapping->copyRange(resource.indexOffset, resource.indexBytes, prepared.indexData.data())) {
+            MappedFileUtil::LogMappingFailure("Distant statics full drain: failed to map index data", *fullDrain.mapping);
+            return false;
+        }
+    } else {
+        fullDrain.indexScratch.resize(resource.indexBytes);
+        if (!fullDrain.mapping->copyRange(resource.indexOffset, resource.indexBytes, fullDrain.indexScratch.data())) {
+            MappedFileUtil::LogMappingFailure("Distant statics full drain: failed to map index data", *fullDrain.mapping);
+            return false;
+        }
+        std::size_t written = 0;
+        for (const auto& span : resource.indexCopyPlan) {
+            if (static_cast<std::uint64_t>(span.sourceOffset) + span.byteCount > resource.indexBytes
+                || written + span.byteCount > resource.indexBytes) {
+                return false;
+            }
+            std::memcpy(prepared.indexData.data() + written, fullDrain.indexScratch.data() + span.sourceOffset, span.byteCount);
+            written += span.byteCount;
+        }
+        if (written != resource.indexBytes) {
+            return false;
+        }
+    }
+
+    prepared.ok = true;
+    return true;
+}
+
 int plannerCellX = INT_MIN;
 int plannerCellY = INT_MIN;
 
@@ -1815,12 +1902,14 @@ void logResidencySummary() {
     }
     LOG::logline(
         "-- Distant static residency summary: admitted=%lu/%llu B evicted=%lu/%llu B peak_reserved=%llu B "
-        "cap=%llu B epochs=%lu cancelled=%lu unavailable=%lu palette_misses=%lu removal_non_complete=%lu frozen=%d",
+        "peak_gpu=%llu B gpu_now=%llu B cap=%llu B epochs=%lu cancelled=%lu unavailable=%lu palette_misses=%lu removal_non_complete=%lu frozen=%d",
         residencyStats.admittedCount,
         static_cast<unsigned long long>(residencyStats.admittedBytes),
         residencyStats.evictedCount,
         static_cast<unsigned long long>(residencyStats.evictedBytes),
         static_cast<unsigned long long>(residencyStats.peakReservedBytes),
+        static_cast<unsigned long long>(residencyStats.peakGpuBytes),
+        static_cast<unsigned long long>(logicalGpuMergedBytes),
         static_cast<unsigned long long>(activeMergedCapBytes()),
         residencyPlanEpoch,
         residencyStats.cancelledCount,
@@ -1856,6 +1945,18 @@ bool residencyQuiescent() {
     return residencyIo.idle();
 }
 
+std::uint64_t totalMergedGeometryBytes() {
+    return mergedGeometryBytesTotal;
+}
+
+std::uint64_t logicalGpuMergedGeometryBytes() {
+    return logicalGpuMergedBytes;
+}
+
+bool residencyFullDrainActive() {
+    return fullDrain.active;
+}
+
 // Idempotent teardown of the reader thread and every in-flight residency intent. Safe to call
 // from a partial-init abort; the catalog and its buffers are released separately.
 void haltResidency() {
@@ -1864,22 +1965,134 @@ void haltResidency() {
     residencyEvictQueue.clear();
     residencyRemovalInFlight.clear();
     residencyCommitPending.clear();
+    fullDrain.reset();
 }
 
 void beginResidency() {
-    residencyIdle = !DistantLand::streamingCapOverrideActive;
+    residencyIo.stop();
+    fullDrain.reset();
     residencyFrozen = false;
     plannerCellX = INT_MIN;
     plannerCellY = INT_MIN;
-    if (residencyIdle) {
-        LOG::logline("-- Merged-static residency idle: no cap binds, every merged resource is resident");
+    const std::uint64_t cap = activeMergedCapBytes();
+    if (mergedGeometryBytesTotal == 0) {
+        residencyIdle = true;
+        LOG::logline("-- Merged-static residency idle: dataset has no merged geometry");
         return;
     }
+    if (mergedGeometryBytesTotal <= cap) {
+        residencyIdle = true;
+        fullDrain.active = true;
+        LOG::logline(
+            "-- Merged-static residency schedule: full_drain cap=%llu B merged_total=%llu B order=shard_file_offset",
+            static_cast<unsigned long long>(cap),
+            static_cast<unsigned long long>(mergedGeometryBytesTotal)
+        );
+        return;
+    }
+    residencyIdle = false;
     residencyIo.start();
     LOG::logline(
-        "-- Merged-static residency armed: cap=%llu B resident_merged=%llu B",
-        static_cast<unsigned long long>(activeMergedCapBytes()),
+        "-- Merged-static residency schedule: capped_bootstrap cap=%llu B merged_total=%llu B resident_merged=%llu B",
+        static_cast<unsigned long long>(cap),
+        static_cast<unsigned long long>(mergedGeometryBytesTotal),
         static_cast<unsigned long long>(logicalReservedMergedBytes)
+    );
+}
+
+bool stepResidencyFullDrain(
+    double budgetMs,
+    std::uint64_t budgetBytes,
+    std::uint32_t budgetResources,
+    bool& done
+) {
+    done = !fullDrain.active;
+    if (!fullDrain.active) {
+        return true;
+    }
+
+    const auto start = DistantLoadInstrumentation::counter_now();
+    std::uint64_t bytesThisTick = 0;
+    std::uint32_t resourcesThisTick = 0;
+    while (fullDrain.cursor < staticResourceCatalog.size()) {
+        StaticResource& resource = staticResourceCatalog[fullDrain.cursor];
+        if (!resource.streamed || resource.state == StaticResourceState::Resident) {
+            ++fullDrain.cursor;
+            continue;
+        }
+        if (resource.state != StaticResourceState::Unloaded) {
+            LOG::logline(
+                "!! Distant static full drain found resource %lu in unexpected state %u",
+                resource.resourceId,
+                static_cast<unsigned>(resource.state)
+            );
+            return false;
+        }
+
+        const std::uint64_t resourceBytes = resource.geometryBytes();
+        if (resourcesThisTick != 0 && resourceBytes > budgetBytes - std::min(budgetBytes, bytesThisTick)) {
+            return true;
+        }
+        logicalReservedMergedBytes += resourceBytes;
+        residencyStats.peakReservedBytes = std::max(residencyStats.peakReservedBytes, logicalReservedMergedBytes);
+        resource.state = StaticResourceState::ReadyForGpu;
+
+        ResidencyIoWorker::Result prepared;
+        if (!prepareMappedResource(resource, prepared)) {
+            logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resourceBytes);
+            markUnavailable(resource, "ordered startup shard read failed");
+            return false;
+        }
+        if (!admitPreparedResource(resource, prepared)) {
+            if (resource.state == StaticResourceState::Unavailable) {
+                logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resourceBytes);
+            }
+            return false;
+        }
+
+        ++fullDrain.cursor;
+        bytesThisTick += resourceBytes;
+        ++resourcesThisTick;
+        const double elapsed = DistantLoadInstrumentation::elapsed_ms(start);
+        if (elapsed >= budgetMs || resourcesThisTick >= budgetResources || bytesThisTick >= budgetBytes) {
+            if (resourceBytes > budgetBytes) {
+                LOG::logline(
+                    "-- Distant static full drain admitted an oversize resource alone: id=%lu bytes=%llu elapsed=%.2fms",
+                    resource.resourceId,
+                    static_cast<unsigned long long>(resourceBytes),
+                    elapsed
+                );
+            }
+            return true;
+        }
+    }
+
+    fullDrain.mapping.reset();
+    fullDrain.indexScratch.clear();
+    fullDrain.active = false;
+    residencyIdle = true;
+    done = true;
+    LOG::logline(
+        "-- Merged-static full drain complete: resident=%llu B resources=%lu planner=idle",
+        static_cast<unsigned long long>(logicalGpuMergedBytes),
+        residencyStats.admittedCount
+    );
+    return true;
+}
+
+void wakeResidencyForCapDebt() {
+    if (residencyFrozen || logicalReservedMergedBytes <= activeMergedCapBytes()) {
+        return;
+    }
+    residencyIdle = false;
+    plannerCellX = INT_MIN;
+    plannerCellY = INT_MIN;
+    residencyIo.start();
+    LOG::logline(
+        "-- Merged-static residency rearmed after cap ratchet: cap=%llu B reserved=%llu B debt=%llu B",
+        static_cast<unsigned long long>(activeMergedCapBytes()),
+        static_cast<unsigned long long>(logicalReservedMergedBytes),
+        static_cast<unsigned long long>(mergedCapDebtBytes())
     );
 }
 
@@ -2102,6 +2315,7 @@ void tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
         if (resource->ib) { resource->ib->Release(); resource->ib = nullptr; }
         if (resource->vb) { resource->vb->Release(); resource->vb = nullptr; }
         logicalReservedMergedBytes -= std::min(logicalReservedMergedBytes, resource->geometryBytes());
+        logicalGpuMergedBytes -= std::min(logicalGpuMergedBytes, resource->geometryBytes());
         resource->state = StaticResourceState::Unloaded;
         ++residencyStats.evictedCount;
         residencyStats.evictedBytes += resource->geometryBytes();
