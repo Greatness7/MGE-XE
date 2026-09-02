@@ -341,6 +341,12 @@ impl DistantLandState {
                 if let Some((evict_id, evict_distance)) = self.farthest_replaceable(center, retain_radius, resource_limit)
                     && candidate_distance < evict_distance
                 {
+                    // The eviction is made for this candidate, so leave the cursor on it. The
+                    // client commits the removal at the next frame's stage 0 and the following
+                    // sweep call admits the candidate into the freed budget. Advancing past it
+                    // would strand both the candidate and the headroom it just bought until the
+                    // player crosses a cell, since an evict-only sweep never sets the rewind flag.
+                    self.planner_bucket_cursor -= 1;
                     output.push(ResidencyPlan {
                         resource_id: evict_id,
                         action: ResidencyPlanAction::Evict as u32,

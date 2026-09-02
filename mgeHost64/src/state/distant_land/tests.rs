@@ -1314,3 +1314,44 @@ fn a_sweep_that_admits_nothing_parks_the_cursor() {
         "the cursor rewound despite admitting nothing"
     );
 }
+
+/// An eviction is emitted for one specific candidate. If the sweep advances past that candidate,
+/// the headroom it just bought is stranded: the far static pops out and the near one that
+/// displaced it never arrives, because an evict-only sweep does not set the rewind flag.
+#[test]
+fn an_eviction_re_offers_the_candidate_that_bought_the_headroom() {
+    let mut state = residency_state(1);
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 1024,
+        streamable: true,
+        resident: true,
+        center: D3dxVector3 {
+            x: 100_000.0,
+            y: 100.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+    state.rebuild_residency_index();
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    let mut params = plan_params(2);
+    params.available_bytes = 0;
+
+    state.plan_residency(&mut output, params).unwrap();
+    let plans = output.read_all::<ResidencyPlan>().unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].action, ResidencyPlanAction::Evict as u32);
+    assert_eq!(plans[0].resource_id, 1, "the far resident resource should be evicted");
+
+    // The client commits the removal at the next frame's stage 0, so the following call is the
+    // first one that sees the freed headroom.
+    state.residency_resources[1].resident = false;
+    params.available_bytes = 1024;
+
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(
+        admitted_ids(&mut output),
+        vec![0],
+        "the sweep skipped the candidate the eviction was made for"
+    );
+}
