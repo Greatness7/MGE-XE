@@ -550,6 +550,9 @@ bool DistantLand::uploadDistantLand() {
         }
         DistantLoaders::beginResidency();
 
+        // No yield between slices: stepResidencyFullDrain maps and uploads on this
+        // thread, so a budget-exhausted return has no producer to wait on. The slice
+        // budget is a deadline, not a rate limit.
         while (DistantLoaders::residencyFullDrainActive()) {
             bool done = false;
             if (!DistantLoaders::stepResidencyFullDrain(
@@ -558,9 +561,6 @@ bool DistantLand::uploadDistantLand() {
                     kResidencyDrainBudgetResources,
                     done)) {
                 return false;
-            }
-            if (!done) {
-                Sleep(1);
             }
         }
 
