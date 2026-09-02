@@ -93,7 +93,11 @@ pub struct DistantLandState {
     /// dropped get re-offered; a sweep that admitted nothing leaves the cursor parked,
     /// because re-offering the same unadmittable resources every frame is a tight retry.
     planner_sweep_admitted: bool,
-    resident_scan_cursor: usize,
+    /// Resource ids of every streamable resource the client currently holds resident: the
+    /// complete set of eviction candidates. `residency_resources` carries one entry per
+    /// subset — hundreds of thousands on a full load order, nearly all of them ordinary
+    /// statics that are never streamed — so it is far too large to search for one.
+    resident_streamable: HashSet<u32>,
     oversize_logged: HashSet<u32>,
     pub land_quadtree: QuadTree,
     horizon: HorizonRuntime,
@@ -117,7 +121,7 @@ impl DistantLandState {
             planner_offset_cursor: 0,
             planner_bucket_cursor: 0,
             planner_sweep_admitted: false,
-            resident_scan_cursor: 0,
+            resident_streamable: HashSet::new(),
             oversize_logged: HashSet::new(),
             land_quadtree: QuadTree::default(),
             horizon,
@@ -150,6 +154,7 @@ impl DistantLandState {
                 let resource = &mut self.residency_resources[resource_id];
                 resource.resident = false;
                 resource.unavailable = commit.state == 2;
+                self.resident_streamable.remove(&commit.resource_id);
             }
             1 => {
                 if commit.vbuffer == 0 || commit.ibuffer == 0 {
@@ -169,6 +174,9 @@ impl DistantLandState {
                 let resource = &mut self.residency_resources[resource_id];
                 resource.resident = true;
                 resource.unavailable = false;
+                if resource.streamable {
+                    self.resident_streamable.insert(commit.resource_id);
+                }
             }
             state => return Err(HostError::listen(format!("Unknown residency commit state {state}"))),
         }
@@ -179,9 +187,13 @@ impl DistantLandState {
     pub(super) fn rebuild_residency_index(&mut self) {
         const CELL_SIZE: f32 = 8192.0;
         self.residency_buckets.clear();
+        self.resident_streamable.clear();
         for (resource_id, resource) in self.residency_resources.iter().enumerate() {
             if !resource.streamable {
                 continue;
+            }
+            if resource.resident {
+                self.resident_streamable.insert(resource_id as u32);
             }
             let cell = (
                 (resource.center.x / CELL_SIZE).floor() as i32,
@@ -194,7 +206,6 @@ impl DistantLandState {
         self.planner_offset_cursor = 0;
         self.planner_bucket_cursor = 0;
         self.planner_sweep_admitted = false;
-        self.resident_scan_cursor = 0;
         self.oversize_logged.clear();
     }
 
@@ -219,31 +230,38 @@ impl DistantLandState {
         self.planner_sweep_admitted = false;
     }
 
+    /// Flips one resource's residency the way an acknowledged commit would, without needing
+    /// quadtree placements to update.
+    #[cfg(test)]
+    fn set_resident_for_tests(&mut self, resource_id: u32, resident: bool) {
+        self.residency_resources[resource_id as usize].resident = resident;
+        if resident {
+            self.resident_streamable.insert(resource_id);
+        } else {
+            self.resident_streamable.remove(&resource_id);
+        }
+    }
+
     fn distance_sq(resource: &ResidencyResource, center: D3dxVector3) -> f64 {
         let dx = f64::from(resource.center.x - center.x);
         let dy = f64::from(resource.center.y - center.y);
         dx * dx + dy * dy
     }
 
-    fn farthest_replaceable(&mut self, center: D3dxVector3, retain_radius: f32, work_limit: usize) -> Option<(u32, f64)> {
-        if self.residency_resources.is_empty() {
-            return None;
-        }
+    /// Picks the resident streamable resource furthest from `center`, ignoring anything inside
+    /// `retain_radius`. The scan is exact rather than windowed: the candidate set is bounded by
+    /// the streaming byte cap, not by the size of the load order.
+    fn farthest_replaceable(&self, center: D3dxVector3, retain_radius: f32) -> Option<(u32, f64)> {
         let retain_sq = f64::from(retain_radius) * f64::from(retain_radius);
-        let mut farthest = None;
-        for _ in 0..work_limit.min(self.residency_resources.len()) {
-            let id = self.resident_scan_cursor % self.residency_resources.len();
-            self.resident_scan_cursor = (self.resident_scan_cursor + 1) % self.residency_resources.len();
-            let resource = &self.residency_resources[id];
-            if !resource.streamable || !resource.resident {
-                continue;
-            }
-            let distance = Self::distance_sq(resource, center);
+        let mut farthest: Option<(u32, f64)> = None;
+        for &id in &self.resident_streamable {
+            let distance = Self::distance_sq(&self.residency_resources[id as usize], center);
             if distance <= retain_sq {
                 continue;
             }
-            if farthest.is_none_or(|(_, best)| distance > best) {
-                farthest = Some((id as u32, distance));
+            // Break ties on the lower id so the choice does not follow set iteration order.
+            if farthest.is_none_or(|(best_id, best)| distance > best || (distance == best && id < best_id)) {
+                farthest = Some((id, distance));
             }
         }
         farthest
@@ -283,7 +301,7 @@ impl DistantLandState {
 
         let resource_limit = params.max_resources.max(1) as usize;
         if params.cap_debt_bytes != 0
-            && let Some((resource_id, _)) = self.farthest_replaceable(center, 0.0, resource_limit)
+            && let Some((resource_id, _)) = self.farthest_replaceable(center, 0.0)
         {
             output.push(ResidencyPlan {
                 resource_id,
@@ -338,7 +356,7 @@ impl DistantLandState {
                     continue;
                 }
                 let candidate_distance = Self::distance_sq(resource, center);
-                if let Some((evict_id, evict_distance)) = self.farthest_replaceable(center, retain_radius, resource_limit)
+                if let Some((evict_id, evict_distance)) = self.farthest_replaceable(center, retain_radius)
                     && candidate_distance < evict_distance
                 {
                     // The eviction is made for this candidate, so leave the cursor on it. The

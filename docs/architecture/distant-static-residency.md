@@ -101,6 +101,13 @@ cell offsets by `(x*x + y*y, y, x)` and `plan_residency` walks that order throug
 cells behind the player. `admissionRadius` is `DrawDist * kCellSize + kCellSize`; the retain radius
 is one cell beyond it, giving the hysteresis that stops a boundary from thrashing.
 
+When a candidate does not fit the client's headroom, `farthest_replaceable` picks the resident
+resource furthest from the player to displace it. It searches `resident_streamable`, not
+`residency_resources`: the latter carries one entry per subset — hundreds of thousands on a full
+load order, nearly all ordinary statics that are never streamed — while the former is bounded by
+the streaming byte cap. The planner then leaves its bucket cursor on the candidate the eviction
+was made for, so the next sweep call admits it into the freed budget.
+
 The planner is asked to run when the player's quantized cell changes, or when a cap ratchet leaves
 debt. Each run bumps `residencyPlanEpoch`; the host keys its sweep cursor on the epoch as well as
 the cell, so a save loaded into the cell the player already occupies restarts the sweep instead of

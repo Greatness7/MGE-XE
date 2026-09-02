@@ -1300,8 +1300,8 @@ fn residency_planner_holds_a_new_epoch_in_interiors() {
 fn a_sweep_that_admits_nothing_parks_the_cursor() {
     let mut state = residency_state(4);
     let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
-    for resource in &mut state.residency_resources {
-        resource.resident = true;
+    for id in 0..state.residency_resources.len() as u32 {
+        state.set_resident_for_tests(id, true);
     }
 
     for _ in 0..8 {
@@ -1345,7 +1345,7 @@ fn an_eviction_re_offers_the_candidate_that_bought_the_headroom() {
 
     // The client commits the removal at the next frame's stage 0, so the following call is the
     // first one that sees the freed headroom.
-    state.residency_resources[1].resident = false;
+    state.set_resident_for_tests(1, false);
     params.available_bytes = 1024;
 
     state.plan_residency(&mut output, params).unwrap();
@@ -1354,4 +1354,38 @@ fn an_eviction_re_offers_the_candidate_that_bought_the_headroom() {
         vec![0],
         "the sweep skipped the candidate the eviction was made for"
     );
+}
+
+/// `residency_resources` holds one entry per subset, the overwhelming majority of them ordinary
+/// statics that are never streamed. Searching it for an eviction candidate buried the handful of
+/// real candidates under filler, so a cap-bound admission stalled for as long as the search took
+/// to reach one.
+#[test]
+fn an_eviction_candidate_is_found_past_unstreamable_filler() {
+    let mut state = residency_state(1);
+    for _ in 0..199 {
+        state.residency_resources.push(ResidencyResource::default());
+    }
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 1024,
+        streamable: true,
+        resident: true,
+        center: D3dxVector3 {
+            x: 100_000.0,
+            y: 100.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+    state.rebuild_residency_index();
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    let mut params = plan_params(2);
+    params.available_bytes = 0;
+
+    state.plan_residency(&mut output, params).unwrap();
+
+    let plans = output.read_all::<ResidencyPlan>().unwrap();
+    assert_eq!(plans.len(), 1, "no eviction was planned: {plans:?}");
+    assert_eq!(plans[0].action, ResidencyPlanAction::Evict as u32);
+    assert_eq!(plans[0].resource_id, 200);
 }
