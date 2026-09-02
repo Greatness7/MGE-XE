@@ -127,7 +127,7 @@ public:
     // alone and logged. Revisit from measured p99/max crossings, not average inflow.
     static constexpr double kResidencyAdmitBudgetMs = 2.0;
     static constexpr std::uint64_t kResidencyAdmitBudgetBytes = 2ull * 1024 * 1024;
-    static constexpr std::uint32_t kResidencyAdmitBudgetResources = 2;
+    static constexpr std::uint32_t kResidencyAdmitBudgetResources = 16;
     static constexpr double kResidencyEvictBudgetMs = 1.0;
     static constexpr std::uint32_t kResidencyEvictBudgetResources = 2;
     static constexpr std::uint64_t kResidencyDrainBudgetBytes = 10ull * 1024 * 1024;
