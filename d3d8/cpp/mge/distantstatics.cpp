@@ -1625,42 +1625,6 @@ bool DistantLand::finishStaticsPhase() {
     return true;
 }
 
-// Synchronous statics load: drives begin/step/finish to completion in one call.
-// Used by the in-world renderer-restart path (uploadDistantLand); the menu pump
-// drives the same phase functions incrementally instead.
-bool DistantLand::initDistantStaticsClient() {
-    DistantLoadInstrumentation::ScopedLoadTimer totalTimer("statics.total");
-
-    if (!beginStaticsPhase()) {
-        abortStaticsPhase();
-        return false;
-    }
-    if (staticsLoader->skipPhase) {
-        const bool ok = staticsLoader->skipResult;
-        abortStaticsPhase();
-        return ok && finishLandscapeUpload();
-    }
-
-    bool done = false;
-    while (!done) {
-        if (!stepStaticsPhase(std::numeric_limits<int>::max(), done)) {
-            abortStaticsPhase();
-            return false;
-        }
-    }
-
-    // Collect the terrain result now that the statics upload has overlapped the host's build,
-    // and before finishStaticsPhase issues the next RPC.
-    if (!finishLandscapeUpload()) {
-        abortStaticsPhase();
-        return false;
-    }
-
-    const bool ok = finishStaticsPhase();
-    abortStaticsPhase();   // success leaves the loader empty; this just drops it
-    return ok;
-}
-
 bool DistantLand::loadVisGroupsClient(HANDLE h) {
     DistantLoadInstrumentation::ScopedLoadTimer timer("dynamic_vis.read_client");
 

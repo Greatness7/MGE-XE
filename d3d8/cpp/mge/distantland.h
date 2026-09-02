@@ -318,9 +318,7 @@ public:
 
     static bool init();
     static bool initDeviceResources();
-    static bool uploadDistantLand();
     static bool initIpc();
-    static bool initIpcBlocking();
     static bool initIpcVectors();
     static bool verifyResidencyProtocol();
     static bool finishLandscapeUpload();
@@ -330,7 +328,6 @@ public:
     static bool initDynamicWaves();
     static bool initLandscapeClient();
     static bool initLandscape();
-    static bool initDistantStaticsClient();
     static bool initShadow();
     static bool initGrass();
     static bool loadVisGroupsClient(HANDLE h);

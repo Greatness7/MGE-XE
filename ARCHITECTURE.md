@@ -250,9 +250,10 @@ The render path enables only when both geometry upload and the save/new-game
 world resolution have completed. If world resolution wins the race, the
 resolution callback drains the pump synchronously inside the engine load path
 while displaying an MGE loading bar, so gameplay cannot begin in a partially
-initialized state. An in-world renderer restart retains the synchronous
-end-to-end path. Any failure releases partial resources, disables distant land
-for the session, and lets Morrowind continue.
+initialized state. An in-world renderer restart drains the same pump the same
+way, because the engine is blocked inside `restartRenderer` and there are no
+frames to spread the work across. Any failure releases partial resources,
+disables distant land for the session, and lets Morrowind continue.
 
 Upload details (what is read from `Data Files\distantland`, what is sent to the host) are in
 [distantland-data.md](docs/architecture/distantland-data.md) and [ipc.md](docs/architecture/ipc.md).

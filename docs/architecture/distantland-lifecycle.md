@@ -56,9 +56,9 @@ depth, shadow, water, BSA access, and resolution of the partial-view mapping
 APIs. It also installs the world-resolution callback, leaving host connection and
 geometry upload to the pump.
 
-If no player cell exists, the startup path arms the pump. If a player cell is
-already active, the call came from an in-world renderer restart and the
-complete host connection and geometry upload run synchronously instead.
+If no player cell exists, the startup path arms the pump and returns. If a player
+cell is already active, the call came from an in-world renderer restart, which
+arms the same pump and then drains it before returning.
 
 ## Upload pump
 
@@ -125,10 +125,16 @@ position. Arming only: the next load-screen `Present` starts the epoch and does 
 
 ## Renderer restart and teardown
 
-An in-world renderer restart has an active player cell, so `init()` uses
-`initIpcBlocking()` and `uploadDistantLand()` rather than the menu pump. It
-starts a fresh host, waits for output readiness, allocates vectors, uploads
-terrain/statics/grass, and resolves dynamic-visibility groups before returning.
+An in-world renderer restart has an active player cell, so `init()` arms the pump
+and calls `drainUploadPump()` immediately rather than leaving it to `Present`.
+The engine is blocked inside `restartRenderer` (patched at `0x41AA31`), so there
+are no frames to spread the work across, and `initOnLoad`'s loading bar is
+already on screen for the drain to borrow.
+
+`worldResolved` is set only after the drain returns. The pump's `Done` phase
+calls `finalizeUploadIfReady()` itself, so setting it first would reach
+`RenderReady` mid-drain and let the drain's closing loading frame render through
+the distant path.
 
 `release()` aborts any partial pump state, releases client-side D3D resources
 and shared vectors, and stops the host. A subsequent initialization starts from

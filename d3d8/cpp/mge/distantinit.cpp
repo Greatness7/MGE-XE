@@ -429,26 +429,27 @@ bool DistantLand::init() {
         return true;
     }
 
-    // In-world renderer restart: player cell already active. Upload synchronously
-    // (a brief hitch is acceptable here) rather than pumping across menu frames.
+    // In-world renderer restart: player cell already active. Drive the same pump the
+    // menu path uses, but to completion here: the engine is blocked inside
+    // restartRenderer, so there are no frames to spread the work across.
     LOG::logline("-- Player cell already active; loading distant land immediately");
-    if (!uploadDistantLand()) {
-        release();
-        state = InitState::FailedDisabled;
+    isRenderCached = false;
+    armUploadPump();
+    drainUploadPump();
+    if (!uploadComplete) {
+        // failUpload() has already released and set FailedDisabled.
         return false;
     }
 
-    LOG::logline("<< Completed Distant Land init");
-    state = InitState::RenderReady;
-    isRenderCached = false;
+    // Only now that the drain has finished. The pump's Done phase calls
+    // finalizeUploadIfReady() itself, so setting this first would promote to
+    // RenderReady mid-drain and let drainUploadPump's closing loading frame render
+    // through the distant path. finalizeUploadIfReady also resolves vis-group object
+    // pointers, which a restart needs because the resolve-during-init hook that
+    // normally does it does not fire on this path.
     worldResolved = true;
-    uploadComplete = true;
-
-    // Match the deferred (onResolveDuringInit) path: the resolve-during-init hook
-    // does not fire on a renderer restart, so resolve vis-group object pointers
-    // here or journal/global-gated distant statics never update after a restart.
-    resolveDynamicVisGroups();
-    return true;
+    finalizeUploadIfReady();
+    return state == InitState::RenderReady;
 }
 
 // Fast device-resource phase: shaders and render targets only, no heavy geometry.
@@ -509,115 +510,12 @@ bool DistantLand::initDeviceResources() {
     return true;
 }
 
-// Heavy geometry-upload phase: terrain, distant statics, grass. This is the
-// ~3.0 s of VB/IB/texture upload that 4.3 aims to defer off the startup hook.
-bool DistantLand::uploadDistantLand() {
-    const int uploadStartMs = HighResolutionTimer::getMilliseconds();
-
-    if (!initIpcBlocking()) {
-        return false;
-    }
-
-    if (!initLandscape()) {
-        return false;
-    }
-
-    // The InitLandscape result is consumed inside the statics phase, immediately before its
-    // first RPC, so the host's land-quadtree build overlaps the client's statics parse.
-    if (!initDistantStaticsClient()) {
-        return false;
-    }
-
-    if (!initGrass()) {
-        return false;
-    }
-
-    if (staticsHostVecId != IPC::InvalidVector) {
-        if (ipcClient.waitForCompletion() != IPC::Complete || !ipcClient.lastInitDistantStaticsSucceeded()) {
-            return false;
-        }
-        if (!ipcClient.freeVecBlocking(staticsHostVecId)
-            || !ipcClient.freeVecBlocking(subsetsHostVecId)) {
-            return false;
-        }
-        staticsHostVecId = IPC::InvalidVector;
-        subsetsHostVecId = IPC::InvalidVector;
-        if (!verifyResidencyProtocol()) {
-            return false;
-        }
-        if (!selectInitialMergedStreamingCap()) {
-            return false;
-        }
-        DistantLoaders::beginResidency();
-
-        // No yield between slices: stepResidencyFullDrain maps and uploads on this
-        // thread, so a budget-exhausted return has no producer to wait on. The slice
-        // budget is a deadline, not a rate limit.
-        while (DistantLoaders::residencyFullDrainActive()) {
-            bool done = false;
-            if (!DistantLoaders::stepResidencyFullDrain(
-                    static_cast<double>(kDrainBudgetMs),
-                    kResidencyDrainBudgetBytes,
-                    kResidencyDrainBudgetResources,
-                    done)) {
-                return false;
-            }
-        }
-
-        // In-world renderer restart: a valid centre already exists, so run the capped
-        // nearest-ring bootstrap here. It never drains the full merged dataset.
-        if (DistantLoaders::residencyActive()) {
-            const int bootstrapStartMs = HighResolutionTimer::getMilliseconds();
-            float position[3] = {};
-            while (MWBridge::get()->tryGetPlayerPosition(position)) {
-                const D3DXVECTOR3 center(position[0], position[1], position[2]);
-                DistantLoaders::planResidency(center);
-                DistantLoaders::tickResidencyAdmission(
-                    static_cast<double>(kDrainBudgetMs),
-                    kResidencyDrainBudgetBytes,
-                    kResidencyDrainBudgetResources
-                );
-                DistantLoaders::tickResidencyEviction(static_cast<double>(kDrainBudgetMs), kResidencyDrainBudgetResources);
-                if (DistantLoaders::residencyQuiescent()
-                    || HighResolutionTimer::getMilliseconds() - bootstrapStartMs >= kResidencyBootstrapTimeoutMs) {
-                    break;
-                }
-                Sleep(1);
-            }
-        }
-    }
-
-    const int uploadEndMs = HighResolutionTimer::getMilliseconds();
-    isDistantLandLoaded = true;
-    LOG::logline("-- Distant land upload completed in %d ms", uploadEndMs - uploadStartMs);
-    return true;
-}
-
 bool DistantLand::initIpc() {
     if (!IPC::initImports()) {
         LOG::logline("!! Distant land requires memory mapping APIs (MapViewOfFile3) that are not available on this system");
         return false;
     }
     return true;
-}
-
-bool DistantLand::initIpcBlocking() {
-    if (ipcClient.launchState() == IPC::Client::LaunchedPendingBootstrap && ipcClient.isServerActive()) {
-        if (ipcClient.waitForBootstrapReady() != IPC::Complete) {
-            return false;
-        }
-        ipcClient.markRuntimeActive();
-        LOG::logline("-- Reusing early-started 64-bit host process");
-    } else if (ipcClient.launchState() == IPC::Client::Inactive) {
-        if (!ipcClient.startServer("mgeHost64.exe")) {
-            return false;
-        }
-    }
-
-    if (!ipcClient.waitForOutputReady()) {
-        return false;
-    }
-    return initIpcVectors();
 }
 
 bool DistantLand::initIpcVectors() {
