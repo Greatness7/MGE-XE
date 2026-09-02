@@ -611,14 +611,15 @@ const GIB: u64 = 1024 * MIB;
 
 /// Fallback thresholds for when no GPU could be detected (rare, such as some
 /// virtual machines). Otherwise at risk of running low once Morrowind's own resources,
-/// MGE's render targets, and driver overhead are added on top of the generated
-/// set; picked to roughly match a 4 GB / 6 GB card, the low end still in use.
+/// MGE's render targets, and driver overhead are added on top of the always-resident
+/// part of the generated set; picked to roughly match a 4 GB / 6 GB card, the low end
+/// still in use.
 const HIGH_MEMORY_BYTES: u64 = 5 * GIB / 2;
 const VERY_HIGH_MEMORY_BYTES: u64 = 4 * GIB;
 
-/// How much the generated set is likely to strain the detected GPU. The
-/// thresholds are GUI policy: `distantland` reports bytes and takes no
-/// view on hardware.
+/// How much the always-resident part of the generated set is likely to strain
+/// the detected GPU. The thresholds are GUI policy: `distantland` reports bytes
+/// and takes no view on hardware.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemoryPressure {
     Normal,
@@ -627,15 +628,29 @@ enum MemoryPressure {
 }
 
 impl MemoryPressure {
-    /// Fraction of detected VRAM the generated set alone should stay under,
-    /// leaving room for Morrowind itself, MGE's render targets, and driver
-    /// overhead. The `VeryHigh` fraction is also where cell changes are most
-    /// likely to stall, since new distant-land buffers are allocated before
-    /// old ones are released.
+    /// Fraction of detected VRAM the always-resident part of the generated set
+    /// should stay under, leaving room for Morrowind itself, MGE's render
+    /// targets, and driver overhead.
     const HIGH_VRAM_FRACTION: f64 = 0.5;
     const VERY_HIGH_VRAM_FRACTION: f64 = 0.75;
 
-    fn classify(total_bytes: u64, vram_bytes: Option<u64>) -> Self {
+    /// Bytes that stay in VRAM for the whole session.
+    ///
+    /// Static geometry is excluded: the runtime streams merged statics in and
+    /// out under its own VRAM cap, so that row is elastic and cannot cause the
+    /// shortfall this warns about. The ordinary (unmerged) statics inside it do
+    /// stay resident, but they are a small remainder — 107 MiB against 3.15 GiB
+    /// of merged geometry on the largest set measured — far below the
+    /// resolution of these thresholds, and `distantland` does not report the
+    /// split here.
+    fn resident_bytes(estimate: DistantLandGpuMemoryEstimate) -> u64 {
+        estimate
+            .static_texture_bytes
+            .saturating_add(estimate.terrain_geometry_bytes)
+            .saturating_add(estimate.terrain_texture_bytes)
+    }
+
+    fn classify(estimate: DistantLandGpuMemoryEstimate, vram_bytes: Option<u64>) -> Self {
         let (high, very_high) = match vram_bytes {
             Some(vram) if vram > 0 => (
                 (vram as f64 * Self::HIGH_VRAM_FRACTION) as u64,
@@ -643,9 +658,10 @@ impl MemoryPressure {
             ),
             _ => (HIGH_MEMORY_BYTES, VERY_HIGH_MEMORY_BYTES),
         };
-        if total_bytes >= very_high {
+        let resident_bytes = Self::resident_bytes(estimate);
+        if resident_bytes >= very_high {
             Self::VeryHigh
-        } else if total_bytes >= high {
+        } else if resident_bytes >= high {
             Self::High
         } else {
             Self::Normal
@@ -721,7 +737,7 @@ fn render_memory_report(ui: &mut Ui, gpu_memory: Option<DistantLandGpuMemoryEsti
         }
     });
 
-    if let Some((color, message)) = MemoryPressure::classify(estimate.total_bytes(), vram_bytes).warning(vram_bytes) {
+    if let Some((color, message)) = MemoryPressure::classify(estimate, vram_bytes).warning(vram_bytes) {
         ui.add_space(8.0);
         ui.colored_label(color, message);
     }
@@ -802,33 +818,71 @@ mod tests {
         assert_eq!(format_binary_size(u64::MAX), "17179869184.00 GiB");
     }
 
+    /// An estimate whose always-resident part is exactly `resident`, with a
+    /// large streamed static-geometry row that must not affect the outcome.
+    fn resident(resident: u64) -> DistantLandGpuMemoryEstimate {
+        DistantLandGpuMemoryEstimate {
+            static_geometry_bytes: 8 * GIB,
+            static_texture_bytes: resident,
+            terrain_geometry_bytes: 0,
+            terrain_texture_bytes: 0,
+        }
+    }
+
     #[test]
     fn memory_pressure_falls_back_to_fixed_bytes_without_a_detected_gpu() {
-        assert_eq!(MemoryPressure::classify(0, None), MemoryPressure::Normal);
-        assert_eq!(MemoryPressure::classify(HIGH_MEMORY_BYTES - 1, None), MemoryPressure::Normal);
-        assert_eq!(MemoryPressure::classify(HIGH_MEMORY_BYTES, None), MemoryPressure::High);
+        assert_eq!(MemoryPressure::classify(resident(0), None), MemoryPressure::Normal);
         assert_eq!(
-            MemoryPressure::classify(VERY_HIGH_MEMORY_BYTES - 1, None),
+            MemoryPressure::classify(resident(HIGH_MEMORY_BYTES - 1), None),
+            MemoryPressure::Normal
+        );
+        assert_eq!(
+            MemoryPressure::classify(resident(HIGH_MEMORY_BYTES), None),
             MemoryPressure::High
         );
         assert_eq!(
-            MemoryPressure::classify(VERY_HIGH_MEMORY_BYTES, None),
+            MemoryPressure::classify(resident(VERY_HIGH_MEMORY_BYTES - 1), None),
+            MemoryPressure::High
+        );
+        assert_eq!(
+            MemoryPressure::classify(resident(VERY_HIGH_MEMORY_BYTES), None),
             MemoryPressure::VeryHigh
         );
-        assert_eq!(MemoryPressure::classify(u64::MAX, None), MemoryPressure::VeryHigh);
+        assert_eq!(MemoryPressure::classify(resident(u64::MAX), None), MemoryPressure::VeryHigh);
         // A GPU report of exactly zero bytes is treated the same as "unknown"
         // rather than making every generated set look infinitely oversized.
-        assert_eq!(MemoryPressure::classify(1, Some(0)), MemoryPressure::Normal);
+        assert_eq!(MemoryPressure::classify(resident(1), Some(0)), MemoryPressure::Normal);
     }
 
     #[test]
     fn memory_pressure_thresholds_scale_with_detected_vram() {
         let vram = 8 * GIB;
-        assert_eq!(MemoryPressure::classify(0, Some(vram)), MemoryPressure::Normal);
-        assert_eq!(MemoryPressure::classify(vram / 2 - 1, Some(vram)), MemoryPressure::Normal);
-        assert_eq!(MemoryPressure::classify(vram / 2, Some(vram)), MemoryPressure::High);
-        assert_eq!(MemoryPressure::classify(vram * 3 / 4 - 1, Some(vram)), MemoryPressure::High);
-        assert_eq!(MemoryPressure::classify(vram * 3 / 4, Some(vram)), MemoryPressure::VeryHigh);
+        assert_eq!(MemoryPressure::classify(resident(0), Some(vram)), MemoryPressure::Normal);
+        assert_eq!(
+            MemoryPressure::classify(resident(vram / 2 - 1), Some(vram)),
+            MemoryPressure::Normal
+        );
+        assert_eq!(MemoryPressure::classify(resident(vram / 2), Some(vram)), MemoryPressure::High);
+        assert_eq!(
+            MemoryPressure::classify(resident(vram * 3 / 4 - 1), Some(vram)),
+            MemoryPressure::High
+        );
+        assert_eq!(
+            MemoryPressure::classify(resident(vram * 3 / 4), Some(vram)),
+            MemoryPressure::VeryHigh
+        );
+    }
+
+    /// Streamed static geometry is the largest row in a big generated set and
+    /// must not decide the warning on its own.
+    #[test]
+    fn static_geometry_alone_never_raises_the_pressure() {
+        let estimate = DistantLandGpuMemoryEstimate {
+            static_geometry_bytes: u64::MAX,
+            ..Default::default()
+        };
+        assert_eq!(MemoryPressure::classify(estimate, Some(4 * GIB)), MemoryPressure::Normal);
+        assert_eq!(MemoryPressure::classify(estimate, None), MemoryPressure::Normal);
     }
 
     #[test]
@@ -842,11 +896,14 @@ mod tests {
         assert!(!message.is_empty());
     }
 
-    /// A concrete worked example: a 4.33 GiB set is 72% of a 6 GiB card,
-    /// high but under the 75% very-high threshold. It is 108% of a 4 GiB
-    /// card, well past it.
+    /// A concrete worked example, and the regression this classification
+    /// exists to prevent: a 4.33 GiB set is 108% of a 4 GiB card and used to
+    /// raise the red warning there, but 89% of it is static geometry the
+    /// runtime streams. Only 726 MiB has to stay resident, which that card
+    /// takes comfortably. A 1 GiB card is where the resident part starts to
+    /// crowd out the game.
     #[test]
-    fn a_four_gibibyte_set_scales_from_high_to_very_high_with_a_smaller_card() {
+    fn a_four_gibibyte_set_is_judged_by_the_part_that_stays_resident() {
         let estimate = DistantLandGpuMemoryEstimate {
             static_geometry_bytes: 3_886_192_000,
             static_texture_bytes: 242_221_056,
@@ -855,13 +912,9 @@ mod tests {
         };
 
         assert_eq!(format_binary_size(estimate.total_bytes()), "4.33 GiB");
-        assert_eq!(
-            MemoryPressure::classify(estimate.total_bytes(), Some(6 * GIB)),
-            MemoryPressure::High
-        );
-        assert_eq!(
-            MemoryPressure::classify(estimate.total_bytes(), Some(4 * GIB)),
-            MemoryPressure::VeryHigh
-        );
+        assert_eq!(format_binary_size(MemoryPressure::resident_bytes(estimate)), "726 MiB");
+        assert_eq!(MemoryPressure::classify(estimate, Some(6 * GIB)), MemoryPressure::Normal);
+        assert_eq!(MemoryPressure::classify(estimate, Some(4 * GIB)), MemoryPressure::Normal);
+        assert_eq!(MemoryPressure::classify(estimate, Some(GIB)), MemoryPressure::High);
     }
 }
