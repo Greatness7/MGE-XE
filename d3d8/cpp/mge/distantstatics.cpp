@@ -974,6 +974,10 @@ bool DistantLand::stepStaticsPhase(int budgetMs, bool& phaseDone) {
                 return false;
             }
 
+            // Cleared per static, not carried: a static with no subsets never reaches the
+            // homogeneity check below and would otherwise inherit the previous static's class.
+            L.currentStaticMerged = false;
+
             L.runtimeStatic = {};
             L.runtimeStatic.type = StaticMeshesBin::ToRuntimeStaticType(staticRecord.static_type);
             L.runtimeStatic.sphere = staticRecord.sphere.toRuntime();
