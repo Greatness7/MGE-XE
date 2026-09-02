@@ -4,7 +4,8 @@ This document describes the landed startup, upload, readiness, and failure
 lifecycle for distant land. Rendering details are in
 [render-pipeline.md](render-pipeline.md); generated payloads are in
 [distantland-data.md](distantland-data.md); host transport is in
-[ipc.md](ipc.md).
+[ipc.md](ipc.md); merged-static streaming after upload is in
+[distant-static-residency.md](distant-static-residency.md).
 
 ## State and readiness
 
@@ -72,6 +73,7 @@ HostWait
   -> Statics
   -> Grass
   -> StaticsHostWait
+  -> ResidencyFullDrain | ResidencyBootstrap
   -> Done
 ```
 
@@ -85,7 +87,9 @@ The phases have the following contracts:
 | `Landscape` | Validate and upload terrain resources, then leave `InitLandscape` in flight while the host builds its land quadtree. |
 | `Statics` | Preflight all 128 static shards and advance the resumable `StaticsLoader` in budgeted slices. Before sending static metadata, collect the landscape RPC result. |
 | `Grass` | Create grass instance resources while the host handles the asynchronous `InitDistantStatics` request. |
-| `StaticsHostWait` | Poll the static/grass quadtree build, then free its temporary shared vectors. |
+| `StaticsHostWait` | Poll the static/grass quadtree build, then free its temporary shared vectors. Select the merged-static streaming cap, which decides which of the two residency phases follows. |
+| `ResidencyFullDrain` | The cap clears the merged dataset: upload every merged subset in shard-file order in budgeted slices, leaving the planner disabled. |
+| `ResidencyBootstrap` | The cap binds: drain the nearest ring around the player before rendering. Capped at 5 s, after which the session enters with pop-in rather than stalling the load screen. |
 | `Done` | Set `uploadComplete`, stop the pump, and attempt the readiness transition. |
 
 The host starts its IPC server before the startup-generation worker finishes.
@@ -116,7 +120,8 @@ phases sleep briefly between polls so the drain does not busy-spin.
 When the pump was already complete, the callback only supplies the second gate
 and the render path enables immediately. When a later save is loaded while the
 renderer is already `RenderReady`, the callback re-resolves dynamic-visibility
-groups for the new world.
+groups for the new world, and arms a merged-static residency transition toward the resolved player
+position. Arming only: the next load-screen `Present` starts the epoch and does bounded work.
 
 ## Renderer restart and teardown
 

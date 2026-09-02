@@ -21,6 +21,8 @@ This document is the architecture reference. Subsystem deep-dives live in
   formats, and the generation pipeline.
 - [`distantland-lifecycle.md`](docs/architecture/distantland-lifecycle.md) — startup upload,
   host/output overlap, readiness gating, load-path drain, and failure behavior.
+- [`distant-static-residency.md`](docs/architecture/distant-static-residency.md) — merged-static
+  VRAM streaming: cap selection, the two schedules, resource lifetime, and known limits.
 - [`static-lod.md`](docs/architecture/static-lod.md) — component-preserving visibility LOD
   inside merged distant-static batches.
 - [`horizon-culling.md`](docs/architecture/horizon-culling.md) — implemented terrain horizon-culling
@@ -473,7 +475,8 @@ These constants gate interop and must move together:
 | `MGE_DL_VERSION` (18) | `mgeversion.h` (distantland data compat) | Generator output `version` file plus Rust-host and C++ runtime copies. `MGEXEgui` keeps no copy — it uses `distantland::MGE_DL_VERSION`. Tests in `mgeHost64/src/abi/constants.rs` pin both copies to the generator, and `dl-contract-test` independently compares its linked C++ value with the generator constant at runtime |
 | IPC ABI structs | `d3d8/cpp/ipc/bridge.h` | `mgeHost64/src/abi/*` + `layout_tests.rs` |
 | `terrain.bin` layout | `d3d8/cpp/mge/dlformat.h` (`TerrainBin`) + static asserts | `mgeHost64/src/abi/terrain.rs`, `distantland` writer, [`terrain-bin.md`](docs/architecture/terrain-bin.md) |
-| Fixed `static_meshes_000..127` v5 layout/order | `d3d8/cpp/mge/dlformat.h` (`StaticMeshesBin`), `d3d8/cpp/mge/distantinit.cpp` | `distantland` writer; client loader builds concatenated `DistantSubset` records consumed by host `state/loading.rs` |
+| Fixed `static_meshes_000..127` v6 layout/order | `d3d8/cpp/mge/dlformat.h` (`StaticMeshesBin`), `d3d8/cpp/mge/distantinit.cpp` | `distantland` writer; client loader builds concatenated `DistantSubset` records consumed by host `state/loading.rs` |
+| UV-bound palette cap (128) | `distantland` `UV_BOUND_PALETTE_CAP`, `dlformat.h` `StaticMeshesBin::MaxPaletteEntries` | `uvBoundPalette[128]` in `assets/Data Files/shaders/core/XE Common.fx`. Rust and C++ disagreeing fails at load; HLSL disagreeing does not, so all three sites cross-reference each other |
 | Host exit codes | `mgeHost64/src/error.rs` | C++ launcher interpretation |
 | Core shader passes/variables | `d3d8/cpp/mge/distantshader.h`, `distantland.h` handles | `assets/Data Files/shaders/core/*.fx` |
 
@@ -504,6 +507,7 @@ Every doc in the repository. The runtime deep-dives are also linked from the top
 | [`shadows.md`](docs/architecture/shadows.md) | Two-cascade ESM sun shadows: atlas, cascade fitting, casters vs receivers, config and runtime control. |
 | [`distantland-data.md`](docs/architecture/distantland-data.md) | Generated data set under `Data Files\distantland`: inventory, producers, consumers, formats. |
 | [`distantland-lifecycle.md`](docs/architecture/distantland-lifecycle.md) | Startup upload, overlap, readiness, drain, restart, and failure contract. |
+| [`distant-static-residency.md`](docs/architecture/distant-static-residency.md) | Merged-static VRAM streaming: cap selection, schedules, resource lifetime, admission/eviction, known limits. |
 | [`static-lod.md`](docs/architecture/static-lod.md) | Implemented cumulative visibility LOD for merged static batches. |
 | [`terrain-bin.md`](docs/architecture/terrain-bin.md) | Byte-level `terrain.bin` contract. |
 | [`horizon-culling.md`](docs/architecture/horizon-culling.md) | Implemented terrain horizon-culling architecture and operational contract. |

@@ -1,12 +1,13 @@
 # DXVK Morrowind interop
 
 Scope: the private COM ABI for native PPL, MSAA depth resolve, and device-local memory budget data.
-State: Phase 4 memory-budget interface implemented in both worktrees; in-game validation pending.
-Next action: deploy the matching `d3d9.dll` and `d3d8.dll`, then validate fitting and constrained-VRAM schedules.
+State: shipping and in sync. Native PPL, MSAA depth resolve, and the memory-budget interface are
+all validated in-game, the last on both fitting and constrained-VRAM schedules.
+Next action: none. Re-verify the header hashes whenever either side changes.
 Contract: `dxvk_morrowind_interop.h` and `dxvk_morrowind_limits.h` stay byte-identical in both repos.
 Compatibility: new services get separate versioned IIDs; do not extend an existing interface in place.
-MGE-XE inspected: 2026-08-29, `fix/vram-usage` @ `69a0ff55331a3322d27a3a71962495b2cdcbccc2`.
-DXVK inspected: 2026-08-29, `mge-xe` @ `b5e88865e301f1cbe4a957660382625f457dd703`.
+MGE-XE inspected: 2026-09-02, `fix/vram-usage`.
+DXVK inspected: 2026-08-30, `Greatness7/dxvk` `mge-xe` @ `6c15b5f1`.
 Verification: focused i686 MGE check and 32-bit DXVK D3D9 build pass; header hash check required after edits.
 
 ## The contract
@@ -59,7 +60,8 @@ The memory interface is separate because adding a method to either older interfa
 its vtable for existing clients. It has no capability bit and does not change
 `DXVK_MORROWIND_INTEROP_VERSION`: successful `QueryInterface` plus a successful method call is the
 negotiation. Stock/native D3D9, an older fork, a missing device-local buffer heap, or a zero budget
-falls back to infinite-cap ordered full residency.
+falls back to infinite-cap ordered full residency. How that budget becomes a streaming cap is in
+[distant-static-residency.md](distant-static-residency.md).
 
 Capability bits (`dxvk_morrowind_interop.h:16-24`):
 

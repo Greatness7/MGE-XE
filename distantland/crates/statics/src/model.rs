@@ -66,6 +66,11 @@ pub fn passes_static_min_radius(distant_static: &DistantStatic, min_radius: f32,
 }
 
 /// UV bounds assigned after atlas packing for one vertex.
+///
+/// The field order is deliberate and must not be tidied into `min_x, min_y, max_x, max_y`. The
+/// static vertex shaders read the packed bound as `.zx` for the minimum and `.yw` for the maximum
+/// (`XE Mod Statics.fx`, `XE Shadowmap.fx`), which this order is chosen to satisfy. Reordering it
+/// breaks rendering with no compile error and no failing test.
 #[derive(Pod, Zeroable, Clone, Copy, Default, PartialEq)]
 #[repr(C)]
 pub struct UvBound {
