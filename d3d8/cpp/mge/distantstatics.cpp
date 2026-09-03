@@ -1765,8 +1765,8 @@ StaticResource* findResource(std::uint32_t resourceId) {
     return resource.resourceId == resourceId ? &resource : nullptr;
 }
 
-// Submits one acknowledged batch of state transitions. Returns false when the RPC did not
-// complete, in which case the caller must not release anything.
+// Submits one acknowledged batch of state transitions. Returns false unless the RPC completes
+// and the host reports success; callers must not release anything after a false result.
 bool commitResidency(const std::vector<IPC::ResidencyCommit>& commits) {
     if (commits.empty()) {
         return true;
@@ -2440,8 +2440,9 @@ void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uin
 }
 
 // Acknowledged removal at a quiescent boundary. Release is forbidden unless the removal RPC
-// returns Complete: on timeout or server loss the buffers, palette and ledger bytes stay in
-// removal-in-flight and residency freezes for the device session.
+// returns Complete and the host reports success: on timeout, server loss or host rejection the
+// buffers, palette and ledger bytes stay in removal-in-flight and residency freezes for the device
+// session.
 bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
     if (!residencyActive() || (residencyEvictQueue.empty() && residencyRemovalInFlight.empty())) {
         return false;

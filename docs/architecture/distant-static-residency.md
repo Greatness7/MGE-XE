@@ -76,9 +76,10 @@ Interlocks that are not visible at the call site:
 - **The client is the sole byte-ledger authority.** `logicalReservedMergedBytes` covers io-queued
   through removal-in-flight and is decremented only after `Release`. The host tracks spatial
   priority and committed resident state — no mirrored byte total, no admission reservation.
-- **`Release` is forbidden until the removal RPC returns `Complete`.** On timeout or server loss the
-  buffers, palette entry and ledger bytes stay in removal-in-flight; three failures freeze residency
-  for the device session rather than risk handing a live host a stale pointer.
+- **`Release` is forbidden until the removal RPC returns `Complete` and the host reports success.**
+  On timeout, server loss, or host rejection the buffers, palette entry and ledger bytes stay in
+  removal-in-flight; three failures freeze residency for the device session rather than risk
+  handing a live host a stale pointer.
 - **D3D calls stay on Morrowind's main thread.** The I/O worker may read and reorder bytes; it may
   not create, lock, unlock, or release a D3D resource.
 - **`staticUvBoundPalettes` shares its VB's lifetime** — insert after a streamed VB is created,
