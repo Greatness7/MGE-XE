@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Distant statics now stream in and out as you travel instead of all loading at startup.
+  This means VRAM usage no longer scales with the size of your mod list.
+
+### Changed
+
+- Distant statics use about 23% less video memory and disk space.
+- `MGE_DL_VERSION` 17 to 18. Distant land must be regenerated after updating.
+
+### Fixed
+
+- Fixed a crash caused by the distant object list being read one entry past its end, drawing a
+  leftover object from an earlier frame. The bug predates the fork; it only became a crash once
+  distant statics started streaming.
+- Water reflections no longer render half-finished for a frame when distant land is busy.
+- The generator's memory warnings no longer count streamed geometry against your card, so large
+  installs stop being told to reduce settings that are fine as they are.
+
 ## v0.20.3 beta
 
 ### Fixed
