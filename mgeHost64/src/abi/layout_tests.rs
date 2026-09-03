@@ -72,6 +72,7 @@ fn abi_layout_matches_cpp_contract() {
     assert_eq!(offset_of!(TerrainMeshHeader, triangle_count), 44);
     assert_eq!(offset_of!(SetWorldSpaceParameters, cellname), 0);
     assert_eq!(offset_of!(SetWorldSpaceParameters, cell_found), 64);
+    assert_eq!(offset_of!(PlanResidencyParameters, view_heading_bin), 36);
     assert_eq!(offset_of!(PlanResidencyParameters, cap_bytes), 40);
     assert_eq!(offset_of!(PlanResidencyParameters, available_bytes), 48);
     assert_eq!(offset_of!(PlanResidencyParameters, cap_debt_bytes), 56);

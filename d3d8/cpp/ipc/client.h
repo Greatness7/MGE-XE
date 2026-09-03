@@ -203,6 +203,7 @@ namespace IPC {
 			float retainRadius,
 			std::uint32_t maxCells,
 			std::uint32_t maxResources,
+			std::uint32_t viewHeadingBin,
 			std::uint64_t capBytes,
 			std::uint64_t availableBytes,
 			std::uint64_t capDebtBytes

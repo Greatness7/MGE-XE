@@ -21,6 +21,7 @@
 #include <optional>
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -52,7 +53,7 @@ namespace DistantLoaders {
     bool residencyQuiescent();
     void noteResidencyPresent();
     void noteResidencyEvictionBoundary(bool stage0);
-    void planResidency(const D3DXVECTOR3& center);
+    void planResidency(const D3DXVECTOR3& center, std::uint32_t viewHeadingBin);
     void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uint32_t budgetResources);
     bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources);
     void logResidencySummary();
@@ -1748,6 +1749,34 @@ void DistantLand::evictResidencyAtStage0() {
     }
 }
 
+namespace {
+
+// Quantizes the horizontal camera view vector into 32 heading bins [0..=31], encoded as wire values 1..=32.
+// Bin b covers [b * 2pi/32, (b+1) * 2pi/32). Wire value 0 means no valid hint.
+// Paired with Rust decode_heading_bin / heading_vector in mgeHost64/src/state/distant_land.rs.
+std::uint32_t quantizeViewHeadingBin(const D3DXVECTOR4& eye) {
+    const float horizSq = eye.x * eye.x + eye.y * eye.y;
+    constexpr float kHorizEpsilonSq = 1e-4f;
+    if (horizSq <= kHorizEpsilonSq) {
+        return 0;
+    }
+
+    constexpr float kTwoPi = 6.28318530717958647692f;
+    float angle = std::atan2(eye.y, eye.x);
+    if (angle < 0.0f) {
+        angle += kTwoPi;
+    }
+    if (!(angle >= 0.0f && angle < kTwoPi)) {
+        // Rounding at the wrap point, or a non-finite view vector that slipped the gate above.
+        return 0;
+    }
+
+    const std::uint32_t bin = std::min(static_cast<std::uint32_t>(angle * (32.0f / kTwoPi)), 31u);
+    return bin + 1;
+}
+
+} // namespace
+
 // End-of-frame residency tick, after rendering has ended. Admission is always safe here; the
 // eviction fallback runs only on frames that never reached renderStage0 (menu/load screens).
 void DistantLand::tickResidency(bool stage0RanThisFrame) {
@@ -1777,7 +1806,8 @@ void DistantLand::tickResidency(bool stage0RanThisFrame) {
 
     float position[3] = {};
     if (MWBridge::get()->tryGetPlayerPosition(position)) {
-        DistantLoaders::planResidency(D3DXVECTOR3(position[0], position[1], position[2]));
+        const std::uint32_t viewHeadingBin = stage0RanThisFrame ? quantizeViewHeadingBin(eyeVec) : 0;
+        DistantLoaders::planResidency(D3DXVECTOR3(position[0], position[1], position[2]), viewHeadingBin);
     }
 
     DistantLoaders::tickResidencyAdmission(
@@ -2012,7 +2042,7 @@ void DistantLand::pumpUploadTick(int budgetMs) {
             }
 
             const D3DXVECTOR3 center(position[0], position[1], position[2]);
-            DistantLoaders::planResidency(center);
+            DistantLoaders::planResidency(center, 0);
             DistantLoaders::tickResidencyAdmission(
                 static_cast<double>(budgetMs),
                 kResidencyDrainBudgetBytes,

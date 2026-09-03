@@ -153,7 +153,7 @@ pub struct PlanResidencyParameters {
     pub retain_radius: f32,
     pub max_cells: u32,
     pub max_resources: u32,
-    pub reserved: u32,
+    pub view_heading_bin: u32,
     pub cap_bytes: u64,
     pub available_bytes: u64,
     pub cap_debt_bytes: u64,

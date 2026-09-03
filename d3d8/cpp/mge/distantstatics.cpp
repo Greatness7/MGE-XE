@@ -2266,7 +2266,7 @@ void wakeResidencyForCapDebt() {
 
 // Asks the host for the next bounded batch of admit/evict requests around `center`.
 // A quantized cell change starts a new plan epoch, cancelling superseded queued I/O.
-void planResidency(const D3DXVECTOR3& center) {
+void planResidency(const D3DXVECTOR3& center, std::uint32_t viewHeadingBin) {
     if (!residencyActive() || DistantLand::residencyPlanSharedId == IPC::InvalidVector) {
         return;
     }
@@ -2302,6 +2302,7 @@ void planResidency(const D3DXVECTOR3& center) {
             retainRadius,
             kPlannerMaxCells,
             kPlannerMaxResources,
+            viewHeadingBin,
             activeMergedCapBytes(),
             availableMergedBytes(),
             mergedCapDebtBytes())) {

@@ -17,7 +17,7 @@ residency is in [distantland-lifecycle.md](distantland-lifecycle.md); the transp
 | `d3d8/cpp/mge/distantstatics.cpp` | The whole client runtime: resource catalog, I/O worker, admission, eviction, ledger, transition instrumentation. |
 | `d3d8/cpp/mge/distantinit.cpp` | Cap selection and resampling, the pump's drain/bootstrap phases, the per-frame `tickResidency`. |
 | `d3d8/cpp/mge/distantland.h` | Budgets, radii, timeouts, and the cap state (lines ~123-141). |
-| `mgeHost64/src/state/distant_land.rs` | Residency resource index, cell buckets, `plan_residency`. |
+| `mgeHost64/src/state/distant_land.rs` | Residency resource index, cell buckets, admission-order partition, `plan_residency`. |
 | `mgeHost64/src/ipc/server.rs` | `update_residency`, `plan_residency` command handlers. |
 | `mgeHost64/src/abi/protocol.rs` | `ResidencyPlan`, `ResidencyCommit`, `PlanResidencyParameters`. |
 
@@ -94,12 +94,17 @@ Interlocks that are not visible at the call site:
 
 ## Admission and eviction
 
-Residency is **radial and never frustum-aware**: camera rotation causes no admission and no
-eviction. Admission is nearest-cell-first with ring completion — `ensure_residency_offsets` sorts
-cell offsets by `(x*x + y*y, y, x)` and `plan_residency` walks that order through
-`planner_offset_cursor` — so every cell at radius R is admitted before any cell at R+1, including
-cells behind the player. `admissionRadius` is `DrawDist * kCellSize + kCellSize`; the retain radius
+Residency **membership** is radial and never frustum-aware: which cells are eligible, and which
+resident is evicted, depend only on distance. `ensure_residency_offsets` sorts cell offsets by
+`(x*x + y*y, y, x)`, `admissionRadius` is `DrawDist * kCellSize + kCellSize`, and the retain radius
 is one cell beyond it, giving the hysteresis that stops a boundary from thrashing.
+
+Admission **order** within that set is camera-biased. `plan_residency` walks `planner_order` — a
+mutable permutation of indices into `residency_offsets`, partitioned so that every cell in front of
+the camera precedes every cell that is not — through `planner_offset_cursor`. Rotation therefore
+changes which eligible candidate is admitted next, and can change which resident an admission
+displaces, but it can never admit a cell outside the admission radius nor evict one inside the
+retain radius. See [Camera-biased admission order](#camera-biased-admission-order) below.
 
 When a candidate does not fit the client's headroom, `farthest_replaceable` picks the resident
 resource furthest from the player to displace it. It searches `resident_streamable`, not
@@ -128,6 +133,55 @@ render RPC is outstanding, because every residency RPC begins with a blocking wa
 against a byte allowance it never approached, and the far band never became resident at draw
 distance 24. 16 is sized so a frame's admissions (~29 KB mean subset) still sit well inside the
 2 MiB guard.
+
+### Camera-biased admission order
+
+The partition is absolute rather than weighted: a forward cell at maximum radius precedes a
+non-forward cell one step away. That is what makes the ordering visible in game, and also why a
+camera pointed opposite its travel direction pays the most for it.
+
+- `residency_offsets` is canonical and stays radial. `planner_order` indexes into it and is always a
+  permutation of `0..len` with `planner_order.len() == residency_offsets.len()`;
+  `planner_order_scratch` is the reused stable-partition workspace.
+- Heading arrives as `PlanResidencyParameters::view_heading_bin`: `0` means no valid hint, `1..=32`
+  encode bins `0..=31`, and any other value is treated as `0`. C++ quantizes
+  `atan2(eyeVec.y, eyeVec.x)` and sends `0` when the horizontal component is under epsilon, so
+  looking straight up or down does not encode a false east heading.
+- A heading change mid-sweep repartitions only `planner_order[min(cursor + 1, len)..]`. The current
+  offset is pinned unconditionally, because `planner_bucket_cursor == 0` cannot distinguish an
+  untouched cell from a candidate deliberately rolled back after an eviction, and moving an
+  eviction-funded candidate wastes that eviction.
+- Rotation must not repartition once `planner_offset_cursor >= len`. A parked planner has no pending
+  tail, and this guard is what keeps a session whose cap does not bind from doing needless work.
+- A new epoch or cell adopts the supplied heading (radial when it is zero) and rebuilds the whole
+  order. A zero hint *within* an epoch keeps the last valid heading, so menu and non-Stage0 ticks do
+  not discard gameplay order. These canonical rebuilds bound any radial segmentation left by
+  repeated mid-sweep rotations; it never survives a cell crossing or an admitting rewind.
+- `rebuild_residency_index` retains `residency_offsets`, so it must explicitly clear
+  `planner_heading_bin` and restore `planner_order` to canonical radial indices.
+- Bootstrap stays radial. `eyeVec` is not reliable before Stage0, so the hint is supplied only from
+  end-of-frame planning with `stage0RanThisFrame` set.
+
+Rejected shapes: a heap or balanced tree still needs every heading-dependent key updated; a
+two-phase forward-then-all traversal cannot promote cells already swept into the consumed prefix
+after a 180-degree turn; precomputed per-heading permutations need visited bookkeeping to switch
+mid-sweep.
+
+Measured 2026-09-03 on `fix/vram-usage` at a forced 320 MB cap, comparing two host builds that
+differ only in whether the partition runs, over byte-identical position streams:
+
+| Camera vs. travel | Evictions | Median frame time |
+| --- | --- | --- |
+| Aligned | -8.6% | +10.2% |
+| 90 degrees | +12.4% | +4.1% |
+| Opposed | +35.0% | -1.5% |
+| Spinning, 30 deg/s | +12 to +20% | +1.9% |
+
+Divergence cost is close to linear in angle, with break-even somewhere around 35-50 degrees. The
+eviction rise is not thrash: a blind side-by-side A/B on the aligned and spinning routes picked the
+biased build in all three pairs, and the spinning route has both the worst churn numbers and a clear
+visual win. Resident bytes sit at the cap in every arm, so the frame-time cost is distant geometry
+actually being drawn rather than planner overhead.
 
 ## Reading the logs
 
@@ -159,7 +213,8 @@ distance 24. 16 is sized so a frame's admissions (~29 KB mean subset) still sit 
 Understood and accepted; each fails soft.
 
 - **Residency plans around the player; rendering follows the camera.** All three planner sites use
-  `MWBridge::tryGetPlayerPosition`, while `eyePos` comes from the inverse view matrix. Vanity,
+  `MWBridge::tryGetPlayerPosition`, while `eyePos` comes from the inverse view matrix. Camera
+  *facing* does reach the planner, since it orders admission; camera *position* does not. Vanity,
   third-person and MGE zoom offsets are absorbed by the `+ kCellSize` term in `admissionRadius` —
   hundreds of units against 8192 — but an MWSE cutscene camera diverges without bound and can frame
   merged statics the planner never admitted. Substituting `eyePos` is not the fix: it is unset

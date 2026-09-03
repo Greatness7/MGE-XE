@@ -1221,7 +1221,7 @@ fn plan_params(max_resources: u32) -> PlanResidencyParameters {
         retain_radius: 16384.0,
         max_cells: 64,
         max_resources,
-        reserved: 0,
+        view_heading_bin: 0,
         cap_bytes: u64::MAX,
         available_bytes: u64::MAX,
         cap_debt_bytes: 0,
@@ -1388,4 +1388,405 @@ fn an_eviction_candidate_is_found_past_unstreamable_filler() {
     assert_eq!(plans.len(), 1, "no eviction was planned: {plans:?}");
     assert_eq!(plans[0].action, ResidencyPlanAction::Evict as u32);
     assert_eq!(plans[0].resource_id, 200);
+}
+
+fn assert_planner_order_is_permutation(state: &DistantLandState) {
+    assert_eq!(
+        state.planner_order.len(),
+        state.residency_offsets.len(),
+        "planner_order length must match residency_offsets length"
+    );
+    let mut sorted = state.planner_order.clone();
+    sorted.sort_unstable();
+    let expected: Vec<u32> = (0..state.residency_offsets.len() as u32).collect();
+    assert_eq!(sorted, expected, "planner_order must be a permutation of 0..len");
+}
+
+fn residency_state_in_cells(cell_offsets: &[(i32, i32)]) -> DistantLandState {
+    const CELL_SIZE: f32 = 8192.0;
+    let mut state = DistantLandState::new(Configuration::default());
+    state.world_space_indices.insert(CellName::EXTERIOR, 0);
+    state.world_spaces.push(WorldSpace::default());
+    state.current_world_space = Some(0);
+    state.residency_resources = cell_offsets
+        .iter()
+        .map(|&(cx, cy)| ResidencyResource {
+            geometry_bytes: 1024,
+            streamable: true,
+            center: D3dxVector3 {
+                x: cx as f32 * CELL_SIZE + 100.0,
+                y: cy as f32 * CELL_SIZE + 100.0,
+                z: 0.0,
+            },
+            ..ResidencyResource::default()
+        })
+        .collect();
+    state.rebuild_residency_index();
+    state
+}
+
+#[test]
+fn zero_or_invalid_heading_preserves_radial_order() {
+    let mut state = residency_state_in_cells(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+
+    let mut params = plan_params(4);
+    params.view_heading_bin = 0;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(state.planner_heading_bin, None);
+    assert_eq!(
+        state.planner_order,
+        (0..state.residency_offsets.len() as u32).collect::<Vec<_>>()
+    );
+    assert_planner_order_is_permutation(&state);
+
+    params.plan_epoch += 1;
+    params.view_heading_bin = 99;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(state.planner_heading_bin, None);
+    assert_eq!(
+        state.planner_order,
+        (0..state.residency_offsets.len() as u32).collect::<Vec<_>>()
+    );
+    assert_planner_order_is_permutation(&state);
+}
+
+fn assert_forward_first(state: &DistantLandState, heading: (f32, f32)) {
+    assert_planner_order_is_permutation(state);
+
+    let mut seen_non_forward = false;
+    let mut forward_indices = Vec::new();
+    let mut non_forward_indices = Vec::new();
+
+    for &idx in &state.planner_order {
+        let offset = state.residency_offsets[idx as usize];
+        let forward = is_offset_forward(offset, heading);
+        if forward {
+            assert!(
+                !seen_non_forward,
+                "forward cell came after non-forward cell in planner_order"
+            );
+            forward_indices.push(idx);
+        } else {
+            seen_non_forward = true;
+            non_forward_indices.push(idx);
+        }
+    }
+    assert!(!forward_indices.is_empty(), "expected forward cells");
+    assert!(!non_forward_indices.is_empty(), "expected non-forward cells");
+
+    // Canonical radial order equivalence: residency_offsets is canonically sorted by radial distance,
+    // so an ascending index sequence within a group proves canonical radial ordering.
+    let mut sorted_fwd = forward_indices.clone();
+    sorted_fwd.sort_unstable();
+    assert_eq!(
+        forward_indices, sorted_fwd,
+        "forward group must be in canonical radial order (ascending indices)"
+    );
+
+    let mut sorted_non_fwd = non_forward_indices.clone();
+    sorted_non_fwd.sort_unstable();
+    assert_eq!(
+        non_forward_indices, sorted_non_fwd,
+        "non-forward group must be in canonical radial order (ascending indices)"
+    );
+}
+
+#[test]
+fn zero_or_invalid_heading_during_same_epoch_preserves_existing_heading_and_order() {
+    let mut state = residency_state_in_cells(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+
+    // Establish an initial heading (East, bin 0, wire 1)
+    let mut params = plan_params(1);
+    params.view_heading_bin = 1;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(state.planner_heading_bin, Some(0));
+
+    let order_snapshot = state.planner_order.clone();
+
+    // Call again in the SAME epoch with zero hint (e.g. menu frame or non-Stage0 tick)
+    params.view_heading_bin = 0;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(
+        state.planner_heading_bin,
+        Some(0),
+        "zero hint during same epoch must not clear planner_heading_bin"
+    );
+    assert_eq!(
+        state.planner_order, order_snapshot,
+        "zero hint during same epoch must not repartition planner_order"
+    );
+
+    // Call again in the SAME epoch with an invalid heading (> 32)
+    params.view_heading_bin = 99;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(
+        state.planner_heading_bin,
+        Some(0),
+        "invalid hint during same epoch must not clear planner_heading_bin"
+    );
+    assert_eq!(
+        state.planner_order, order_snapshot,
+        "invalid hint during same epoch must not repartition planner_order"
+    );
+    assert_planner_order_is_permutation(&state);
+}
+
+#[test]
+fn full_headed_rebuild_emits_forward_cells_first_and_is_deterministic() {
+    let mut state = residency_state_in_cells(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+
+    let mut params = plan_params(4);
+    params.view_heading_bin = 1;
+    state.plan_residency(&mut output, params).unwrap();
+
+    assert_eq!(state.planner_heading_bin, Some(0));
+    assert_forward_first(&state, heading_vector(0));
+
+    let mut state2 = residency_state_in_cells(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
+    let mut output2 = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    state2.plan_residency(&mut output2, params).unwrap();
+    assert_eq!(state.planner_order, state2.planner_order);
+}
+
+#[test]
+fn heading_change_pins_current_cell_when_eviction_rollback_leaves_bucket_cursor_zero() {
+    const CELL_SIZE: f32 = 8192.0;
+    let mut state = DistantLandState::new(Configuration::default());
+    state.world_space_indices.insert(CellName::EXTERIOR, 0);
+    state.world_spaces.push(WorldSpace::default());
+    state.current_world_space = Some(0);
+
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 1024,
+        streamable: true,
+        resident: false,
+        center: D3dxVector3 {
+            x: 1.0 * CELL_SIZE + 100.0,
+            y: 100.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 1024,
+        streamable: true,
+        resident: false,
+        center: D3dxVector3 {
+            x: -CELL_SIZE + 100.0,
+            y: 100.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 1024,
+        streamable: true,
+        resident: true,
+        center: D3dxVector3 {
+            x: 100_000.0,
+            y: 100.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+    state.rebuild_residency_index();
+
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    let mut params = plan_params(2);
+    params.available_bytes = 0;
+    params.view_heading_bin = 1;
+
+    state.plan_residency(&mut output, params).unwrap();
+    let plans = output.read_all::<ResidencyPlan>().unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].action, ResidencyPlanAction::Evict as u32);
+    assert_eq!(plans[0].resource_id, 2);
+
+    assert_eq!(state.planner_bucket_cursor, 0);
+    let pinned_offset_cursor = state.planner_offset_cursor;
+    let pinned_cell_offset = state.planner_order[pinned_offset_cursor];
+    assert_eq!(
+        state.residency_offsets[pinned_cell_offset as usize],
+        (1, 0),
+        "cursor must be on cell (1, 0)"
+    );
+
+    params.view_heading_bin = 17;
+    state.set_resident_for_tests(2, false);
+    params.available_bytes = 1024;
+
+    state.plan_residency(&mut output, params).unwrap();
+
+    assert_eq!(
+        state.planner_order[pinned_offset_cursor],
+        pinned_cell_offset,
+        "current cell must remain pinned despite bucket_cursor == 0"
+    );
+    assert_planner_order_is_permutation(&state);
+
+    assert_eq!(
+        admitted_ids(&mut output),
+        vec![0],
+        "the candidate the eviction was made for must be admitted from the pinned cell"
+    );
+}
+
+#[test]
+fn heading_change_pins_current_cell_when_bucket_partially_consumed() {
+    const CELL_SIZE: f32 = 8192.0;
+    let mut state = DistantLandState::new(Configuration::default());
+    state.world_space_indices.insert(CellName::EXTERIOR, 0);
+    state.world_spaces.push(WorldSpace::default());
+    state.current_world_space = Some(0);
+
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 512,
+        streamable: true,
+        resident: false,
+        center: D3dxVector3 {
+            x: 1.0 * CELL_SIZE + 100.0,
+            y: 100.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+    state.residency_resources.push(ResidencyResource {
+        geometry_bytes: 512,
+        streamable: true,
+        resident: false,
+        center: D3dxVector3 {
+            x: 1.0 * CELL_SIZE + 100.0,
+            y: 101.0,
+            z: 0.0,
+        },
+        ..ResidencyResource::default()
+    });
+    state.rebuild_residency_index();
+
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    let mut params = plan_params(1);
+    params.admission_radius = 16384.0;
+    params.view_heading_bin = 1;
+
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(admitted_ids(&mut output), vec![0]);
+    assert_eq!(state.planner_bucket_cursor, 1);
+    let pinned_offset_cursor = state.planner_offset_cursor;
+    let pinned_cell_offset = state.planner_order[pinned_offset_cursor];
+
+    params.view_heading_bin = 17;
+    state.plan_residency(&mut output, params).unwrap();
+
+    assert_eq!(
+        state.planner_order[pinned_offset_cursor],
+        pinned_cell_offset,
+        "partially consumed cell must remain pinned across rotation"
+    );
+    assert_planner_order_is_permutation(&state);
+
+    assert_eq!(admitted_ids(&mut output), vec![1]);
+}
+
+#[test]
+fn rotation_against_parked_cursor_does_not_repartition() {
+    let mut state = residency_state_in_cells(&[(1, 0), (-1, 0)]);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+    for id in 0..state.residency_resources.len() as u32 {
+        state.set_resident_for_tests(id, true);
+    }
+
+    let mut params = plan_params(4);
+    params.view_heading_bin = 1;
+    for _ in 0..8 {
+        state.plan_residency(&mut output, params).unwrap();
+        assert!(admitted_ids(&mut output).is_empty());
+    }
+    assert_eq!(state.planner_offset_cursor, state.residency_offsets.len());
+
+    let order_before = state.planner_order.clone();
+
+    params.view_heading_bin = 17;
+    state.plan_residency(&mut output, params).unwrap();
+
+    assert_eq!(
+        state.planner_order, order_before,
+        "rotation against a parked cursor must not repartition"
+    );
+    assert_eq!(
+        state.planner_offset_cursor,
+        state.residency_offsets.len(),
+        "cursor must remain parked"
+    );
+}
+
+#[test]
+fn rebuild_residency_index_and_epoch_reset_restore_canonical_order() {
+    let mut state = residency_state_in_cells(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+
+    let mut params = plan_params(4);
+    params.view_heading_bin = 1;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(state.planner_heading_bin, Some(0));
+
+    state.rebuild_residency_index();
+    assert_eq!(state.planner_heading_bin, None);
+    assert_eq!(
+        state.planner_order,
+        (0..state.residency_offsets.len() as u32).collect::<Vec<_>>()
+    );
+    assert_planner_order_is_permutation(&state);
+
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(state.planner_heading_bin, Some(0));
+
+    params.plan_epoch += 1;
+    params.view_heading_bin = 0;
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(state.planner_heading_bin, None);
+    assert_eq!(
+        state.planner_order,
+        (0..state.residency_offsets.len() as u32).collect::<Vec<_>>()
+    );
+    assert_planner_order_is_permutation(&state);
+}
+
+#[test]
+fn admitting_sweep_rewind_repartitions_from_canonical_offsets() {
+    let mut state = residency_state_in_cells(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
+    let mut output = SharedVec::create_for_tests::<ResidencyPlan>(64, 1).unwrap();
+
+    let mut params = plan_params(1);
+    params.view_heading_bin = 1; // East
+
+    // Admit 1 resource under East heading, setting planner_sweep_admitted
+    state.plan_residency(&mut output, params).unwrap();
+    assert_eq!(admitted_ids(&mut output).len(), 1);
+
+    // Rotate mid-sweep to West; tail is repartitioned with West-forward cells first,
+    // but the prefix still holds the earlier East-forward offset.
+    params.view_heading_bin = 17; // West
+    state.plan_residency(&mut output, params).unwrap();
+    assert_planner_order_is_permutation(&state);
+
+    // Drain the rest of the sweep until it reaches the end and rewinds
+    let mut rewound = false;
+    for _ in 0..16 {
+        state.plan_residency(&mut output, params).unwrap();
+        if state.planner_offset_cursor == 0 {
+            rewound = true;
+            break;
+        }
+    }
+    assert!(rewound, "the sweep should have reached the end and rewound");
+
+    // After rewind, cursor is back at 0, and repartition(0) wiped the historical mid-sweep
+    // rotation segmentation: the entire vector is now a clean forward-first partition under West.
+    assert_eq!(state.planner_offset_cursor, 0);
+    assert_forward_first(&state, heading_vector(16));
 }

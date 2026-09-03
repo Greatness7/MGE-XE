@@ -214,11 +214,13 @@ namespace IPC {
         IN float retainRadius;
         IN std::uint32_t maxCells;
         IN std::uint32_t maxResources;
-        std::uint32_t reserved;
+        IN std::uint32_t viewHeadingBin;
         IN std::uint64_t capBytes;
         IN std::uint64_t availableBytes;
         IN std::uint64_t capDebtBytes;
     };
+    static_assert(sizeof(PlanResidencyParameters) == 64, "Plan residency parameters ABI drifted");
+    static_assert(offsetof(PlanResidencyParameters, viewHeadingBin) == 36, "Plan residency view heading bin offset drifted");
     static_assert(sizeof(ResidencyPlan) == 16, "Residency plan ABI drifted");
     static_assert(sizeof(ResidencyCommit) == 16, "Residency commit ABI drifted");
 

@@ -84,6 +84,9 @@ pub struct DistantLandState {
     residency_buckets: HashMap<(i32, i32), Vec<u32>>,
     residency_offsets: Vec<(i32, i32)>,
     residency_radius_cells: i32,
+    planner_order: Vec<u32>,
+    planner_order_scratch: Vec<u32>,
+    planner_heading_bin: Option<u8>,
     planner_epoch: Option<u32>,
     planner_cell: Option<(i32, i32)>,
     planner_offset_cursor: usize,
@@ -103,6 +106,30 @@ pub struct DistantLandState {
     horizon: HorizonRuntime,
 }
 
+/// Decodes wire heading parameter: 0 = no hint, 1..=32 = bins 0..=31, others = invalid (None).
+fn decode_heading_bin(wire_val: u32) -> Option<u8> {
+    if (1..=32).contains(&wire_val) {
+        Some((wire_val - 1) as u8)
+    } else {
+        None
+    }
+}
+
+/// Decodes a 32-bin heading index (0..=31) into a horizontal unit direction vector.
+/// Paired with C++ quantizeViewHeadingBin in d3d8/cpp/mge/distantinit.cpp.
+/// Bin b covers [b * 2pi/32, (b+1) * 2pi/32). Reconstruct heading from the
+/// bin centre (b + 0.5) * 2pi/32 to avoid a 5.6-degree bias against the camera.
+fn heading_vector(bin: u8) -> (f32, f32) {
+    let angle = (bin as f32 + 0.5) * (std::f32::consts::TAU / 32.0);
+    (angle.cos(), angle.sin())
+}
+
+/// Tests whether a cell offset is in the camera-forward half-plane.
+/// Strictly positive: perpendicular cells and (0,0) are not forward.
+fn is_offset_forward(offset: (i32, i32), heading: (f32, f32)) -> bool {
+    (offset.0 as f32 * heading.0 + offset.1 as f32 * heading.1) > 0.0
+}
+
 impl DistantLandState {
     pub fn new(configuration: Configuration) -> Self {
         let horizon = HorizonRuntime::new(configuration.horizon_adaptive_gate);
@@ -116,6 +143,9 @@ impl DistantLandState {
             residency_buckets: HashMap::new(),
             residency_offsets: Vec::new(),
             residency_radius_cells: -1,
+            planner_order: Vec::new(),
+            planner_order_scratch: Vec::new(),
+            planner_heading_bin: None,
             planner_epoch: None,
             planner_cell: None,
             planner_offset_cursor: 0,
@@ -207,6 +237,10 @@ impl DistantLandState {
         self.planner_bucket_cursor = 0;
         self.planner_sweep_admitted = false;
         self.oversize_logged.clear();
+        self.planner_heading_bin = None;
+        self.planner_order_scratch.clear();
+        self.planner_order_scratch.reserve(self.residency_offsets.len());
+        self.repartition(0);
     }
 
     fn ensure_residency_offsets(&mut self, radius: f32) {
@@ -228,6 +262,54 @@ impl DistantLandState {
         self.planner_offset_cursor = 0;
         self.planner_bucket_cursor = 0;
         self.planner_sweep_admitted = false;
+        self.planner_order.clear();
+        self.planner_order_scratch.clear();
+        self.planner_order.reserve(self.residency_offsets.len());
+        self.planner_order_scratch.reserve(self.residency_offsets.len());
+        self.planner_heading_bin = None;
+        self.repartition(0);
+    }
+
+    fn repartition(&mut self, first_reorderable: usize) {
+        let len = self.residency_offsets.len();
+        if self.planner_offset_cursor >= len || first_reorderable >= len {
+            return;
+        }
+
+        let heading_dir = self.planner_heading_bin.map(heading_vector);
+
+        if first_reorderable == 0 {
+            self.planner_order.clear();
+            if let Some(heading) = heading_dir {
+                for (idx, &offset) in self.residency_offsets.iter().enumerate() {
+                    if is_offset_forward(offset, heading) {
+                        self.planner_order.push(idx as u32);
+                    }
+                }
+                for (idx, &offset) in self.residency_offsets.iter().enumerate() {
+                    if !is_offset_forward(offset, heading) {
+                        self.planner_order.push(idx as u32);
+                    }
+                }
+            } else {
+                self.planner_order.extend(0..len as u32);
+            }
+        } else if let Some(heading) = heading_dir {
+            self.planner_order_scratch.clear();
+            for &idx in &self.planner_order[first_reorderable..] {
+                let offset = self.residency_offsets[idx as usize];
+                if is_offset_forward(offset, heading) {
+                    self.planner_order_scratch.push(idx);
+                }
+            }
+            for &idx in &self.planner_order[first_reorderable..] {
+                let offset = self.residency_offsets[idx as usize];
+                if !is_offset_forward(offset, heading) {
+                    self.planner_order_scratch.push(idx);
+                }
+            }
+            self.planner_order[first_reorderable..].copy_from_slice(&self.planner_order_scratch);
+        }
     }
 
     /// Flips one resource's residency the way an acknowledged commit would, without needing
@@ -291,12 +373,25 @@ impl DistantLandState {
 
         self.ensure_residency_offsets(params.admission_radius);
         let cell = ((center.x / CELL_SIZE).floor() as i32, (center.y / CELL_SIZE).floor() as i32);
+        let incoming_heading = decode_heading_bin(params.view_heading_bin);
+
         if self.planner_epoch != Some(params.plan_epoch) || self.planner_cell != Some(cell) {
             self.planner_epoch = Some(params.plan_epoch);
             self.planner_cell = Some(cell);
             self.planner_offset_cursor = 0;
             self.planner_bucket_cursor = 0;
             self.planner_sweep_admitted = false;
+            self.planner_heading_bin = incoming_heading;
+            self.repartition(0);
+        } else if let Some(heading) = incoming_heading
+            && self.planner_heading_bin != Some(heading)
+        {
+            self.planner_heading_bin = Some(heading);
+            // Pin the current offset unconditionally: planner_bucket_cursor == 0 can mean an
+            // untouched cell or a candidate deliberately rolled back after an eviction.
+            // repartition ignores a parked cursor, so no extra guard is needed here.
+            let first_reorderable = (self.planner_offset_cursor + 1).min(self.residency_offsets.len());
+            self.repartition(first_reorderable);
         }
 
         let resource_limit = params.max_resources.max(1) as usize;
@@ -322,7 +417,8 @@ impl DistantLandState {
             && cells_visited < params.max_cells.max(1) as usize
             && resources_visited < resource_limit
         {
-            let offset = self.residency_offsets[self.planner_offset_cursor];
+            let offset_index = self.planner_order[self.planner_offset_cursor] as usize;
+            let offset = self.residency_offsets[offset_index];
             let bucket_key = (cell.0 + offset.0, cell.1 + offset.1);
             let bucket_len = self.residency_buckets.get(&bucket_key).map_or(0, Vec::len);
             while self.planner_bucket_cursor < bucket_len && resources_visited < resource_limit {
@@ -390,6 +486,7 @@ impl DistantLandState {
             self.planner_offset_cursor = 0;
             self.planner_bucket_cursor = 0;
             self.planner_sweep_admitted = false;
+            self.repartition(0);
         }
         Ok(())
     }
