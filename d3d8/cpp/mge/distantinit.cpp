@@ -92,7 +92,6 @@ bool DistantLand::pumpActive = false;
 bool DistantLand::pumpDraining = false;
 bool DistantLand::worldResolved = false;
 bool DistantLand::uploadComplete = false;
-bool DistantLand::streamingCapOverrideActive = false;
 bool DistantLand::automaticStreamingCapActive = false;
 std::uint64_t DistantLand::mergedStreamingCapBytes = 0;
 int DistantLand::nextMergedBudgetSampleMs = 0;
@@ -184,27 +183,6 @@ float DistantLand::lightSunMult, DistantLand::lightAmbMult;
 DistantLand::TerrainRuntimeConstants DistantLand::terrainConstants = {};
 
 namespace {
-
-bool readMergedStreamingCapOverride(std::uint64_t& capBytes) {
-    char value[64] = {};
-    const DWORD length = GetEnvironmentVariableA("MGE_DL_STREAMING_CAP_MB", value, static_cast<DWORD>(sizeof(value)));
-    if (length == 0) {
-        return false;
-    }
-    if (length >= sizeof(value)) {
-        LOG::logline("!! MGE_DL_STREAMING_CAP_MB is too long; ignoring the development override");
-        return false;
-    }
-
-    char* end = nullptr;
-    const unsigned long long capMb = std::strtoull(value, &end, 10);
-    if (end == value || *end != '\0' || capMb > (std::numeric_limits<std::uint64_t>::max() >> 20)) {
-        LOG::logline("!! MGE_DL_STREAMING_CAP_MB=%s is invalid; ignoring the development override", value);
-        return false;
-    }
-    capBytes = static_cast<std::uint64_t>(capMb) << 20;
-    return true;
-}
 
 std::uint64_t saturatingAdd(std::uint64_t a, std::uint64_t b) {
     return b > std::numeric_limits<std::uint64_t>::max() - a
@@ -369,7 +347,6 @@ bool DistantLand::init() {
     subsetsHostVecId = IPC::InvalidVector;
     uploadComplete = false;
     mergedStreamingCapBytes = 0;
-    streamingCapOverrideActive = readMergedStreamingCapOverride(mergedStreamingCapBytes);
     automaticStreamingCapActive = false;
     nextMergedBudgetSampleMs = 0;
     lowerMergedBudgetSampleCount = 0;
@@ -378,15 +355,7 @@ bool DistantLand::init() {
     pendingMergedCandidateCapBytes = 0;
     pendingMergedPeakMemoryUsedBytes = 0;
     peakMergedMemoryUsedBytes = 0;
-    if (streamingCapOverrideActive) {
-        LOG::logline(
-            "-- Merged-static streaming cap override: source=MGE_DL_STREAMING_CAP_MB cap_mb=%llu cap_bytes=%llu automatic_cap=bypassed",
-            static_cast<unsigned long long>(mergedStreamingCapBytes >> 20),
-            static_cast<unsigned long long>(mergedStreamingCapBytes)
-        );
-    } else {
-        LOG::logline("-- Merged-static streaming cap: override=none selection=deferred_until_fixed_resources");
-    }
+    LOG::logline("-- Merged-static streaming cap: selection=deferred_until_fixed_resources");
     worldResolved = false;
     isDistantLandLoaded = false;
     staticsUploaded = false;
@@ -1553,16 +1522,6 @@ void DistantLand::failUpload() {
 
 bool DistantLand::selectInitialMergedStreamingCap() {
     const std::uint64_t totalMergedBytes = DistantLoaders::totalMergedGeometryBytes();
-    if (streamingCapOverrideActive) {
-        LOG::logline(
-            "-- Merged-static cap selected: source=override cap=%llu B merged_total=%llu B binds=%d",
-            static_cast<unsigned long long>(mergedStreamingCapBytes),
-            static_cast<unsigned long long>(totalMergedBytes),
-            totalMergedBytes > mergedStreamingCapBytes ? 1 : 0
-        );
-        return true;
-    }
-
     if (!dxvkMorrowindMemoryInterop) {
         mergedStreamingCapBytes = std::numeric_limits<std::uint64_t>::max();
         LOG::logline(
@@ -1613,7 +1572,7 @@ bool DistantLand::selectInitialMergedStreamingCap() {
 }
 
 void DistantLand::sampleMergedStreamingCap() {
-    if (streamingCapOverrideActive || !automaticStreamingCapActive || !dxvkMorrowindMemoryInterop) {
+    if (!automaticStreamingCapActive || !dxvkMorrowindMemoryInterop) {
         return;
     }
 

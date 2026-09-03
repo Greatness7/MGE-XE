@@ -144,9 +144,8 @@ public:
     static bool pumpDraining;      // pump is being drained synchronously during load
     static bool worldResolved;     // save/new-game world data has resolved
     static bool uploadComplete;    // all upload phases finished
-    // Active merged-static cap. The development override wins; otherwise DXVK supplies an
-    // allocator-policy-adjusted budget after fixed resources have been created.
-    static bool streamingCapOverrideActive;
+    // Active merged-static cap. DXVK supplies an allocator-policy-adjusted budget
+    // after fixed resources have been created.
     static bool automaticStreamingCapActive;
     static std::uint64_t mergedStreamingCapBytes;
     static int nextMergedBudgetSampleMs;

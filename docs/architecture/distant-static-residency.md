@@ -24,12 +24,10 @@ residency is in [distantland-lifecycle.md](distantland-lifecycle.md); the transp
 ## The cap
 
 One cap governs merged bytes for the device session. It is selected once fixed resources exist
-(`selectInitialMergedStreamingCap`), from three sources in priority order:
+(`selectInitialMergedStreamingCap`), from two sources in priority order:
 
-1. `MGE_DL_STREAMING_CAP_MB`, a development override in MB read once from Morrowind's process
-   environment. It bypasses automatic selection entirely.
-2. `IDxvkMorrowindMemoryInterop1::GetDeviceLocalMemoryBudgetV1`, when our DXVK fork provides it.
-3. Neither: an infinite cap.
+1. `IDxvkMorrowindMemoryInterop1::GetDeviceLocalMemoryBudgetV1`, when our DXVK fork provides it.
+2. Otherwise: an infinite cap.
 
 The automatic candidate is `heap_budget - memory_used - headroom + logical_gpu_merged`. The merged
 bytes are added back because `memory_used` already contains them; reducing this to `budget - used`
