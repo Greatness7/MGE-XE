@@ -335,30 +335,16 @@ impl DistantStatic {
             let shared_alpha_subsets = original_subsets.extract_if(.., |s| s.has_alpha == has_alpha);
 
             for subset in shared_alpha_subsets {
-                if let Some(merged) = self.subsets.last_mut()
-                    && subset.can_merge_vertices(merged)
-                {
-                    let has_alpha_same = merged.has_alpha == subset.has_alpha;
-                    let texture_same = merged.texture == subset.texture;
-                    let has_uv_controller_same = merged.has_uv_controller == subset.has_uv_controller;
-                    let emissive_same = merged.emissive == subset.emissive;
+                // Search existing output bins (first-fit) rather than only the immediate tail.
+                // This runs post-atlas, so `texture` equality compares atlas *page* ordinals,
+                // not source textures. Two subsets that came from different source textures
+                // therefore merge freely while carrying different UV bounds — which is the
+                // mechanism that produces multi-bound subsets in the first place. When the tail
+                // is filled or holds incompatible bounds, an earlier compatible bin is reused.
+                let target_index = self.subsets.iter().position(|candidate| candidate.can_merge_with(&subset));
 
-                    // This runs post-atlas, so `texture` equality compares atlas *page* ordinals,
-                    // not source textures. Two subsets that came from different source textures
-                    // therefore merge freely while carrying different UV bounds — which is the
-                    // mechanism that produces multi-bound subsets in the first place. Refuse when
-                    // the union would outgrow the shader's fixed palette array; refusal starts a
-                    // new output subset through the existing path below.
-                    let palette_fits = uv_bound_union_fits(&merged.uv_bounds, &subset.uv_bounds);
-
-                    // Important: even though textures are later packed into a global atlas,
-                    // `texture` here still identifies which atlas page/file UVs were computed
-                    // for. Merging across different pages leads to wrong UV interpretation.
-                    if !has_alpha_same || !texture_same || !has_uv_controller_same || !emissive_same || !palette_fits {
-                        self.subsets.push(subset);
-                        continue;
-                    }
-
+                if let Some(index) = target_index {
+                    let merged = &mut self.subsets[index];
                     let mixed_provenance = (!merged.components.is_empty() && subset.components.is_empty())
                         || (merged.components.is_empty() && !merged.triangles.is_empty() && !subset.components.is_empty());
                     debug_assert!(
@@ -490,12 +476,12 @@ impl Subset {
     /// skipping the test for it could push the destination past the cap.
     pub fn can_merge_with(&self, other: &Subset) -> bool {
         self.can_merge_vertices(other)
-            && uv_bound_union_fits(&self.uv_bounds, &other.uv_bounds)
             && (self.vertices.is_empty()
                 || (self.is_opaque() == other.is_opaque()
                     && self.texture == other.texture
                     && self.has_uv_controller == other.has_uv_controller
                     && self.emissive == other.emissive))
+            && uv_bound_union_fits(&self.uv_bounds, &other.uv_bounds)
     }
 
     pub fn append_triangles(&mut self, triangles: &[[u16; 3]]) {

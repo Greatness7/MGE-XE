@@ -560,6 +560,39 @@ fn merge_subsets_unions_overlapping_bounds_without_double_counting() {
 }
 
 #[test]
+fn merge_subsets_reuses_earlier_compatible_subset_when_tail_cannot_accept() {
+    // Subset 0 has 120 bounds (room for 8 more before cap).
+    // Subset 1 has 128 bounds (at cap, cannot accept any new bounds).
+    // Subset 2 has 4 bounds (overlapping subset 0's bounds).
+    //
+    // Under tail-only packing, subset 2 would be tested only against subset 1 (the tail),
+    // which cannot accept it, needlessly creating a third subset.
+    // With first-fit reuse, subset 2 reuses earlier subset 0 without exceeding the cap.
+    let subset_0 = palette_subset(0, 120);
+    let subset_1 = palette_subset(200, UV_BOUND_PALETTE_CAP);
+    let subset_2 = palette_subset(0, 4);
+
+    let mut distant_static = DistantStatic {
+        subsets: vec![subset_0, subset_1, subset_2],
+        ..DistantStatic::default()
+    };
+    distant_static.merge_subsets();
+
+    assert_eq!(
+        distant_static.subsets.len(),
+        2,
+        "subset 2 must reuse earlier subset 0 rather than creating a third subset"
+    );
+    // Explicit stable ordering expectations:
+    // subsets[0] corresponds to bin 0 (containing subset 0 + subset 2 geometry).
+    // subsets[1] corresponds to bin 1 (containing subset 1 geometry).
+    assert_eq!(distant_static.subsets[0].triangles.len(), 2);
+    assert_eq!(distant_static.subsets[0].uv_bounds.len(), 120);
+    assert_eq!(distant_static.subsets[1].triangles.len(), 1);
+    assert_eq!(distant_static.subsets[1].uv_bounds.len(), UV_BOUND_PALETTE_CAP as usize);
+}
+
+#[test]
 fn update_bounds_recomputes_subset_and_static_bounds() {
     let mut distant_static = DistantStatic {
         subsets: vec![

@@ -223,9 +223,14 @@ fn merge_subsets(
             continue;
         }
 
-        let merged_subset = match merged_subsets.last_mut() {
-            Some(last) if subset.can_merge_with(last) => last,
-            _ => merged_subsets.push_mut(Subset::default()),
+        // Search existing output subsets (first-fit) so that an input compatible with an
+        // earlier bin reuses it rather than opening a new subset whenever the immediate tail
+        // cannot accept it.
+        let target_index = merged_subsets.iter().position(|candidate| subset.can_merge_with(candidate));
+
+        let merged_subset = match target_index {
+            Some(index) => &mut merged_subsets[index],
+            None => merged_subsets.push_mut(Subset::default()),
         };
 
         let first_triangle = merged_subset.triangles.len() as u32;
