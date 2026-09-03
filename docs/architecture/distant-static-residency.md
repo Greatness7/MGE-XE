@@ -80,6 +80,11 @@ Interlocks that are not visible at the call site:
   On timeout, server loss, or host rejection the buffers, palette entry and ledger bytes stay in
   removal-in-flight; three failures freeze residency for the device session rather than risk
   handing a live host a stale pointer.
+- **A readmitted resource leaves the removal batch before it is built.** A retry only reaches a
+  resource whose earlier removal RPC did not complete, so the planner has had a chance to set
+  `readmitRequested` in between. Those ids move straight to `CommitPending` and are never named in
+  the `Unloaded` batch, so the host is never told a resource is gone while the client keeps its
+  buffers.
 - **D3D calls stay on Morrowind's main thread.** The I/O worker may read and reorder bytes; it may
   not create, lock, unlock, or release a D3D resource.
 - **`staticUvBoundPalettes` shares its VB's lifetime** — insert after a streamed VB is created,
@@ -224,8 +229,6 @@ Understood and accepted; each fails soft.
   when memory later frees. Never observed in practice, but it is why the cap must be conservative:
   guessing high once costs geometry for the session rather than a few frames of pop-in. Making it
   retryable is what would let the cap policy be looser.
-- **Readmission during removal-in-flight** briefly reports `Unloaded` to the host while the buffers
-  are still live. Safe direction: missing geometry, not a dangling pointer.
 - **`update_residency` stops applying a batch after the first error.** The client sees failure and
   retains buffers or freezes.
 - **Killing `mgeHost64.exe` mid-transition leaves Morrowind in a permanent busy hang** rather than

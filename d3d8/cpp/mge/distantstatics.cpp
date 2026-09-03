@@ -2463,6 +2463,33 @@ bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
         }
     }
 
+    // A retained in-flight batch can be reconsidered after an earlier removal attempt failed.
+    // Move readmitted resources straight to a resident re-commit instead of telling the host they
+    // are unloaded immediately before retaining their live buffers.
+    residencyRemovalInFlight.erase(
+        std::remove_if(
+            residencyRemovalInFlight.begin(),
+            residencyRemovalInFlight.end(),
+            [](std::uint32_t resourceId) {
+                StaticResource* resource = findResource(resourceId);
+                if (!resource || !resource->readmitRequested) {
+                    return false;
+                }
+                resource->readmitRequested = false;
+                resource->state = StaticResourceState::CommitPending;
+                residencyCommitPending.push_back(resourceId);
+                return true;
+            }
+        ),
+        residencyRemovalInFlight.end()
+    );
+
+    if (residencyRemovalInFlight.empty()) {
+        // The whole retained batch was readmitted. Sending an empty removal would risk a spurious
+        // non-complete result and count towards the freeze threshold for nothing.
+        return false;
+    }
+
     std::vector<IPC::ResidencyCommit> commits;
     commits.reserve(residencyRemovalInFlight.size());
     for (std::uint32_t resourceId : residencyRemovalInFlight) {
@@ -2490,14 +2517,6 @@ bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources) {
         if (!resource) {
             continue;
         }
-        if (resource->readmitRequested) {
-            // The pointers and face counts are still live; re-commit without I/O or allocation.
-            resource->readmitRequested = false;
-            resource->state = StaticResourceState::CommitPending;
-            residencyCommitPending.push_back(resourceId);
-            continue;
-        }
-
         staticUvBoundPalettes.erase(resource->vb);
         if (resource->ib) { resource->ib->Release(); resource->ib = nullptr; }
         if (resource->vb) { resource->vb->Release(); resource->vb = nullptr; }
