@@ -221,7 +221,7 @@ DepthVertOut DepthLandVS(TerrainVertIn IN) {
     OUT.depth = v.pos.w;
     OUT.alpha = 1;
     OUT.texcoords = 0;
-    OUT.uvBounds = float4(0, 0, 1, 1);
+    OUT.uvBounds = float4(0, 1, 0, 1);
 
     return OUT;
 }

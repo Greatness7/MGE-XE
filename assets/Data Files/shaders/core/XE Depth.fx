@@ -46,7 +46,7 @@ DepthVertOut DepthMWVS(MorrowindVertIn IN) {
     OUT.pos = mul(viewpos, proj);
     OUT.depth = OUT.pos.w;
     OUT.texcoords = IN.texcoords;
-    OUT.uvBounds = float4(0, 0, 1, 1);
+    OUT.uvBounds = float4(0, 1, 0, 1);
 
     return OUT;
 }
@@ -59,7 +59,7 @@ DepthVertOut DepthMWIndexedVS(MorrowindIndexedVertIn IN) {
     OUT.pos = mul(viewpos, proj);
     OUT.depth = OUT.pos.w;
     OUT.texcoords = IN.texcoords;
-    OUT.uvBounds = float4(0, 0, 1, 1);
+    OUT.uvBounds = float4(0, 1, 0, 1);
     return OUT;
 }
 
