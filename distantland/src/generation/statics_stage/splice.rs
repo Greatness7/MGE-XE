@@ -8,7 +8,7 @@ use super::decode::DecodedShards;
 use super::plan::{OwnerPlan, StaticsFallbackReason};
 use crate::DistantStatics;
 use crate::generation::cache::{fingerprint_static_mesh_shard_inputs, static_mesh_shard_id};
-use crate::generation::metrics::summarize_distant_statics;
+use crate::generation::metrics::{summarize_distant_statics, summarize_merged_distant_statics};
 use crate::generation::output::STATIC_MESH_SHARD_COUNT;
 use crate::generation::record_key::{StaticRecordKey, parse_merged};
 use crate::generation::state_db::StaticShardState;
@@ -32,6 +32,7 @@ pub(super) struct SpliceResult {
     pub(super) shards: Vec<StaticShardPlan>,
     pub(super) ordinals: crate::usage::StaticOrdinalView,
     pub(super) final_counts: (usize, usize, usize),
+    pub(super) merged_counts: (usize, usize, usize),
     pub(super) stats: AssemblyStats,
 }
 
@@ -211,12 +212,16 @@ pub(super) fn splice_static_shards(
             return Err(StaticsFallbackReason::AssemblyMismatch);
         }
         let (subset_count, vertex_count, triangle_count) = summarize_distant_statics(&packed);
+        let (merged_record_count, merged_vertex_count, merged_triangle_count) = summarize_merged_distant_statics(&packed);
         let state = StaticShardState {
             input_digest: fingerprint_static_mesh_shard_inputs(shard_id, &packed),
             record_count: u32::try_from(packed.len()).map_err(|_| StaticsFallbackReason::AssemblyMismatch)?,
             subset_count: subset_count as u64,
             vertex_count: vertex_count as u64,
             triangle_count: triangle_count as u64,
+            merged_record_count: merged_record_count as u64,
+            merged_vertex_count: merged_vertex_count as u64,
+            merged_triangle_count: merged_triangle_count as u64,
             records: assembly[shard_id].clone(),
         };
         let carry = state == previous_shards[shard_id] && base_shards[shard_id].is_some();
@@ -240,11 +245,19 @@ pub(super) fn splice_static_shards(
             counts.2 + state.triangle_count as usize,
         )
     });
+    let merged_counts = states.iter().fold((0usize, 0usize, 0usize), |counts, state| {
+        (
+            counts.0 + state.merged_record_count as usize,
+            counts.1 + state.merged_vertex_count as usize,
+            counts.2 + state.merged_triangle_count as usize,
+        )
+    });
     Ok(SpliceResult {
         static_mesh_shards: states,
         shards: shard_plans,
         ordinals,
         final_counts,
+        merged_counts,
         stats,
     })
 }

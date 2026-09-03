@@ -20,7 +20,8 @@ TransformedVert transformStaticVert(StatVertIn IN) {
     // Transforms with implicit depth bias
     TransformedVert v;
 
-    v.worldpos = mul(IN.pos, world);
+    // pos.w carries the palette ordinal, so it must not scale the world translation.
+    v.worldpos = mul(float4(IN.pos.xyz, 1), world);
     v.viewpos = mul(v.worldpos, view);
     v.pos = mul(v.viewpos, proj);
 
@@ -73,7 +74,7 @@ StatVertOut StaticExteriorVS(StatVertIn IN) {
     OUT.fog = fogColour(eyevec / dist, dist);
 
     OUT.texcoords_range = float3(texcoordsModifier(IN), dist);
-    OUT.uvBounds = IN.uvBounds;
+    OUT.uvBounds = uvBoundPalette[(int)IN.pos.w];
     return OUT;
 }
 
@@ -88,7 +89,7 @@ StatVertOut StaticInteriorVS (StatVertIn IN) {
     OUT.fog = fogMWColour(dist);
 
     OUT.texcoords_range = float3(texcoordsModifier(IN), dist);
-    OUT.uvBounds = IN.uvBounds;
+    OUT.uvBounds = uvBoundPalette[(int)IN.pos.w];
     return OUT;
 }
 
@@ -129,7 +130,7 @@ DepthVertOut DepthStaticVS (StatVertIn IN) {
     OUT.depth = OUT.pos.w;
     OUT.alpha = 1;
     OUT.texcoords = texcoordsModifier(IN);
-    OUT.uvBounds = IN.uvBounds;
+    OUT.uvBounds = uvBoundPalette[(int)IN.pos.w];
 
     return OUT;
 }

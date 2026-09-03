@@ -3,7 +3,7 @@
 //! These helpers define the canonical JSON building blocks shared by snapshot construction
 //! and comparison:
 //!
-//! - floats are never serialized as JSON numbers: [`f32_bits`] and [`f16_bits`] emit exact
+//! - floats are never serialized as JSON numbers: [`f32_bits`] emits the exact
 //!   stored bits as fixed-width lowercase hex strings, preserving `-0.0` and NaN payloads;
 //! - multisets are JSON arrays sorted by each element's compact canonical encoding, with
 //!   duplicate elements retained ([`canonical_multiset`]);
@@ -16,17 +16,11 @@
 //! Canonical compact JSON is deterministic because `serde_json`'s default map is ordered by
 //! key bytes and every array is either a fixed tuple or a pre-sorted multiset.
 
-use half::f16;
 use serde_json::Value;
 
 /// Encodes an `f32` as its exact stored bit pattern: eight lowercase hex digits.
 pub fn f32_bits(value: f32) -> Value {
     Value::String(format!("{:08x}", value.to_bits()))
-}
-
-/// Encodes an `f16` as its exact stored bit pattern: four lowercase hex digits.
-pub fn f16_bits(value: f16) -> Value {
-    Value::String(format!("{:04x}", value.to_bits()))
 }
 
 /// Encodes arbitrary bytes as lowercase hex.

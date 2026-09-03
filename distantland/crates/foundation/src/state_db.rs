@@ -13,13 +13,14 @@ const STATE_MAGIC: &[u8; 8] = b"TES3GST1";
 /// Inner generation state layout version.
 ///
 /// Version 7 drops the diagnostic `request_identity`, which nothing read. Version 6 adds the
-/// post-optimize static bounds used by selective mesh optimization. Version 5
+/// post-optimize static bounds used by selective mesh optimization. Version 9 adds per-shard
+/// merged geometry totals used by incremental generation reports. Version 5
 /// stores merge/terrain unit keys and coordinate reverse-index values as typed coordinates rather
 /// than `"{x},{y}"` strings. Version 4 added per-shard record-key lists and geometry totals plus the
 /// record-global recipe digest. Version 3 replaced the monolithic static payload digest with fixed
 /// shard state. Older inner state is incompatible regenerable data: it must force a clean rebuild,
 /// never be adopted.
-const STATE_FORMAT_VERSION: u32 = 8;
+const STATE_FORMAT_VERSION: u32 = 9;
 const DIRTY_KEY_LIMIT: usize = 64;
 
 /// One sorted unit-key to fingerprint table.
@@ -92,7 +93,7 @@ pub struct ReverseIndexes {
 /// Complete final-input identity, geometry totals, and ordered record keys for one fixed static-mesh shard.
 #[derive(Clone, Debug, Default, Eq, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct StaticShardState {
-    /// Digest over every final packed value passed to the XESTAT05 serializer.
+    /// Digest over every final packed value passed to the XESTAT06 serializer.
     pub input_digest: [u8; 32],
     /// Number of static records declared by the shard header.
     pub record_count: u32,
@@ -102,6 +103,12 @@ pub struct StaticShardState {
     pub vertex_count: u64,
     /// Total triangle count across the shard's records (observability).
     pub triangle_count: u64,
+    /// Number of synthetic merged-static records in this shard (observability).
+    pub merged_record_count: u64,
+    /// Total packed-vertex count in synthetic merged-static records (observability).
+    pub merged_vertex_count: u64,
+    /// Total triangle count in synthetic merged-static records (observability).
+    pub merged_triangle_count: u64,
     /// Typed record keys, positionally aligned with the shard file's record order.
     ///
     /// Strictly ascending by rendered bytes (the shard's intra-record order), unique, and each
@@ -229,6 +236,9 @@ impl GenerationState {
 /// (hence unique and matching the shard's intra-record order), and each key assigned to this shard.
 fn validate_static_shard(shard: &StaticShardState, shard_index: usize) -> bool {
     shard.record_count as usize == shard.records.len()
+        && shard.merged_record_count <= u64::from(shard.record_count)
+        && shard.merged_vertex_count <= shard.vertex_count
+        && shard.merged_triangle_count <= shard.triangle_count
         && shard.records.windows(2).all(|pair| pair[0] < pair[1])
         && shard.records.iter().all(|record| record.shard_id() == shard_index)
 }

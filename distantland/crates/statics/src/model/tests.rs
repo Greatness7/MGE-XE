@@ -226,6 +226,83 @@ fn horizon_footprint_requires_explicit_eligibility() {
     assert_eq!(eligible.subsets[0].horizon_footprint.max_z, 3.0);
 }
 
+fn test_vfs() -> crate::Vfs {
+    crate::Vfs {
+        ini_path: PathBuf::from("Morrowind.ini"),
+        data_dirs: vec![],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::DirectoryMaps::default(),
+    }
+}
+
+fn bound(min_x: f32) -> UvBound {
+    UvBound {
+        min_y: 0.0,
+        max_x: min_x + 0.25,
+        min_x,
+        max_y: 1.0,
+    }
+}
+
+#[test]
+fn packing_builds_a_first_appearance_palette_and_writes_ordinals() {
+    let a = bound(0.0);
+    let b = bound(0.5);
+    let vertex = |uv_bound| Vertex {
+        uv_bound,
+        ..Vertex::default()
+    };
+
+    let packed = DistantStatic {
+        subsets: vec![Subset {
+            // b appears first, a second, then b again: ordinals must be 0, 1, 0.
+            vertices: vec![vertex(b), vertex(a), vertex(b)],
+            triangles: vec![[0, 1, 2]],
+            uv_bounds: vec![a, b],
+            ..Subset::default()
+        }],
+        ..DistantStatic::default()
+    }
+    .into_distant_static(&test_vfs(), 1.0);
+
+    let subset = &packed.subsets[0];
+    assert_eq!(
+        subset.palette,
+        vec![
+            UvBoundRecord {
+                bound: [b.min_y, b.max_x, b.min_x, b.max_y],
+            },
+            UvBoundRecord {
+                bound: [a.min_y, a.max_x, a.min_x, a.max_y],
+            },
+        ]
+    );
+    let ordinals: Vec<f32> = subset.vertices.iter().map(|vertex| vertex.position[3].to_f32()).collect();
+    assert_eq!(ordinals, vec![0.0, 1.0, 0.0]);
+}
+
+#[test]
+fn grass_packing_emits_no_palette_and_keeps_position_w_at_one() {
+    let packed = DistantStatic {
+        static_type: StaticType::StaticGrass,
+        subsets: vec![Subset {
+            vertices: vec![Vertex {
+                uv_bound: bound(0.5),
+                ..Vertex::default()
+            }],
+            triangles: vec![[0, 0, 0]],
+            uv_bounds: vec![bound(0.5)],
+            ..Subset::default()
+        }],
+        ..DistantStatic::default()
+    }
+    .into_distant_static(&test_vfs(), 1.0);
+
+    assert!(packed.subsets[0].palette.is_empty());
+    assert_eq!(packed.subsets[0].vertices[0].position[3], half::f16::ONE);
+}
+
 #[test]
 fn emissive_material_is_packed_into_normal_w() {
     let normal = pack_subset_normal_and_emissive(0.4);
@@ -432,6 +509,54 @@ fn merge_subsets_keeps_opaque_and_alpha_atlas_pages_separate() {
     assert_eq!(distant_static.subsets.len(), 2);
     assert!(distant_static.subsets.iter().any(|subset| subset.has_alpha));
     assert!(distant_static.subsets.iter().any(|subset| subset.is_opaque()));
+}
+
+/// A subset on atlas page 0 carrying `count` bit-distinct bounds, all otherwise mergeable.
+fn palette_subset(first_bound: u32, count: u32) -> Subset {
+    let mut subset = triangle_subset([Vec3::ZERO, Vec3::X, Vec3::Y]);
+    subset.texture = SubsetTexture::AtlasPage(0);
+    subset.uv_bounds = (first_bound..first_bound + count)
+        .map(|seed| bound(seed as f32 / 1024.0))
+        .collect();
+    subset
+}
+
+#[test]
+fn merge_subsets_refuses_when_the_bound_union_would_exceed_the_palette_cap() {
+    // Post-atlas, both subsets share atlas page 0 and every other identity field, so only the
+    // palette cap can keep them apart.
+    let mut distant_static = DistantStatic {
+        subsets: vec![palette_subset(0, UV_BOUND_PALETTE_CAP), palette_subset(1000, 1)],
+        ..DistantStatic::default()
+    };
+    distant_static.merge_subsets();
+
+    assert_eq!(distant_static.subsets.len(), 2);
+    assert_eq!(distant_static.subsets.iter().map(|s| s.triangles.len()).sum::<usize>(), 2);
+
+    // One bound short of the cap, the same pair merges into a single subset with the union.
+    let mut distant_static = DistantStatic {
+        subsets: vec![palette_subset(0, UV_BOUND_PALETTE_CAP - 1), palette_subset(1000, 1)],
+        ..DistantStatic::default()
+    };
+    distant_static.merge_subsets();
+
+    assert_eq!(distant_static.subsets.len(), 1);
+    assert_eq!(distant_static.subsets[0].triangles.len(), 2);
+    assert_eq!(distant_static.subsets[0].uv_bounds.len(), UV_BOUND_PALETTE_CAP as usize);
+}
+
+#[test]
+fn merge_subsets_unions_overlapping_bounds_without_double_counting() {
+    // The two subsets share every bound but one, so the union is cap-sized and fits.
+    let mut distant_static = DistantStatic {
+        subsets: vec![palette_subset(0, UV_BOUND_PALETTE_CAP), palette_subset(0, 4)],
+        ..DistantStatic::default()
+    };
+    distant_static.merge_subsets();
+
+    assert_eq!(distant_static.subsets.len(), 1);
+    assert_eq!(distant_static.subsets[0].uv_bounds.len(), UV_BOUND_PALETTE_CAP as usize);
 }
 
 #[test]

@@ -293,6 +293,45 @@ namespace IPC {
 		return beginRpc(Command::InitDistantStatics);
 	}
 
+	bool Client::updateResidency(VecId commits) {
+		WAIT_FOR_PREVIOUS_COMMAND;
+		auto& params = m_ipcParameters->params.updateResidencyParams;
+		params.commits = commits;
+		params.success = 0;
+		return beginRpc(Command::UpdateResidency);
+	}
+
+	bool Client::planResidency(
+		VecId plan,
+		std::uint32_t planEpoch,
+		const D3DXVECTOR3& center,
+		float admissionRadius,
+		float retainRadius,
+		std::uint32_t maxCells,
+		std::uint32_t maxResources,
+		std::uint32_t viewHeadingBin,
+		std::uint64_t capBytes,
+		std::uint64_t availableBytes,
+		std::uint64_t capDebtBytes
+	) {
+		WAIT_FOR_PREVIOUS_COMMAND;
+		auto& params = m_ipcParameters->params.planResidencyParams;
+		params.plan = plan;
+		params.planEpoch = planEpoch;
+		params.centerX = center.x;
+		params.centerY = center.y;
+		params.centerZ = center.z;
+		params.admissionRadius = admissionRadius;
+		params.retainRadius = retainRadius;
+		params.maxCells = maxCells;
+		params.maxResources = maxResources;
+		params.viewHeadingBin = viewHeadingBin;
+		params.capBytes = capBytes;
+		params.availableBytes = availableBytes;
+		params.capDebtBytes = capDebtBytes;
+		return beginRpc(Command::PlanResidency);
+	}
+
 	bool Client::initLandscape(VecId landscapeBuffers) {
 		WAIT_FOR_PREVIOUS_COMMAND;
 

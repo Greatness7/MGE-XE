@@ -194,6 +194,20 @@ namespace IPC {
 		* @return Whether the RPC was issued successfully.
 		*/
 		bool initDistantStatics(VecId distantStatics, VecId distantSubsets, float farStaticMinSize, float veryFarStaticMinSize);
+		bool updateResidency(VecId commits);
+		bool planResidency(
+			VecId plan,
+			std::uint32_t planEpoch,
+			const D3DXVECTOR3& center,
+			float admissionRadius,
+			float retainRadius,
+			std::uint32_t maxCells,
+			std::uint32_t maxResources,
+			std::uint32_t viewHeadingBin,
+			std::uint64_t capBytes,
+			std::uint64_t availableBytes,
+			std::uint64_t capDebtBytes
+		);
 
 		/**
 		* @brief Inform the server of distant terrain D3D resources.
@@ -208,6 +222,7 @@ namespace IPC {
 		OutputStatus outputStatus() const { assert(m_ipcParameters->command == Command::QueryOutputStatus); return static_cast<OutputStatus>(m_ipcParameters->params.outputStatusParams.status); }
 		bool lastInitLandscapeSucceeded() const { assert(m_ipcParameters->command == Command::InitLandscape); return m_ipcParameters->params.initLandscapeParams.success != 0; }
 		bool lastInitDistantStaticsSucceeded() const { assert(m_ipcParameters->command == Command::InitDistantStatics); return m_ipcParameters->params.distantStaticParams.success != 0; }
+		bool lastUpdateResidencySucceeded() const { assert(m_ipcParameters->command == Command::UpdateResidency); return m_ipcParameters->params.updateResidencyParams.success != 0; }
 
 		/**
 		* @brief Update the current worldspace by informing the server of the player's current cell.

@@ -8,6 +8,10 @@
 class IpcClientVector {
 	IPC::VecView<RenderMesh> m_view;
 	bool m_isAtBeginning;
+	// Index of the element next() will return. The view's own cursor cannot serve this role:
+	// next() returns the element it is already sitting on before advancing, so once iteration
+	// has begun the view's cursor names the element already handed out, one behind this.
+	std::uint32_t m_nextIndex;
 
 public:
 	IpcClientVector();

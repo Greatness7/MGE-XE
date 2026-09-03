@@ -105,6 +105,8 @@ pub(crate) fn update_uv_bounds_from_maps(
             for vertex in subset.vertices.iter_mut() {
                 vertex.uv_bound = bound;
             }
+            // The only point in the pipeline where a subset is known to hold exactly one bound.
+            subset.uv_bounds = vec![bound];
             let page_id: u32 = page_id.try_into().map_err(|_| anyhow!("atlas page id exceeds u32"))?;
             subset.texture = crate::SubsetTexture::AtlasPage(page_id);
         }

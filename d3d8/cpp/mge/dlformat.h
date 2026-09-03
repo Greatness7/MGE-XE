@@ -52,7 +52,12 @@ struct DistantSubset {
     HorizonFootprint horizonFootprint;
     int farFaces;
     int veryFarFaces;
+    std::uint64_t geometryBytes;
+    std::uint32_t resourceId;
+    std::uint32_t resourceFlags;
 };
+
+static constexpr std::uint32_t DISTANT_SUBSET_STREAMABLE_MERGED = 1u << 0;
 
 struct DistantStatic {
     unsigned char type;
@@ -74,16 +79,24 @@ struct UsedDistantStatic {
 };
 
 namespace StaticMeshesBin {
-    static constexpr std::uint8_t FileMagic[8] = { 'X', 'E', 'S', 'T', 'A', 'T', '0', '5' };
-    static constexpr std::uint32_t FileVersion = 5;
-    static constexpr std::uint32_t SerializedHeaderSize = 136;
+    static constexpr std::uint8_t FileMagic[8] = { 'X', 'E', 'S', 'T', 'A', 'T', '0', '6' };
+    static constexpr std::uint32_t FileVersion = 6;
+    static constexpr std::uint32_t SerializedHeaderSize = 160;
     static constexpr std::uint32_t SerializedStaticRecordSize = 52;
-    static constexpr std::uint32_t SerializedSubsetRecordSize = 144;
+    static constexpr std::uint32_t SerializedSubsetRecordSize = 152;
     static constexpr std::uint32_t SerializedComponentRecordSize = 16;
-    static constexpr std::uint32_t VertexStride = 28;
+    static constexpr std::uint32_t SerializedPaletteRecordSize = 16;
+    static constexpr std::uint32_t VertexStride = 20;
     static constexpr std::uint32_t GrassVertexStride = 20;
     static constexpr std::uint32_t IndexElementSize = 2;
     static constexpr std::uint32_t KnownFlagsMask = 0x3;
+
+    // Maximum UV-bound palette entries in one subset. Interlock across three languages, all of
+    // which must move together: this constant, `UV_BOUND_PALETTE_CAP` in
+    // `distantland/crates/formats/src/distant_statics.rs`, and the `uvBoundPalette[N]` array size
+    // in `assets/Data Files/shaders/core/XE Common.fx`. Rust and C++ disagreeing fails loudly at
+    // load; HLSL disagreeing does not, and shows as wrong atlas tiles on a few subsets.
+    static constexpr std::uint32_t MaxPaletteEntries = 128;
 
     struct Vec3 {
         float x;
@@ -146,6 +159,10 @@ namespace StaticMeshesBin {
         std::uint64_t component_table_size;
         std::uint32_t component_record_size;
         std::uint32_t component_count;
+        std::uint64_t palette_table_offset;
+        std::uint64_t palette_table_size;
+        std::uint32_t palette_record_size;
+        std::uint32_t palette_count;
     };
 
     struct StaticRecord {
@@ -169,6 +186,8 @@ namespace StaticMeshesBin {
         HorizonFootprint horizonFootprint;
         std::uint32_t first_component_index;
         std::uint32_t component_count;
+        std::uint32_t first_palette_index;
+        std::uint32_t palette_count;
     };
 
     struct ComponentRecord {
@@ -179,6 +198,12 @@ namespace StaticMeshesBin {
         std::uint8_t reserved[3];
     };
 
+    // One atlas rect in a subset's UV-bound palette, lane order [min_v, max_u, min_u, max_v].
+    // Static vertices select an entry by the ordinal in position.w.
+    struct PaletteRecord {
+        float bound[4];
+    };
+
     static_assert(sizeof(HorizonFootprint) == 56, "Static mesh horizon footprint ABI drifted");
     static_assert(alignof(HorizonFootprint) == 4, "Static mesh horizon footprint alignment drifted");
     static_assert(std::is_standard_layout<HorizonFootprint>::value, "Static mesh horizon footprint must stay POD");
@@ -186,10 +211,13 @@ namespace StaticMeshesBin {
     static_assert(offsetof(HorizonFootprint, vertexCount) == 4, "Static mesh horizon footprint vertexCount offset drifted");
     static_assert(offsetof(HorizonFootprint, padding) == 5, "Static mesh horizon footprint padding offset drifted");
     static_assert(offsetof(HorizonFootprint, footprintXY) == 8, "Static mesh horizon footprint vertices offset drifted");
-    static_assert(sizeof(DistantSubset) == 128, "Distant subset ABI drifted");
+    static_assert(sizeof(DistantSubset) == 144, "Distant subset ABI drifted");
     static_assert(offsetof(DistantSubset, horizonFootprint) == 64, "Distant subset horizon footprint offset drifted");
     static_assert(offsetof(DistantSubset, farFaces) == 120, "Distant subset farFaces offset drifted");
     static_assert(offsetof(DistantSubset, veryFarFaces) == 124, "Distant subset veryFarFaces offset drifted");
+    static_assert(offsetof(DistantSubset, geometryBytes) == 128, "Distant subset geometryBytes offset drifted");
+    static_assert(offsetof(DistantSubset, resourceId) == 136, "Distant subset resourceId offset drifted");
+    static_assert(offsetof(DistantSubset, resourceFlags) == 140, "Distant subset resourceFlags offset drifted");
     static_assert(sizeof(Vec3) == 12, "Static mesh vec3 ABI drifted");
     static_assert(sizeof(BoundingSphere) == 16, "Static mesh sphere ABI drifted");
     static_assert(sizeof(Aabb) == 24, "Static mesh AABB ABI drifted");
@@ -197,6 +225,10 @@ namespace StaticMeshesBin {
     static_assert(sizeof(StaticRecord) == SerializedStaticRecordSize, "Static mesh record ABI drifted");
     static_assert(sizeof(SubsetRecord) == SerializedSubsetRecordSize, "Static mesh subset ABI drifted");
     static_assert(sizeof(ComponentRecord) == SerializedComponentRecordSize, "Static mesh component ABI drifted");
+    static_assert(sizeof(PaletteRecord) == SerializedPaletteRecordSize, "Static mesh palette ABI drifted");
+    static_assert(alignof(PaletteRecord) == 4, "Static mesh palette alignment drifted");
+    static_assert(std::is_standard_layout<PaletteRecord>::value, "Static mesh palette must stay POD");
+    static_assert(offsetof(PaletteRecord, bound) == 0, "Static mesh palette bound offset drifted");
     static_assert(alignof(StaticMeshesFileHeader) == 8, "Static mesh header alignment drifted");
     static_assert(alignof(StaticRecord) == 4, "Static mesh record alignment drifted");
     static_assert(alignof(SubsetRecord) == 8, "Static mesh subset alignment drifted");
@@ -236,6 +268,10 @@ namespace StaticMeshesBin {
     static_assert(offsetof(StaticMeshesFileHeader, component_table_size) == 120, "Static mesh component_table_size drifted");
     static_assert(offsetof(StaticMeshesFileHeader, component_record_size) == 128, "Static mesh component_record_size drifted");
     static_assert(offsetof(StaticMeshesFileHeader, component_count) == 132, "Static mesh component_count drifted");
+    static_assert(offsetof(StaticMeshesFileHeader, palette_table_offset) == 136, "Static mesh palette_table_offset drifted");
+    static_assert(offsetof(StaticMeshesFileHeader, palette_table_size) == 144, "Static mesh palette_table_size drifted");
+    static_assert(offsetof(StaticMeshesFileHeader, palette_record_size) == 152, "Static mesh palette_record_size drifted");
+    static_assert(offsetof(StaticMeshesFileHeader, palette_count) == 156, "Static mesh palette_count drifted");
     static_assert(offsetof(StaticRecord, static_type) == 0, "Static mesh static_type offset drifted");
     static_assert(offsetof(StaticRecord, sphere) == 4, "Static mesh sphere offset drifted");
     static_assert(offsetof(StaticRecord, aabb) == 20, "Static mesh AABB offset drifted");
@@ -253,6 +289,8 @@ namespace StaticMeshesBin {
     static_assert(offsetof(SubsetRecord, horizonFootprint) == 80, "Static mesh subset horizonFootprint drifted");
     static_assert(offsetof(SubsetRecord, first_component_index) == 136, "Static mesh subset first_component_index drifted");
     static_assert(offsetof(SubsetRecord, component_count) == 140, "Static mesh subset component_count drifted");
+    static_assert(offsetof(SubsetRecord, first_palette_index) == 144, "Static mesh subset first_palette_index drifted");
+    static_assert(offsetof(SubsetRecord, palette_count) == 148, "Static mesh subset palette_count drifted");
     static_assert(offsetof(ComponentRecord, first_triangle) == 0, "Static mesh component first_triangle drifted");
     static_assert(offsetof(ComponentRecord, triangle_count) == 4, "Static mesh component triangle_count drifted");
     static_assert(offsetof(ComponentRecord, radius) == 8, "Static mesh component radius drifted");
@@ -269,6 +307,7 @@ namespace StaticMeshesBin {
         InvalidStaticRecordSize,
         InvalidSubsetRecordSize,
         InvalidComponentRecordSize,
+        InvalidPaletteRecordSize,
         UnsupportedVertexStride,
         UnsupportedGrassVertexStride,
         InvalidReservedField,
@@ -276,6 +315,7 @@ namespace StaticMeshesBin {
         InvalidStaticTable,
         InvalidSubsetTable,
         InvalidComponentTable,
+        InvalidPaletteTable,
         InvalidSectionLayout,
         InvalidGeometryBlob
     };
@@ -380,6 +420,9 @@ namespace StaticMeshesBin {
         if (header.component_record_size != SerializedComponentRecordSize) {
             return HeaderValidation::InvalidComponentRecordSize;
         }
+        if (header.palette_record_size != SerializedPaletteRecordSize) {
+            return HeaderValidation::InvalidPaletteRecordSize;
+        }
         if (header.vertex_stride != VertexStride) {
             return HeaderValidation::UnsupportedVertexStride;
         }
@@ -411,9 +454,16 @@ namespace StaticMeshesBin {
             return HeaderValidation::InvalidComponentTable;
         }
 
+        std::uint64_t expectedPaletteTableSize = 0;
+        if (!TryMultiply(header.palette_count, header.palette_record_size, expectedPaletteTableSize)
+            || header.palette_table_size != expectedPaletteTableSize) {
+            return HeaderValidation::InvalidPaletteTable;
+        }
+
         if (header.static_table_offset != header.header_size
             || (header.subset_table_offset % 8u) != 0
             || (header.component_table_offset % 8u) != 0
+            || (header.palette_table_offset % 8u) != 0
             || (header.geometry_blob_offset % 8u) != 0) {
             return HeaderValidation::InvalidSectionLayout;
         }
@@ -421,11 +471,13 @@ namespace StaticMeshesBin {
         std::uint64_t staticTableEnd = 0;
         std::uint64_t subsetTableEnd = 0;
         std::uint64_t componentTableEnd = 0;
+        std::uint64_t paletteTableEnd = 0;
         std::uint64_t textureBlobEnd = 0;
         std::uint64_t geometryBlobEnd = 0;
         if (!TryAdd(header.static_table_offset, header.static_table_size, staticTableEnd)
             || !TryAdd(header.subset_table_offset, header.subset_table_size, subsetTableEnd)
             || !TryAdd(header.component_table_offset, header.component_table_size, componentTableEnd)
+            || !TryAdd(header.palette_table_offset, header.palette_table_size, paletteTableEnd)
             || !TryAdd(header.texture_blob_offset, header.texture_blob_size, textureBlobEnd)
             || !TryAdd(header.geometry_blob_offset, header.geometry_blob_size, geometryBlobEnd)) {
             return HeaderValidation::InvalidSectionLayout;
@@ -434,6 +486,7 @@ namespace StaticMeshesBin {
         if (!RangeWithinFile(header.static_table_offset, header.static_table_size, fileSize)
             || !RangeWithinFile(header.subset_table_offset, header.subset_table_size, fileSize)
             || !RangeWithinFile(header.component_table_offset, header.component_table_size, fileSize)
+            || !RangeWithinFile(header.palette_table_offset, header.palette_table_size, fileSize)
             || !RangeWithinFile(header.texture_blob_offset, header.texture_blob_size, fileSize)
             || !RangeWithinFile(header.geometry_blob_offset, header.geometry_blob_size, fileSize)) {
             return HeaderValidation::InvalidSectionLayout;
@@ -443,7 +496,8 @@ namespace StaticMeshesBin {
             return HeaderValidation::InvalidSectionLayout;
         }
         if (subsetTableEnd > header.component_table_offset
-            || componentTableEnd > header.texture_blob_offset
+            || componentTableEnd > header.palette_table_offset
+            || paletteTableEnd > header.texture_blob_offset
             || textureBlobEnd > header.geometry_blob_offset) {
             return HeaderValidation::InvalidSectionLayout;
         }
@@ -470,19 +524,21 @@ namespace StaticMeshesBin {
         case HeaderValidation::Ok:
             return "ok";
         case HeaderValidation::InvalidMagic:
-            return "static_meshes magic must be XESTAT05";
+            return "static_meshes magic must be XESTAT06";
         case HeaderValidation::UnsupportedVersion:
-            return "static_meshes version must be 5";
+            return "static_meshes version must be 6";
         case HeaderValidation::InvalidHeaderSize:
-            return "static_meshes header_size must be 136";
+            return "static_meshes header_size must be 160";
         case HeaderValidation::InvalidStaticRecordSize:
             return "static_meshes static_record_size must be 52";
         case HeaderValidation::InvalidSubsetRecordSize:
-            return "static_meshes subset_record_size must be 144";
+            return "static_meshes subset_record_size must be 152";
         case HeaderValidation::InvalidComponentRecordSize:
             return "static_meshes component_record_size must be 16";
+        case HeaderValidation::InvalidPaletteRecordSize:
+            return "static_meshes palette_record_size must be 16";
         case HeaderValidation::UnsupportedVertexStride:
-            return "static_meshes vertex_stride must be 28";
+            return "static_meshes vertex_stride must be 20";
         case HeaderValidation::UnsupportedGrassVertexStride:
             return "static_meshes grass_vertex_stride must be 20";
         case HeaderValidation::InvalidReservedField:
@@ -495,6 +551,8 @@ namespace StaticMeshesBin {
             return "static_meshes subset table size is inconsistent";
         case HeaderValidation::InvalidComponentTable:
             return "static_meshes component table size is inconsistent";
+        case HeaderValidation::InvalidPaletteTable:
+            return "static_meshes palette table size is inconsistent";
         case HeaderValidation::InvalidSectionLayout:
             return "static_meshes section offsets are invalid or overlapping";
         case HeaderValidation::InvalidGeometryBlob:
@@ -507,19 +565,21 @@ namespace StaticMeshesBin {
     inline std::string DetailedValidationMessage(const StaticMeshesFileHeader& header, HeaderValidation validation) {
         switch (validation) {
         case HeaderValidation::InvalidMagic:
-            return "static_meshes magic must be XESTAT05 (got '" + PrintableMagic(header.magic) + "')";
+            return "static_meshes magic must be XESTAT06 (got '" + PrintableMagic(header.magic) + "')";
         case HeaderValidation::UnsupportedVersion:
-            return "static_meshes version must be 5 (got " + std::to_string(header.version) + ")";
+            return "static_meshes version must be 6 (got " + std::to_string(header.version) + ")";
         case HeaderValidation::InvalidHeaderSize:
-            return "static_meshes header_size must be 136 (got " + std::to_string(header.header_size) + ")";
+            return "static_meshes header_size must be 160 (got " + std::to_string(header.header_size) + ")";
         case HeaderValidation::InvalidStaticRecordSize:
             return "static_meshes static_record_size must be 52 (got " + std::to_string(header.static_record_size) + ")";
         case HeaderValidation::InvalidSubsetRecordSize:
-            return "static_meshes subset_record_size must be 144 (got " + std::to_string(header.subset_record_size) + ")";
+            return "static_meshes subset_record_size must be 152 (got " + std::to_string(header.subset_record_size) + ")";
         case HeaderValidation::InvalidComponentRecordSize:
             return "static_meshes component_record_size must be 16 (got " + std::to_string(header.component_record_size) + ")";
+        case HeaderValidation::InvalidPaletteRecordSize:
+            return "static_meshes palette_record_size must be 16 (got " + std::to_string(header.palette_record_size) + ")";
         case HeaderValidation::UnsupportedVertexStride:
-            return "static_meshes vertex_stride must be 28 (got " + std::to_string(header.vertex_stride) + ")";
+            return "static_meshes vertex_stride must be 20 (got " + std::to_string(header.vertex_stride) + ")";
         case HeaderValidation::UnsupportedGrassVertexStride:
             return "static_meshes grass_vertex_stride must be 20 (got " + std::to_string(header.grass_vertex_stride) + ")";
         case HeaderValidation::InvalidReservedField:

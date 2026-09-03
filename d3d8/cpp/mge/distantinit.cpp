@@ -21,9 +21,11 @@
 #include <optional>
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 
 
@@ -37,6 +39,24 @@ namespace DistantLoaders {
     bool queryStaticsSkipResult(bool& result);
     void releaseTerrainResources();
     void releaseStaticsResources();
+
+    // Merged-static residency runtime (distantstatics.cpp).
+    void beginResidency();
+    void haltResidency();
+    std::uint64_t totalMergedGeometryBytes();
+    std::uint64_t logicalGpuMergedGeometryBytes();
+    bool residencyFullDrainActive();
+    bool stepResidencyFullDrain(double budgetMs, std::uint64_t budgetBytes, std::uint32_t budgetResources, bool& done);
+    void wakeResidencyForCapDebt();
+    bool residencyActive();
+    bool residencyHasPendingEviction();
+    bool residencyQuiescent();
+    void noteResidencyPresent();
+    void noteResidencyEvictionBoundary(bool stage0);
+    void planResidency(const D3DXVECTOR3& center, std::uint32_t viewHeadingBin);
+    void tickResidencyAdmission(double budgetMs, std::uint64_t budgetBytes, std::uint32_t budgetResources);
+    bool tickResidencyEviction(double budgetMs, std::uint32_t budgetResources);
+    void logResidencySummary();
 }
 
 DistantLand::InitState DistantLand::state = DistantLand::InitState::Uninitialized;
@@ -61,6 +81,9 @@ VendorSpecificRendering DistantLand::vsr;
 IPC::Client DistantLand::ipcClient;
 std::vector<DistantLand::DynamicVisGroup> DistantLand::dynamicVisGroups;
 void* DistantLand::lastDistantVisCell;
+std::string DistantLand::lastWorldSpaceKey;
+bool DistantLand::lastWorldSpaceFound = false;
+bool DistantLand::worldSpaceCacheValid = false;
 bool DistantLand::isDistantLandLoaded = false;
 bool DistantLand::staticsUploaded = false;
 
@@ -69,7 +92,17 @@ bool DistantLand::pumpActive = false;
 bool DistantLand::pumpDraining = false;
 bool DistantLand::worldResolved = false;
 bool DistantLand::uploadComplete = false;
+bool DistantLand::automaticStreamingCapActive = false;
+std::uint64_t DistantLand::mergedStreamingCapBytes = 0;
+int DistantLand::nextMergedBudgetSampleMs = 0;
+std::uint32_t DistantLand::lowerMergedBudgetSampleCount = 0;
+std::uint32_t DistantLand::mergedBudgetSampleCount = 0;
+std::uint32_t DistantLand::mergedBudgetRatchetCount = 0;
+std::uint64_t DistantLand::pendingMergedCandidateCapBytes = 0;
+std::uint64_t DistantLand::pendingMergedPeakMemoryUsedBytes = 0;
+std::uint64_t DistantLand::peakMergedMemoryUsedBytes = 0;
 bool DistantLand::staticsPhaseStarted = false;
+int DistantLand::residencyBootstrapStartedMs = 0;
 bool DistantLand::outputStatusQueryPending = false;
 int DistantLand::outputWaitStartedMs = 0;
 int DistantLand::outputWaitNextLogMs = 30000;
@@ -82,12 +115,16 @@ VisibleSet DistantLand::visDistantShared;
 VisibleSet DistantLand::visGrassShared;
 VisibleSet DistantLand::visExtraShared;
 IPC::VecView<IPC::DynVisFlag> DistantLand::dynVisFlagsShared;
+IPC::VecView<IPC::ResidencyPlan> DistantLand::residencyPlanShared;
+IPC::VecView<IPC::ResidencyCommit> DistantLand::residencyCommitShared;
 
 IPC::VecId DistantLand::visLandSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visDistantSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visGrassSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visExtraSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::dynVisFlagsSharedId = IPC::InvalidVector;
+IPC::VecId DistantLand::residencyPlanSharedId = IPC::InvalidVector;
+IPC::VecId DistantLand::residencyCommitSharedId = IPC::InvalidVector;
 
 vector<DistantLand::RecordedState> DistantLand::recordMW;
 vector<DistantLand::RecordedState> DistantLand::recordSky;
@@ -145,8 +182,43 @@ float DistantLand::windScaling, DistantLand::niceWeather;
 float DistantLand::lightSunMult, DistantLand::lightAmbMult;
 DistantLand::TerrainRuntimeConstants DistantLand::terrainConstants = {};
 
+namespace {
+
+std::uint64_t saturatingAdd(std::uint64_t a, std::uint64_t b) {
+    return b > std::numeric_limits<std::uint64_t>::max() - a
+        ? std::numeric_limits<std::uint64_t>::max()
+        : a + b;
+}
+
+std::uint64_t mergedCapCandidate(
+    std::uint64_t heapBudget,
+    std::uint64_t memoryUsed,
+    std::uint64_t logicalGpuMergedBytes,
+    std::uint64_t& headroom
+) {
+    headroom = std::clamp(
+        heapBudget / 8,
+        DistantLand::kMergedBudgetMinHeadroomBytes,
+        DistantLand::kMergedBudgetMaxHeadroomBytes
+    );
+    const std::uint64_t available = heapBudget > memoryUsed
+        ? heapBudget - memoryUsed
+        : 0;
+    const std::uint64_t availableAfterHeadroom = available > headroom
+        ? available - headroom
+        : 0;
+
+    // logicalGpuMergedBytes and DXVK memoryUsed rise together when a streamed resource is
+    // committed, so adding the former keeps the candidate stable. Do not reduce this to
+    // budget - used: that would make MGE's own admissions shrink its cap.
+    return saturatingAdd(logicalGpuMergedBytes, availableAfterHeadroom);
+}
+
+}
+
 DistantLand::NativeDepthBackend DistantLand::nativeDepthBackend = DistantLand::NativeDepthBackend::None;
 IDxvkMorrowindInterop* DistantLand::dxvkMorrowindInterop = nullptr;
+IDxvkMorrowindMemoryInterop1* DistantLand::dxvkMorrowindMemoryInterop = nullptr;
 bool DistantLand::stage1UsedNativeDepth = false;
 bool DistantLand::nativeStage2Eligible = false;
 bool DistantLand::dsvMayBeNoncanonical = true;
@@ -169,6 +241,7 @@ D3DXHANDLE DistantLand::ehMaterialAlpha;
 D3DXHANDLE DistantLand::ehHasAlpha;
 D3DXHANDLE DistantLand::ehHasBones;
 D3DXHANDLE DistantLand::ehHasVCol;
+D3DXHANDLE DistantLand::ehUvBoundPalette;
 D3DXHANDLE DistantLand::ehTex0;
 D3DXHANDLE DistantLand::ehTex1;
 D3DXHANDLE DistantLand::ehTex2;
@@ -273,6 +346,16 @@ bool DistantLand::init() {
     staticsHostVecId = IPC::InvalidVector;
     subsetsHostVecId = IPC::InvalidVector;
     uploadComplete = false;
+    mergedStreamingCapBytes = 0;
+    automaticStreamingCapActive = false;
+    nextMergedBudgetSampleMs = 0;
+    lowerMergedBudgetSampleCount = 0;
+    mergedBudgetSampleCount = 0;
+    mergedBudgetRatchetCount = 0;
+    pendingMergedCandidateCapBytes = 0;
+    pendingMergedPeakMemoryUsedBytes = 0;
+    peakMergedMemoryUsedBytes = 0;
+    LOG::logline("-- Merged-static streaming cap: selection=deferred_until_fixed_resources");
     worldResolved = false;
     isDistantLandLoaded = false;
     staticsUploaded = false;
@@ -316,26 +399,27 @@ bool DistantLand::init() {
         return true;
     }
 
-    // In-world renderer restart: player cell already active. Upload synchronously
-    // (a brief hitch is acceptable here) rather than pumping across menu frames.
+    // In-world renderer restart: player cell already active. Drive the same pump the
+    // menu path uses, but to completion here: the engine is blocked inside
+    // restartRenderer, so there are no frames to spread the work across.
     LOG::logline("-- Player cell already active; loading distant land immediately");
-    if (!uploadDistantLand()) {
-        release();
-        state = InitState::FailedDisabled;
+    isRenderCached = false;
+    armUploadPump();
+    drainUploadPump();
+    if (!uploadComplete) {
+        // failUpload() has already released and set FailedDisabled.
         return false;
     }
 
-    LOG::logline("<< Completed Distant Land init");
-    state = InitState::RenderReady;
-    isRenderCached = false;
+    // Only now that the drain has finished. The pump's Done phase calls
+    // finalizeUploadIfReady() itself, so setting this first would promote to
+    // RenderReady mid-drain and let drainUploadPump's closing loading frame render
+    // through the distant path. finalizeUploadIfReady also resolves vis-group object
+    // pointers, which a restart needs because the resolve-during-init hook that
+    // normally does it does not fire on this path.
     worldResolved = true;
-    uploadComplete = true;
-
-    // Match the deferred (onResolveDuringInit) path: the resolve-during-init hook
-    // does not fire on a renderer restart, so resolve vis-group object pointers
-    // here or journal/global-gated distant statics never update after a restart.
-    resolveDynamicVisGroups();
-    return true;
+    finalizeUploadIfReady();
+    return state == InitState::RenderReady;
 }
 
 // Fast device-resource phase: shaders and render targets only, no heavy geometry.
@@ -383,47 +467,16 @@ bool DistantLand::initDeviceResources() {
         return false;
     }
 
-    return true;
-}
-
-// Heavy geometry-upload phase: terrain, distant statics, grass. This is the
-// ~3.0 s of VB/IB/texture upload that 4.3 aims to defer off the startup hook.
-bool DistantLand::uploadDistantLand() {
-    const int uploadStartMs = HighResolutionTimer::getMilliseconds();
-
-    if (!initIpcBlocking()) {
-        return false;
-    }
-
-    if (!initLandscape()) {
-        return false;
-    }
-
-    // The InitLandscape result is consumed inside the statics phase, immediately before its
-    // first RPC, so the host's land-quadtree build overlaps the client's statics parse.
-    if (!initDistantStaticsClient()) {
-        return false;
-    }
-
-    if (!initGrass()) {
-        return false;
-    }
-
-    if (staticsHostVecId != IPC::InvalidVector) {
-        if (ipcClient.waitForCompletion() != IPC::Complete || !ipcClient.lastInitDistantStaticsSucceeded()) {
-            return false;
+    if (Configuration.MGEFlags & USE_DISTANT_LAND) {
+        const HRESULT memoryInteropHr = device->QueryInterface(
+            __uuidof(IDxvkMorrowindMemoryInterop1),
+            reinterpret_cast<void**>(&dxvkMorrowindMemoryInterop)
+        );
+        if (FAILED(memoryInteropHr)) {
+            dxvkMorrowindMemoryInterop = nullptr;
         }
-        if (!ipcClient.freeVecBlocking(staticsHostVecId)
-            || !ipcClient.freeVecBlocking(subsetsHostVecId)) {
-            return false;
-        }
-        staticsHostVecId = IPC::InvalidVector;
-        subsetsHostVecId = IPC::InvalidVector;
     }
 
-    const int uploadEndMs = HighResolutionTimer::getMilliseconds();
-    isDistantLandLoaded = true;
-    LOG::logline("-- Distant land upload completed in %d ms", uploadEndMs - uploadStartMs);
     return true;
 }
 
@@ -433,25 +486,6 @@ bool DistantLand::initIpc() {
         return false;
     }
     return true;
-}
-
-bool DistantLand::initIpcBlocking() {
-    if (ipcClient.launchState() == IPC::Client::LaunchedPendingBootstrap && ipcClient.isServerActive()) {
-        if (ipcClient.waitForBootstrapReady() != IPC::Complete) {
-            return false;
-        }
-        ipcClient.markRuntimeActive();
-        LOG::logline("-- Reusing early-started 64-bit host process");
-    } else if (ipcClient.launchState() == IPC::Client::Inactive) {
-        if (!ipcClient.startServer("mgeHost64.exe")) {
-            return false;
-        }
-    }
-
-    if (!ipcClient.waitForOutputReady()) {
-        return false;
-    }
-    return initIpcVectors();
 }
 
 bool DistantLand::initIpcVectors() {
@@ -484,7 +518,25 @@ bool DistantLand::initIpcVectors() {
     auto& dynVisVec = maybeDynVisVec.value();
     dynVisFlagsSharedId = dynVisVec.id();
     dynVisFlagsShared = dynVisVec;
+
+    auto maybeResidencyPlanVec = ipcClient.allocVecBlocking<IPC::ResidencyPlan>(64, 128, 64);
+    if (!maybeResidencyPlanVec.has_value()) return false;
+    residencyPlanSharedId = maybeResidencyPlanVec->id();
+    residencyPlanShared = *maybeResidencyPlanVec;
+
+    auto maybeResidencyCommitVec = ipcClient.allocVecBlocking<IPC::ResidencyCommit>(64, 128, 64);
+    if (!maybeResidencyCommitVec.has_value()) return false;
+    residencyCommitSharedId = maybeResidencyCommitVec->id();
+    residencyCommitShared = *maybeResidencyCommitVec;
     return true;
+}
+
+bool DistantLand::verifyResidencyProtocol() {
+    residencyCommitShared.clear();
+    if (!ipcClient.updateResidency(residencyCommitSharedId)) {
+        return false;
+    }
+    return ipcClient.waitForCompletion() == IPC::Complete && ipcClient.lastUpdateResidencySucceeded();
 }
 
 // Consume the outstanding InitLandscape RPC result and release its staging vector.
@@ -776,6 +828,7 @@ bool DistantLand::initShader() {
     ehHasAlpha = effect->GetParameterByName(0, "hasAlpha");
     ehHasBones = effect->GetParameterByName(0, "hasBones");
     ehHasVCol = effect->GetParameterByName(0, "hasVCol");
+    ehUvBoundPalette = effect->GetParameterByName(0, "uvBoundPalette");
     ehTex0 = effect->GetParameterByName(0, "tex0");
     ehTex1 = effect->GetParameterByName(0, "tex1");
     ehTex2 = effect->GetParameterByName(0, "tex2");
@@ -1346,6 +1399,10 @@ float DistantLand::drainProgressPct() {
     case UploadPhase::StaticsHostWait:
         return 95.0f;
 
+    case UploadPhase::ResidencyFullDrain:
+    case UploadPhase::ResidencyBootstrap:
+        return 98.0f;
+
     case UploadPhase::Done:
         return 100.0f;
 
@@ -1400,8 +1457,10 @@ void DistantLand::drainUploadPump() {
         pumpRan = true;
         pumpUploadTick(kDrainBudgetMs);
         const bool waitingForGeneration = uploadPhase == UploadPhase::HostWait || uploadPhase == UploadPhase::OutputWait;
+        // The bootstrap phase is I/O-bound on the reader thread, so yield rather than spinning.
         const bool waitingForHost = waitingForGeneration
-            || uploadPhase == UploadPhase::StaticsHostWait;
+            || uploadPhase == UploadPhase::StaticsHostWait
+            || uploadPhase == UploadPhase::ResidencyBootstrap;
         const char* loadingText = waitingForGeneration ? "MGE XE generating..." : buffer;
         const float progress = drainProgressPct();
 
@@ -1437,6 +1496,8 @@ void DistantLand::drainUploadPump() {
 
 // Abort an in-flight pump and drop any partial statics-loader state.
 void DistantLand::abortUploadPump() {
+    // Join the reader before anything it reads from can go away. Idempotent.
+    DistantLoaders::haltResidency();
     pumpActive = false;
     uploadPhase = UploadPhase::None;
     staticsPhaseStarted = false;
@@ -1459,6 +1520,156 @@ void DistantLand::failUpload() {
     StatusOverlay::setStatus("MGE XE serious error condition. Exit Morrowind and check mgeXE.log for details.", StatusOverlay::PriorityError);
 }
 
+bool DistantLand::selectInitialMergedStreamingCap() {
+    const std::uint64_t totalMergedBytes = DistantLoaders::totalMergedGeometryBytes();
+    if (!dxvkMorrowindMemoryInterop) {
+        mergedStreamingCapBytes = std::numeric_limits<std::uint64_t>::max();
+        LOG::logline(
+            "-- Merged-static cap selected: source=unsupported_or_native_d3d9 cap=infinite merged_total=%llu B schedule=full_drain",
+            static_cast<unsigned long long>(totalMergedBytes)
+        );
+        return true;
+    }
+
+    std::uint64_t heapBudget = 0;
+    std::uint64_t memoryUsed = 0;
+    const HRESULT hr = dxvkMorrowindMemoryInterop->GetDeviceLocalMemoryBudgetV1(&heapBudget, &memoryUsed);
+    if (FAILED(hr) || heapBudget == 0) {
+        mergedStreamingCapBytes = std::numeric_limits<std::uint64_t>::max();
+        LOG::logline(
+            "!! DXVK merged-static budget query unavailable or invalid: hr=0x%08lx heap_budget=%llu B memory_used=%llu B; using infinite cap and full drain",
+            static_cast<unsigned long>(hr),
+            static_cast<unsigned long long>(heapBudget),
+            static_cast<unsigned long long>(memoryUsed)
+        );
+        return true;
+    }
+
+    const std::uint64_t logicalGpuMergedBytes = DistantLoaders::logicalGpuMergedGeometryBytes();
+    std::uint64_t headroom = 0;
+    const std::uint64_t candidate = mergedCapCandidate(
+        heapBudget,
+        memoryUsed,
+        logicalGpuMergedBytes,
+        headroom
+    );
+    mergedStreamingCapBytes = candidate;
+    automaticStreamingCapActive = true;
+    mergedBudgetSampleCount = 1;
+    peakMergedMemoryUsedBytes = memoryUsed;
+    nextMergedBudgetSampleMs = HighResolutionTimer::getMilliseconds() + kMergedBudgetSampleIntervalMs;
+    LOG::logline(
+        "-- Merged-static cap sample: initial=1 heap_budget=%llu B memory_used=%llu B headroom=%llu B logical_gpu_merged=%llu B candidate_cap=%llu B merged_total=%llu B binds=%d",
+        static_cast<unsigned long long>(heapBudget),
+        static_cast<unsigned long long>(memoryUsed),
+        static_cast<unsigned long long>(headroom),
+        static_cast<unsigned long long>(logicalGpuMergedBytes),
+        static_cast<unsigned long long>(candidate),
+        static_cast<unsigned long long>(totalMergedBytes),
+        totalMergedBytes > candidate ? 1 : 0
+    );
+    return true;
+}
+
+void DistantLand::sampleMergedStreamingCap() {
+    if (!automaticStreamingCapActive || !dxvkMorrowindMemoryInterop) {
+        return;
+    }
+
+    const int nowMs = HighResolutionTimer::getMilliseconds();
+    if (nowMs < nextMergedBudgetSampleMs) {
+        return;
+    }
+    nextMergedBudgetSampleMs = nowMs + kMergedBudgetSampleIntervalMs;
+
+    std::uint64_t heapBudget = 0;
+    std::uint64_t memoryUsed = 0;
+    const HRESULT hr = dxvkMorrowindMemoryInterop->GetDeviceLocalMemoryBudgetV1(&heapBudget, &memoryUsed);
+    if (FAILED(hr) || heapBudget == 0) {
+        lowerMergedBudgetSampleCount = 0;
+        pendingMergedCandidateCapBytes = 0;
+        pendingMergedPeakMemoryUsedBytes = 0;
+        LOG::logline(
+            "!! DXVK merged-static budget resample ignored: hr=0x%08lx heap_budget=%llu B memory_used=%llu B",
+            static_cast<unsigned long>(hr),
+            static_cast<unsigned long long>(heapBudget),
+            static_cast<unsigned long long>(memoryUsed)
+        );
+        return;
+    }
+
+    ++mergedBudgetSampleCount;
+    peakMergedMemoryUsedBytes = std::max(peakMergedMemoryUsedBytes, memoryUsed);
+    const std::uint64_t logicalGpuMergedBytes = DistantLoaders::logicalGpuMergedGeometryBytes();
+    std::uint64_t headroom = 0;
+    const std::uint64_t candidate = mergedCapCandidate(
+        heapBudget,
+        memoryUsed,
+        logicalGpuMergedBytes,
+        headroom
+    );
+    if (candidate >= mergedStreamingCapBytes) {
+        lowerMergedBudgetSampleCount = 0;
+        pendingMergedCandidateCapBytes = 0;
+        pendingMergedPeakMemoryUsedBytes = 0;
+        return;
+    }
+
+    if (lowerMergedBudgetSampleCount == 0) {
+        pendingMergedPeakMemoryUsedBytes = memoryUsed;
+    } else {
+        pendingMergedPeakMemoryUsedBytes = std::max(pendingMergedPeakMemoryUsedBytes, memoryUsed);
+    }
+    // Apply the fourth consecutive lower candidate, not the minimum of the window. A single
+    // transient spike may begin confirmation, but it must not pin the session to that low point.
+    pendingMergedCandidateCapBytes = candidate;
+    ++lowerMergedBudgetSampleCount;
+    LOG::logline(
+        "-- Merged-static cap sample: initial=0 heap_budget=%llu B memory_used=%llu B headroom=%llu B logical_gpu_merged=%llu B candidate_cap=%llu B active_cap=%llu B lower_confirmation=%lu/%lu",
+        static_cast<unsigned long long>(heapBudget),
+        static_cast<unsigned long long>(memoryUsed),
+        static_cast<unsigned long long>(headroom),
+        static_cast<unsigned long long>(logicalGpuMergedBytes),
+        static_cast<unsigned long long>(candidate),
+        static_cast<unsigned long long>(mergedStreamingCapBytes),
+        lowerMergedBudgetSampleCount,
+        kMergedBudgetRatchetSamples
+    );
+
+    if (lowerMergedBudgetSampleCount < kMergedBudgetRatchetSamples) {
+        return;
+    }
+
+    const std::uint64_t previousCap = mergedStreamingCapBytes;
+    mergedStreamingCapBytes = std::min(mergedStreamingCapBytes, pendingMergedCandidateCapBytes);
+    ++mergedBudgetRatchetCount;
+    LOG::logline(
+        "-- Merged-static cap ratchet: previous=%llu B active=%llu B confirmation_peak_memory_used=%llu B samples=%lu",
+        static_cast<unsigned long long>(previousCap),
+        static_cast<unsigned long long>(mergedStreamingCapBytes),
+        static_cast<unsigned long long>(pendingMergedPeakMemoryUsedBytes),
+        kMergedBudgetRatchetSamples
+    );
+    lowerMergedBudgetSampleCount = 0;
+    pendingMergedCandidateCapBytes = 0;
+    pendingMergedPeakMemoryUsedBytes = 0;
+    DistantLoaders::wakeResidencyForCapDebt();
+}
+
+void DistantLand::logMergedStreamingBudgetSummary() {
+    if (!automaticStreamingCapActive) {
+        return;
+    }
+    LOG::logline(
+        "-- Merged-static budget summary: samples=%lu ratchets=%lu active_cap=%llu B peak_memory_used=%llu B logical_gpu_merged=%llu B",
+        mergedBudgetSampleCount,
+        mergedBudgetRatchetCount,
+        static_cast<unsigned long long>(mergedStreamingCapBytes),
+        static_cast<unsigned long long>(peakMergedMemoryUsedBytes),
+        static_cast<unsigned long long>(DistantLoaders::logicalGpuMergedGeometryBytes())
+    );
+}
+
 // Enable the render path once both gates are satisfied: the upload pump is
 // complete AND the save/new-game world data has resolved. Whichever event
 // happens last triggers the transition.
@@ -1477,6 +1688,94 @@ void DistantLand::finalizeUploadIfReady() {
     LOG::logline("-- Distant land render path enabled");
 }
 
+// Eviction boundary at the entry of renderStage0, before this frame's shadow/cull queries.
+// Both persistent visible vectors are cleared first, so no RenderMesh copy can reference a
+// buffer that is about to be released.
+void DistantLand::evictResidencyAtStage0() {
+    if (!DistantLoaders::residencyHasPendingEviction()) {
+        return;
+    }
+    // The previous frame's parallel-read shadow path can still hold an RPC. Never clear a
+    // shared vector the host may be writing; defer the whole batch to the next boundary.
+    if (ipcClient.pollRpcCompletion() != IPC::Complete) {
+        return;
+    }
+
+    visDistantShared.RemoveAll();
+    visExtraShared.RemoveAll();
+    if (DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources)) {
+        DistantLoaders::noteResidencyEvictionBoundary(true);
+    }
+}
+
+namespace {
+
+// Quantizes the horizontal camera view vector into 32 heading bins [0..=31], encoded as wire values 1..=32.
+// Bin b covers [b * 2pi/32, (b+1) * 2pi/32). Wire value 0 means no valid hint.
+// Paired with Rust decode_heading_bin / heading_vector in mgeHost64/src/state/distant_land.rs.
+std::uint32_t quantizeViewHeadingBin(const D3DXVECTOR4& eye) {
+    const float horizSq = eye.x * eye.x + eye.y * eye.y;
+    constexpr float kHorizEpsilonSq = 1e-4f;
+    if (horizSq <= kHorizEpsilonSq) {
+        return 0;
+    }
+
+    constexpr float kTwoPi = 6.28318530717958647692f;
+    float angle = std::atan2(eye.y, eye.x);
+    if (angle < 0.0f) {
+        angle += kTwoPi;
+    }
+    if (!(angle >= 0.0f && angle < kTwoPi)) {
+        // Rounding at the wrap point, or a non-finite view vector that slipped the gate above.
+        return 0;
+    }
+
+    const std::uint32_t bin = std::min(static_cast<std::uint32_t>(angle * (32.0f / kTwoPi)), 31u);
+    return bin + 1;
+}
+
+} // namespace
+
+// End-of-frame residency tick, after rendering has ended. Admission is always safe here; the
+// eviction fallback runs only on frames that never reached renderStage0 (menu/load screens).
+void DistantLand::tickResidency(bool stage0RanThisFrame) {
+    if (!canRenderDistantLand()) {
+        return;
+    }
+    sampleMergedStreamingCap();
+    if (!DistantLoaders::residencyActive()) {
+        return;
+    }
+    DistantLoaders::noteResidencyPresent();
+    // Every residency RPC below begins with a blocking wait on any outstanding command. Skip
+    // the whole tick instead, so a still-running render query can never stall a frame.
+    if (ipcClient.pollRpcCompletion() != IPC::Complete) {
+        return;
+    }
+
+    if (!stage0RanThisFrame && DistantLoaders::residencyHasPendingEviction()) {
+        // Eviction runs before admission here so the freed headroom is available to the
+        // same tick.
+        visDistantShared.RemoveAll();
+        visExtraShared.RemoveAll();
+        if (DistantLoaders::tickResidencyEviction(kResidencyEvictBudgetMs, kResidencyEvictBudgetResources)) {
+            DistantLoaders::noteResidencyEvictionBoundary(false);
+        }
+    }
+
+    float position[3] = {};
+    if (MWBridge::get()->tryGetPlayerPosition(position)) {
+        const std::uint32_t viewHeadingBin = stage0RanThisFrame ? quantizeViewHeadingBin(eyeVec) : 0;
+        DistantLoaders::planResidency(D3DXVECTOR3(position[0], position[1], position[2]), viewHeadingBin);
+    }
+
+    DistantLoaders::tickResidencyAdmission(
+        kResidencyAdmitBudgetMs,
+        kResidencyAdmitBudgetBytes,
+        kResidencyAdmitBudgetResources
+    );
+}
+
 // Advance the upload pump by one budgeted slice. Driven from Present across idle
 // menu / save-selection / save-load frames. Terrain and grass run as single
 // slices; the dominant statics phase is resumable across frames.
@@ -1488,6 +1787,7 @@ void DistantLand::pumpUploadTick(int budgetMs) {
     switch (uploadPhase) {
     case UploadPhase::HostWait:
         if (ipcClient.launchState() == IPC::Client::Inactive) {
+            invalidateWorldSpaceCache();
             if (!ipcClient.launchServer("mgeHost64.exe")) {
                 failUpload();
                 return;
@@ -1640,7 +1940,89 @@ void DistantLand::pumpUploadTick(int budgetMs) {
             }
             staticsHostVecId = IPC::InvalidVector;
             subsetsHostVecId = IPC::InvalidVector;
+            if (!verifyResidencyProtocol()) {
+                failUpload();
+                return;
+            }
+            if (!selectInitialMergedStreamingCap()) {
+                failUpload();
+                return;
+            }
+            DistantLoaders::beginResidency();
+            residencyBootstrapStartedMs = 0;
+            uploadPhase = DistantLoaders::residencyFullDrainActive()
+                ? UploadPhase::ResidencyFullDrain
+                : UploadPhase::ResidencyBootstrap;
+        }
+        break;
+
+    case UploadPhase::ResidencyFullDrain:
+        {
+            bool done = false;
+            if (!DistantLoaders::stepResidencyFullDrain(
+                    static_cast<double>(budgetMs),
+                    kResidencyDrainBudgetBytes,
+                    kResidencyDrainBudgetResources,
+                    done)) {
+                failUpload();
+                return;
+            }
+            if (done) {
+                uploadPhase = UploadPhase::Done;
+            }
+        }
+        break;
+
+    case UploadPhase::ResidencyBootstrap:
+        // A dataset with no merged resources leaves the planner idle; fitting and fallback
+        // datasets took the separate ordered full-drain phase above.
+        if (!DistantLoaders::residencyActive()) {
             uploadPhase = UploadPhase::Done;
+            break;
+        }
+        {
+            // Existing accessors that return zero on an invalid player pointer are forbidden
+            // as planner inputs: (0,0,0) is a valid-looking centre in the Bitter Coast.
+            float position[3] = {};
+            if (!MWBridge::get()->tryGetPlayerPosition(position)) {
+                // Cold-start menu frames have no valid destination. Keep the pump armed so
+                // onResolveDuringInit can supply the first safe centre and drain only its ring.
+                // If the resolve hook still cannot produce one, keep the no-hang
+                // fallback and let gameplay admission recover with temporary pop-in.
+                if (worldResolved) {
+                    LOG::logline("-- Merged-static residency bootstrap skipped: resolved world has no valid player position");
+                    uploadPhase = UploadPhase::Done;
+                }
+                break;
+            }
+
+            if (residencyBootstrapStartedMs == 0) {
+                residencyBootstrapStartedMs = HighResolutionTimer::getMilliseconds();
+            }
+
+            const D3DXVECTOR3 center(position[0], position[1], position[2]);
+            DistantLoaders::planResidency(center, 0);
+            DistantLoaders::tickResidencyAdmission(
+                static_cast<double>(budgetMs),
+                kResidencyDrainBudgetBytes,
+                kResidencyDrainBudgetResources
+            );
+            DistantLoaders::tickResidencyEviction(static_cast<double>(budgetMs), kResidencyDrainBudgetResources);
+            if (DistantLoaders::residencyQuiescent()) {
+                uploadPhase = UploadPhase::Done;
+                break;
+            }
+
+            // A centre exists but the nearest ring is still draining. Cap the prefetch so a
+            // large or slow dataset cannot hold the load screen open indefinitely.
+            const int waitedMs = HighResolutionTimer::getMilliseconds() - residencyBootstrapStartedMs;
+            if (waitedMs >= kResidencyBootstrapTimeoutMs) {
+                LOG::logline(
+                    "-- Merged-static residency bootstrap capped at %dms; entering with pop-in rather than stalling",
+                    waitedMs
+                );
+                uploadPhase = UploadPhase::Done;
+            }
         }
         break;
 
@@ -1681,6 +2063,7 @@ void DistantLand::release() {
     // the mapped file, and the IPC stream handle before the main teardown.
     abortUploadPump();
 
+    invalidateWorldSpaceCache();
     ipcClient.stopServer();
 
     if (!hasDeviceResources()) {
@@ -1700,6 +2083,7 @@ void DistantLand::release() {
         stage2LegacyFallbacks,
         depthReplayDips
     );
+    logMergedStreamingBudgetSummary();
 
     recordMW.clear();
     recordSky.clear();
@@ -1755,6 +2139,7 @@ void DistantLand::release() {
     }
     nativeDepthBackend = NativeDepthBackend::None;
     safeRelease(dxvkMorrowindInterop);
+    safeRelease(dxvkMorrowindMemoryInterop);
     safeRelease(surfAutoDepthStencil);
     safeRelease(surfDepthStencil);
     safeRelease(texDepthStencil);

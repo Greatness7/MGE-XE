@@ -7,7 +7,7 @@ fn write_empty_static_bundle(root: &Path) {
     fs::write(root.join("version"), [MGE_DL_VERSION]).unwrap();
     fs::write(statics_dir.join("usage.data"), 0_u32.to_le_bytes()).unwrap();
     let empty_shard = crate::mge_xe::serialize_static_meshes(&crate::mge_xe::PackedDistantStatics::default()).unwrap();
-    assert_eq!(empty_shard.len(), 136);
+    assert_eq!(empty_shard.len(), crate::mge_xe::distant_statics::HEADER_SIZE);
     for shard_id in 0..STATIC_MESH_SHARD_COUNT {
         fs::write(
             statics_dir.join(crate::output::static_mesh_shard_file_name(shard_id)),
@@ -39,7 +39,7 @@ fn sample_state(terrain_enabled: bool) -> CommittedState {
         artifact_from_written(
             ArtifactKind::StaticShard,
             static_mesh_shard_relative_path(shard_id),
-            136,
+            crate::mge_xe::distant_statics::HEADER_SIZE as u64,
             [0; 32],
         )
     }));

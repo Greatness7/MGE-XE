@@ -16,6 +16,10 @@
 using std::string;
 using std::unordered_map;
 
+namespace DistantLoaders {
+    void armLiveLoadResidencyTransition(const D3DXVECTOR3* destination);
+}
+
 namespace {
     // Tuned against visible lamp influence in Suran on 2026-08-09.
     constexpr double kPostLightCutoff = 1.0 / 6.0;
@@ -98,6 +102,16 @@ void DistantLand::onResolveDuringInit() {
         // Subsequent load into an already-running renderer: re-resolve vis-group
         // object pointers for the newly loaded save.
         resolveDynamicVisGroups();
+
+        float position[3] = {};
+        D3DXVECTOR3 destination;
+        const D3DXVECTOR3* resolvedDestination = nullptr;
+        if (MWBridge::get()->tryGetPlayerPosition(position)) {
+            destination = D3DXVECTOR3(position[0], position[1], position[2]);
+            resolvedDestination = &destination;
+        }
+        // Arm only: the next load-screen Present starts the epoch and performs bounded work.
+        DistantLoaders::armLiveLoadResidencyTransition(resolvedDestination);
     }
 }
 
@@ -266,6 +280,9 @@ void DistantLand::renderStage0() {
     auto mwBridge = MWBridge::get();
     IDirect3DStateBlock9* stateSaved;
     UINT passes;
+
+    // Release evicted merged statics before this frame's shadow/cull queries can copy them.
+    evictResidencyAtStage0();
 
     // Update current cell and select distant static set
     selectDistantCell();
@@ -1007,7 +1024,18 @@ bool DistantLand::selectDistantCell() {
             cellname = mwBridge->getInteriorName();
         }
 
+        // The worldspace only changes when the player crosses into a different interior or
+        // back outside, but this ran a blocking RPC every frame. Cache the last key and its
+        // result; invalidateWorldSpaceCache() drops it whenever the host is (re)started.
+        if (worldSpaceCacheValid && cellname == lastWorldSpaceKey) {
+            DistantLandShare::hasCurrentWorldSpace = lastWorldSpaceFound;
+            return lastWorldSpaceFound;
+        }
+
         DistantLandShare::hasCurrentWorldSpace = ipcClient.setWorldSpaceBlocking(cellname);
+        lastWorldSpaceKey = cellname;
+        lastWorldSpaceFound = DistantLandShare::hasCurrentWorldSpace;
+        worldSpaceCacheValid = true;
         if (DistantLandShare::hasCurrentWorldSpace) {
             return true;
         }
@@ -1015,6 +1043,14 @@ bool DistantLand::selectDistantCell() {
 
     DistantLandShare::hasCurrentWorldSpace = false;
     return false;
+}
+
+// Drop the cached SetWorldSpace result. The host rebuilds its worldspace table from scratch
+// on every (re)start, so a cached hit from the previous host must never survive one.
+void DistantLand::invalidateWorldSpaceCache() {
+    lastWorldSpaceKey.clear();
+    lastWorldSpaceFound = false;
+    worldSpaceCacheValid = false;
 }
 
 // isDistantCell - Check if there is distant land selected for this cell

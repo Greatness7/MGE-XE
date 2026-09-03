@@ -261,7 +261,7 @@ distantland\terrain_blend_patterns.dds       RGBA8 atlas of distinct 5×5 blend-
 distantland\terrain_occlusion.bin            horizon occlusion base grid
 distantland\generation_report.toml           optional advisory observability record of the run
 distantland\statics\usage.data               static usage table + dynamic vis groups + interiors
-distantland\statics\static_meshes_000..127   fixed packed static-mesh shards (XESTAT05 v5)
+distantland\statics\static_meshes_000..127   fixed packed static-mesh shards (XESTAT06 v6)
 distantland\statics\textures\_mge_xe_atlas*.dds        opaque atlas pages
 distantland\statics\textures\_mge_xe_atlas_alpha*.dds  alpha atlas pages
 distantland\.writer.lock                     exclusive-writer/shared-reader ownership
@@ -412,5 +412,5 @@ layouts, and override semantics. Behavioral parity notes worth knowing:
 - The `version` file byte must equal `MGE_DL_VERSION`, matching
   `d3d8/cpp/mge/mgeversion.h` and `mgeHost64/src/abi/constants.rs` (paths from the repo
   root). The GUI keeps no copy of its own — it reads this crate's `MGE_DL_VERSION`.
-- The packed vertex `uv_bound` lane order and the terrain vertex packing are shader-coupled;
-  see [docs/architecture/binary-formats.md](docs/architecture/binary-formats.md).
+- The UV-bound palette lane order, its per-subset cap, and the terrain vertex packing are
+  shader-coupled; see [docs/architecture/binary-formats.md](docs/architecture/binary-formats.md).
