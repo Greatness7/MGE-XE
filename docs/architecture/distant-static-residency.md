@@ -80,6 +80,9 @@ Interlocks that are not visible at the call site:
   On timeout, server loss, or host rejection the buffers, palette entry and ledger bytes stay in
   removal-in-flight; three failures freeze residency for the device session rather than risk
   handing a live host a stale pointer.
+- **`update_residency` is all-or-none on both sides.** The client retains every buffer in a batch
+  the host reports failed, so the host validates the whole batch before mutating anything
+  (`DistantLand::validate_residency_commit` decides every error the apply path can report).
 - **A readmitted resource leaves the removal batch before it is built.** A retry only reaches a
   resource whose earlier removal RPC did not complete, so the planner has had a chance to set
   `readmitRequested` in between. Those ids move straight to `CommitPending` and are never named in
@@ -229,8 +232,6 @@ Understood and accepted; each fails soft.
   when memory later frees. Never observed in practice, but it is why the cap must be conservative:
   guessing high once costs geometry for the session rather than a few frames of pop-in. Making it
   retryable is what would let the cap policy be looser.
-- **`update_residency` stops applying a batch after the first error.** The client sees failure and
-  retains buffers or freezes.
 - **Killing `mgeHost64.exe` mid-transition leaves Morrowind in a permanent busy hang** rather than
   crashing or recovering. It needs the host to be killed deliberately. If revisited, the wanted
   shape is a fatal log plus intentional termination, not recovery machinery.

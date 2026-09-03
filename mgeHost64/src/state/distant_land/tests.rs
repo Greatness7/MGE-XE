@@ -1785,3 +1785,64 @@ fn admitting_sweep_rewind_repartitions_from_canonical_offsets() {
     assert_eq!(state.planner_offset_cursor, 0);
     assert_forward_first(&state, heading_vector(16));
 }
+
+/// `update_residency` reports one success flag for a whole batch and the client retains every
+/// buffer in a batch it is told failed. The host therefore has to decide the batch before it
+/// mutates anything, which means every rejection the apply path can produce must be decidable
+/// without touching state.
+#[test]
+fn commit_validation_rejects_without_touching_state() {
+    let mut state = residency_state(1);
+    state.world_spaces[0].near_statics.set_box(400.0, D3dxVector2::default());
+    let mesh = add_visible_mesh(&mut state.world_spaces[0].near_statics, 20, 0, 10.0);
+    state.residency_resources[0].mesh_refs.push(DynamicMeshRef {
+        world: 0,
+        tree: StaticTreeKind::Near,
+        mesh,
+    });
+
+    let resident = |vbuffer, ibuffer| ResidencyCommit {
+        resource_id: 0,
+        state: ResidencyCommitState::Resident as u32,
+        vbuffer,
+        ibuffer,
+    };
+
+    for accepted in [
+        resident(0x1000, 0x2000),
+        ResidencyCommit {
+            resource_id: 0,
+            state: ResidencyCommitState::Unloaded as u32,
+            ..ResidencyCommit::default()
+        },
+        ResidencyCommit {
+            resource_id: 0,
+            state: ResidencyCommitState::Unavailable as u32,
+            ..ResidencyCommit::default()
+        },
+    ] {
+        state.validate_residency_commit(accepted).unwrap();
+    }
+
+    for rejected in [
+        ResidencyCommit {
+            resource_id: 7,
+            ..resident(0x1000, 0x2000)
+        },
+        resident(0, 0x2000),
+        resident(0x1000, 0),
+        ResidencyCommit {
+            resource_id: 0,
+            state: 9,
+            ..ResidencyCommit::default()
+        },
+    ] {
+        state.validate_residency_commit(rejected).unwrap_err();
+        // The same commit through the apply path must also leave the resource alone, so a batch
+        // that fails partway leaves nothing half-applied behind it.
+        state.apply_residency_commit(rejected).unwrap_err();
+        assert!(!state.residency_resources[0].resident);
+        assert!(state.resident_streamable.is_empty());
+        assert_eq!(state.world_spaces[0].near_statics.mesh(mesh).render_mesh.v_buffer, 0);
+    }
+}

@@ -300,10 +300,21 @@ impl Server {
             let vecs = &mut self.vecs;
             let distant_land = &mut self.distant_land;
             let commits = get_vec_mut_from::<crate::abi::ResidencyCommit>(vecs, params.commits)?;
+            // The client retains every buffer in a batch it is told failed, so a partly applied
+            // batch would leave the two sides disagreeing. Validate all of it before mutating
+            // anything, then apply all of it.
             let mut result = Ok(());
             for index in 0..commits.size() {
                 if result.is_ok() {
-                    result = distant_land.apply_residency_commit(commits.get(index));
+                    result = distant_land.validate_residency_commit(commits.get(index));
+                }
+            }
+            if result.is_ok() {
+                for index in 0..commits.size() {
+                    let outcome = distant_land.apply_residency_commit(commits.get(index));
+                    if result.is_ok() {
+                        result = outcome;
+                    }
                 }
             }
             result

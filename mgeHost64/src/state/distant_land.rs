@@ -158,57 +158,83 @@ impl DistantLandState {
         }
     }
 
-    /// Applies one acknowledged client resource transition to every quadtree placement.
-    pub fn apply_residency_commit(&mut self, commit: ResidencyCommit) -> Result<(), HostError> {
-        let resource_id = commit.resource_id as usize;
-        let Some(resource) = self.residency_resources.get(resource_id) else {
+    /// Rejects a commit that [`Self::apply_residency_commit`] could not carry out, without touching
+    /// any state.
+    ///
+    /// This is the sole authority for every error the apply path can report, so a batch that
+    /// validates in full is guaranteed to apply in full. The client treats a failed batch as
+    /// all-or-none — it retains every buffer in it — and the host has to match that: validate the
+    /// whole batch, then apply it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown resource id, an unrecognized commit state, or a `Resident`
+    /// commit carrying a null buffer pointer.
+    pub fn validate_residency_commit(&self, commit: ResidencyCommit) -> Result<(), HostError> {
+        if commit.resource_id as usize >= self.residency_resources.len() {
             return Err(HostError::listen(format!(
                 "Residency resource {} not found",
                 commit.resource_id
             )));
-        };
-        let refs = resource.mesh_refs.clone();
+        }
         match commit.state {
-            s if s == ResidencyCommitState::Unloaded as u32 || s == ResidencyCommitState::Unavailable as u32 => {
-                for reference in refs {
-                    let mesh = self.world_spaces[reference.world]
-                        .tree_mut(reference.tree)
-                        .mesh_mut(reference.mesh);
-                    mesh.resident = false;
-                    mesh.render_mesh.v_buffer = 0;
-                    mesh.render_mesh.i_buffer = 0;
-                    mesh.render_mesh.faces = 0;
-                    mesh.far_faces = 0;
-                    mesh.very_far_faces = 0;
-                }
-                let resource = &mut self.residency_resources[resource_id];
-                resource.resident = false;
-                resource.unavailable = commit.state == ResidencyCommitState::Unavailable as u32;
-                self.resident_streamable.remove(&commit.resource_id);
-            }
+            s if s == ResidencyCommitState::Unloaded as u32 || s == ResidencyCommitState::Unavailable as u32 => Ok(()),
             s if s == ResidencyCommitState::Resident as u32 => {
                 if commit.vbuffer == 0 || commit.ibuffer == 0 {
                     return Err(HostError::listen("Resident commit supplied null buffer pointers"));
                 }
-                for reference in refs {
-                    let mesh = self.world_spaces[reference.world]
-                        .tree_mut(reference.tree)
-                        .mesh_mut(reference.mesh);
-                    mesh.render_mesh.v_buffer = commit.vbuffer;
-                    mesh.render_mesh.i_buffer = commit.ibuffer;
-                    mesh.render_mesh.faces = mesh.near_faces;
-                    mesh.far_faces = mesh.retained_far_faces;
-                    mesh.very_far_faces = mesh.retained_very_far_faces;
-                    mesh.resident = true;
-                }
-                let resource = &mut self.residency_resources[resource_id];
-                resource.resident = true;
-                resource.unavailable = false;
-                if resource.streamable {
-                    self.resident_streamable.insert(commit.resource_id);
-                }
+                Ok(())
             }
-            state => return Err(HostError::listen(format!("Unknown residency commit state {state}"))),
+            state => Err(HostError::listen(format!("Unknown residency commit state {state}"))),
+        }
+    }
+
+    /// Applies one acknowledged client resource transition to every quadtree placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors listed on [`Self::validate_residency_commit`], which runs first and
+    /// leaves state untouched when it rejects.
+    pub fn apply_residency_commit(&mut self, commit: ResidencyCommit) -> Result<(), HostError> {
+        self.validate_residency_commit(commit)?;
+
+        let resource_id = commit.resource_id as usize;
+        let refs = self.residency_resources[resource_id].mesh_refs.clone();
+        if commit.state == ResidencyCommitState::Resident as u32 {
+            for reference in refs {
+                let mesh = self.world_spaces[reference.world]
+                    .tree_mut(reference.tree)
+                    .mesh_mut(reference.mesh);
+                mesh.render_mesh.v_buffer = commit.vbuffer;
+                mesh.render_mesh.i_buffer = commit.ibuffer;
+                mesh.render_mesh.faces = mesh.near_faces;
+                mesh.far_faces = mesh.retained_far_faces;
+                mesh.very_far_faces = mesh.retained_very_far_faces;
+                mesh.resident = true;
+            }
+            let resource = &mut self.residency_resources[resource_id];
+            resource.resident = true;
+            resource.unavailable = false;
+            if resource.streamable {
+                self.resident_streamable.insert(commit.resource_id);
+            }
+        } else {
+            // Unloaded or Unavailable; validation rejected every other state.
+            for reference in refs {
+                let mesh = self.world_spaces[reference.world]
+                    .tree_mut(reference.tree)
+                    .mesh_mut(reference.mesh);
+                mesh.resident = false;
+                mesh.render_mesh.v_buffer = 0;
+                mesh.render_mesh.i_buffer = 0;
+                mesh.render_mesh.faces = 0;
+                mesh.far_faces = 0;
+                mesh.very_far_faces = 0;
+            }
+            let resource = &mut self.residency_resources[resource_id];
+            resource.resident = false;
+            resource.unavailable = commit.state == ResidencyCommitState::Unavailable as u32;
+            self.resident_streamable.remove(&commit.resource_id);
         }
         Ok(())
     }
