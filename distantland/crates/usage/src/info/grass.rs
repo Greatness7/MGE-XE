@@ -706,21 +706,7 @@ fn report_unresolved_masters(
         let placements = count.references.placements;
         let deletes = count.references.deletes;
         match &count.target {
-            UnresolvedMasterTarget::Named(master) if active_plugin_names.contains(master) => {
-                if deletes != 0 {
-                    warnings.push(UsageWarning {
-                        code: "grass_plugin_content_master_delete_ignored".to_owned(),
-                        message: format!(
-                            concat!(
-                                "Grass plugin {} contains {} delete reference(s) targeting active content master ",
-                                "{}. Dedicated grass loading does not import main-load placements, so these ",
-                                "deletes cannot modify them and are ignored."
-                            ),
-                            count.declaring_plugin, deletes, master
-                        ),
-                    });
-                }
-            }
+            UnresolvedMasterTarget::Named(master) if active_plugin_names.contains(master) => {}
             UnresolvedMasterTarget::Named(master) if grass_plugin_positions.contains_key(master) => {
                 debug_assert!(
                     grass_plugin_positions[master] > count.declaring_index,

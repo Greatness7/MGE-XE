@@ -319,45 +319,6 @@ fn unresolved_master_and_local_reference_keys_do_not_collide() {
     assert_eq!(loaded.warnings[0].code, "grass_plugin_master_unselected");
 }
 
-#[test]
-fn active_content_master_warns_only_for_ignored_deletes() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_dir = temp.path();
-    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
-    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
-
-    let content_path = data_dir.join("content.esm");
-    let grass_path = data_dir.join("dependent-grass.esp");
-    grass_plugin_file(&content_path, &[], None, &[]);
-    grass_plugin_file(
-        &grass_path,
-        &["content.esm"],
-        Some(("grass_blade", "grass\\blade.nif")),
-        &[(
-            (0, 0),
-            vec![(1, 1, "grass_blade", 10.0, false), (1, 2, "grass_blade", 20.0, true)],
-        )],
-    );
-
-    let vfs = grass_test_vfs(data_dir, vec![content_path.clone()]);
-    let grass_paths = vec![grass_path];
-    let sources = ReferenceSources::from_plugin_lists(&[content_path], &grass_paths);
-    let loaded = load_grass_plugins(
-        &vfs,
-        &grass_paths,
-        &HashMap::new(),
-        &make_args(),
-        &StaticOverrides::default(),
-        &sources,
-    )
-    .unwrap();
-
-    assert_eq!(loaded.warnings.len(), 1);
-    assert_eq!(loaded.warnings[0].code, "grass_plugin_content_master_delete_ignored");
-    assert!(loaded.warnings[0].message.contains("1 delete reference(s)"));
-    assert!(!loaded.warnings[0].message.contains("kept"));
-}
-
 /// The main load order requires plugin-unique reference indices and no longer works around
 /// groundcover files that restart numbering in every cell. Such a plugin loses placements; it
 /// belongs in `grass_plugins`, where identity is scoped per cell and the collision cannot occur.

@@ -37,9 +37,6 @@ generation warning and does not reach the GUI. Use the dedicated list instead.
 
 ## Warning codes
 
-- `grass_plugin_content_master_delete_ignored`: deletes target an active content master whose
-  placements are not imported into the dedicated resolver. Ordinary non-delete dependencies on an
-  active content master do not warn.
 - `grass_plugin_master_after_dependent`: the named grass master appears later in `grass_plugins`.
   Non-delete references use fallback placement identity and deletes cannot apply; move the master
   before the dependent.
