@@ -1462,10 +1462,7 @@ fn assert_forward_first(state: &DistantLandState, heading: (f32, f32)) {
         let offset = state.residency_offsets[idx as usize];
         let forward = is_offset_forward(offset, heading);
         if forward {
-            assert!(
-                !seen_non_forward,
-                "forward cell came after non-forward cell in planner_order"
-            );
+            assert!(!seen_non_forward, "forward cell came after non-forward cell in planner_order");
             forward_indices.push(idx);
         } else {
             seen_non_forward = true;
@@ -1623,8 +1620,7 @@ fn heading_change_pins_current_cell_when_eviction_rollback_leaves_bucket_cursor_
     state.plan_residency(&mut output, params).unwrap();
 
     assert_eq!(
-        state.planner_order[pinned_offset_cursor],
-        pinned_cell_offset,
+        state.planner_order[pinned_offset_cursor], pinned_cell_offset,
         "current cell must remain pinned despite bucket_cursor == 0"
     );
     assert_planner_order_is_permutation(&state);
@@ -1683,8 +1679,7 @@ fn heading_change_pins_current_cell_when_bucket_partially_consumed() {
     state.plan_residency(&mut output, params).unwrap();
 
     assert_eq!(
-        state.planner_order[pinned_offset_cursor],
-        pinned_cell_offset,
+        state.planner_order[pinned_offset_cursor], pinned_cell_offset,
         "partially consumed cell must remain pinned across rotation"
     );
     assert_planner_order_is_permutation(&state);

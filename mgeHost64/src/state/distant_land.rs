@@ -5,8 +5,8 @@ use tracing::{trace, warn};
 
 use crate::abi::{
     CellName, D3dxVector3, D3dxVector4, DynVisFlag, EscapedName, PlanResidencyParameters, RenderMesh, ResidencyCommit,
-    ResidencyPlan, ResidencyPlanAction, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND, VIS_NEAR, VIS_VERY_FAR,
-    ViewFrustum, VisibleSetSort,
+    ResidencyCommitState, ResidencyPlan, ResidencyPlanAction, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND,
+    VIS_NEAR, VIS_VERY_FAR, ViewFrustum, VisibleSetSort,
 };
 use crate::config::Configuration;
 use crate::error::HostError;
@@ -169,7 +169,7 @@ impl DistantLandState {
         };
         let refs = resource.mesh_refs.clone();
         match commit.state {
-            0 | 2 => {
+            s if s == ResidencyCommitState::Unloaded as u32 || s == ResidencyCommitState::Unavailable as u32 => {
                 for reference in refs {
                     let mesh = self.world_spaces[reference.world]
                         .tree_mut(reference.tree)
@@ -183,10 +183,10 @@ impl DistantLandState {
                 }
                 let resource = &mut self.residency_resources[resource_id];
                 resource.resident = false;
-                resource.unavailable = commit.state == 2;
+                resource.unavailable = commit.state == ResidencyCommitState::Unavailable as u32;
                 self.resident_streamable.remove(&commit.resource_id);
             }
-            1 => {
+            s if s == ResidencyCommitState::Resident as u32 => {
                 if commit.vbuffer == 0 || commit.ibuffer == 0 {
                     return Err(HostError::listen("Resident commit supplied null buffer pointers"));
                 }
