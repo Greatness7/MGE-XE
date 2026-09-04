@@ -263,7 +263,18 @@ static HRESULT __stdcall patchLoadTexture2DCreate(
     return d3d8CreateTexture(device, width, height, levels, 0, d3dFormat, pool, &sourceTextureData->d3dTexture);
 }
 
-static void __stdcall patchLoadTexture2DUpload(
+static void releaseConvertedPixelData(const NiPixelData* pixelData) {
+    if (!pixelData || pixelData->refCount != 0) {
+        return;
+    }
+
+    auto converted = const_cast<NiPixelData*>(pixelData);
+    auto vtbl = *reinterpret_cast<void***>(converted);
+    auto deletingDtor = reinterpret_cast<void(__thiscall*)(NiPixelData*, int)>(vtbl[0]);
+    deletingDtor(converted, 1);
+}
+
+static void uploadStagingTexture(
     NiDX8RendererTextureData* sourceTextureData,
     const NiPixelData* pixelData,
     D3DFORMAT d3dFormat) {
@@ -305,6 +316,17 @@ static void __stdcall patchLoadTexture2DUpload(
         sourceTextureData->d3dTexture = texture;
         reinterpret_cast<IUnknown*>(stagingTexture)->Release();
     }
+}
+
+static void __stdcall patchLoadTexture2DUpload(
+    NiDX8RendererTextureData* sourceTextureData,
+    const NiPixelData* pixelData,
+    D3DFORMAT d3dFormat) {
+    uploadStagingTexture(sourceTextureData, pixelData, d3dFormat);
+
+    // Must run on every path out of the upload, including the non-static and staging-failure
+    // returns, because the code this patch replaced ran unconditionally.
+    releaseConvertedPixelData(pixelData);
 }
 
 void patchLoadTexture2D() {
