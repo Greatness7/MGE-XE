@@ -1,5 +1,6 @@
 
 #include "ffeshader.h"
+#include "camerarelative.h"
 #include "configuration.h"
 #include "support/log.h"
 
@@ -396,9 +397,15 @@ void FixedFunctionShader::buildPplDrawData(
                     (D3DXVECTOR3*)&light->position,
                     &rs->viewTransform);
             } else {
+                // Light positions are recorded in absolute space; in camera-relative
+                // space the view carries no translation, so subtract the camera here.
+                D3DVECTOR position = light->position;
+                if (CameraRelative::active()) {
+                    CameraRelative::relativePosition(&light->position, &position);
+                }
                 D3DXVec3TransformCoord(
                     (D3DXVECTOR3*)&light->viewspacePos,
-                    (D3DXVECTOR3*)&light->position,
+                    (D3DXVECTOR3*)&position,
                     &rs->viewTransform);
             }
 

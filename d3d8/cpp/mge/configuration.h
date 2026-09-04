@@ -114,6 +114,10 @@ struct ConfigurationStruct {
     // Restart-required. Standalone rather than an MGEFlags bit: that legacy
     // bitfield is full.
     bool EnableIndexedSkinning;
+    // Camera-relative rendering of the Morrowind near scene (see camerarelative.h).
+    bool EnableCameraRelativeRendering;
+    // Diagnostic: log the world-view precision error every 300 frames.
+    bool CameraRelativeProbe;
 
     struct {
         float zoom, zoomRate, zoomRateTarget;

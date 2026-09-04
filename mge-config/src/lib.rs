@@ -48,6 +48,29 @@ mod tests {
     }
 
     #[test]
+    fn camera_relative_round_trips_through_toml_and_bindings() {
+        let root = test_root("camera-relative");
+        let path = root.join(FILE_NAME);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, DEFAULT_DOCUMENT).unwrap();
+
+        let mut document = ConfigDocument::open(&path);
+        assert!(!document.settings().render.camera_relative);
+        assert!(!document.settings().render.camera_relative_probe);
+        assert_eq!(document.get_number("render.camera_relative"), Some(0.0));
+        assert_eq!(document.get_number("render.camera_relative_probe"), Some(0.0));
+
+        document.set_number("render.camera_relative", 1.0).unwrap();
+        document.set_number("render.camera_relative_probe", 1.0).unwrap();
+        document.save().unwrap();
+        let reloaded = ConfigDocument::open(&path);
+        assert!(reloaded.settings().render.camera_relative);
+        assert!(reloaded.settings().render.camera_relative_probe);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn weather_clamp_warnings_carry_the_path_of_the_clamped_field() {
         let root = test_root("weather-clamp-warnings");
         let path = root.join(FILE_NAME);
