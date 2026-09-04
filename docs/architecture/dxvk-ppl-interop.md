@@ -1,14 +1,9 @@
 # DXVK Morrowind interop
 
-Scope: the private COM ABI for native PPL, MSAA depth resolve, and device-local memory budget data.
-State: shipping and in sync. Native PPL, MSAA depth resolve, and the memory-budget interface are
-all validated in-game, the last on both fitting and constrained-VRAM schedules.
-Next action: none. Re-verify the header hashes whenever either side changes.
-Contract: `dxvk_morrowind_interop.h` and `dxvk_morrowind_limits.h` stay byte-identical in both repos.
-Compatibility: new services get separate versioned IIDs; do not extend an existing interface in place.
-MGE-XE inspected: 2026-09-02, `fix/vram-usage`.
-DXVK inspected: 2026-08-30, `Greatness7/dxvk` `mge-xe` @ `6c15b5f1`.
-Verification: focused i686 MGE check and 32-bit DXVK D3D9 build pass; header hash check required after edits.
+The private COM ABI between MGE XE and its DXVK fork (`Greatness7/dxvk`, branch `mge-xe`):
+native per-pixel lighting, MSAA depth resolve, and the device-local memory budget used by
+merged-static streaming. Compatibility rule for the whole surface: a new service gets its own
+versioned IID, never a method appended to an existing interface.
 
 ## The contract
 

@@ -1,13 +1,9 @@
 # Morrowind engine memory and patches
 
-Scope: hardcoded engine-memory access, executable patch installers, and NetImmerse DDS hooks.
-State: implementation split by ownership; all 20 static anchors and every patch site remain
-verified against the game binary.
-Next action: in-game smoke test of startup patches, device recreation, BC7 loading, and distant-land initialization.
-Inspected 2026-08-21:
-  MGE-XE   `rust-rewrite` plus the current decomposition worktree
-  Target   `Morrowind.exe` FileVersion 1.6.1820, imagebase 0x400000
-  IDB      local IDA 9 database of that binary
+How MGE XE reaches into Morrowind's process: hardcoded engine-memory anchors, fixed-address
+executable patches, and the NetImmerse DDS hooks. Every address below is for `Morrowind.exe`
+FileVersion 1.6.1820 at imagebase `0x400000`, and was verified against an IDA database of that
+binary.
 
 ## File map
 
