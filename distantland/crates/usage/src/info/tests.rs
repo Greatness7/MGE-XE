@@ -358,6 +358,260 @@ fn active_content_master_warns_only_for_ignored_deletes() {
     assert!(!loaded.warnings[0].message.contains("kept"));
 }
 
+type TestGrassInterior<'a> = (&'a str, Vec<TestGrassRef<'a>>);
+
+/// Like [`grass_plugin_file`], with interior cells named rather than gridded.
+fn grass_plugin_file_with_interiors(
+    path: &std::path::Path,
+    masters: &[&str],
+    definition: Option<(&str, &str)>,
+    exteriors: &[TestGrassCell<'_>],
+    interiors: &[TestGrassInterior<'_>],
+) {
+    use tes3::esp::{Cell, CellFlags, Plugin, Reference, TES3Object};
+
+    grass_plugin_file(path, masters, definition, exteriors);
+    let mut plugin = Plugin::from_path(path).unwrap();
+    for (name, references) in interiors {
+        let mut cell = Cell::default();
+        cell.name = (*name).to_owned();
+        cell.data.flags.insert(CellFlags::IS_INTERIOR);
+        for &(mast_index, refr_index, id, x, deleted) in references {
+            cell.references.insert(
+                (mast_index, refr_index),
+                Reference {
+                    mast_index,
+                    refr_index,
+                    id: id.to_owned(),
+                    translation: [x, 0.0, 0.0],
+                    deleted: deleted.then_some(true),
+                    ..Reference::default()
+                },
+            );
+        }
+        plugin.objects.push(TES3Object::Cell(cell));
+    }
+    plugin.save_path(path).unwrap();
+}
+
+fn sorted_x_bits(references: &References<'_>) -> Vec<u32> {
+    references
+        .values()
+        .map(|reference| reference.translation.x.to_bits())
+        .sorted_unstable()
+        .collect_vec()
+}
+
+/// Interior placements land in their own named world space, keyed exactly as the plugin spells the
+/// cell, and share nothing with the exterior even when the same `refr_index` is reused.
+#[test]
+fn grass_list_keeps_interior_placements_under_their_cell_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let grass_path = data_dir.join("interior-grass.esp");
+    grass_plugin_file_with_interiors(
+        &grass_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[((0, 0), vec![(0, 1, "grass_blade", 10.0, false)])],
+        &[
+            (
+                "Balmora, Guild of Mages",
+                vec![(0, 1, "grass_blade", 20.0, false), (0, 2, "grass_blade", 30.0, false)],
+            ),
+            ("Ald-ruhn, Mages Guild", vec![(0, 1, "grass_blade", 40.0, false)]),
+        ],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![]);
+    let grass_paths = vec![grass_path];
+    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let loaded = load_grass_plugins(
+        &vfs,
+        &grass_paths,
+        &HashMap::new(),
+        &make_args(),
+        &StaticOverrides::default(),
+        &reference_sources,
+    )
+    .unwrap();
+
+    let usage = &loaded.usage_info;
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(sorted_x_bits(usage.exterior_references().unwrap()), [10.0_f32.to_bits()]);
+    assert_eq!(
+        sorted_x_bits(&usage.cells["Balmora, Guild of Mages"]),
+        [20.0_f32.to_bits(), 30.0_f32.to_bits()]
+    );
+    assert_eq!(sorted_x_bits(&usage.cells["Ald-ruhn, Mages Guild"]), [40.0_f32.to_bits()]);
+    assert_eq!(usage.interior_cells().count(), 2);
+    for reference in usage.cells.values().flat_map(|references| references.values()) {
+        assert_eq!(reference.id.as_ref(), "grass\\blade.nif");
+    }
+}
+
+/// A later grass plugin's overrides and deletes resolve per interior cell, exactly as they do per
+/// exterior grid cell.
+#[test]
+fn grass_list_resolves_interior_overrides_and_deletes_per_cell() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let base_path = data_dir.join("base-grass.esp");
+    let patch_path = data_dir.join("patch-grass.esp");
+    grass_plugin_file_with_interiors(
+        &base_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[],
+        &[
+            (
+                "Cave",
+                vec![(0, 1, "grass_blade", 10.0, false), (0, 2, "grass_blade", 20.0, false)],
+            ),
+            ("Other Cave", vec![(0, 1, "grass_blade", 30.0, false)]),
+        ],
+    );
+    // Deletes the first, repositions the second, and places a new one; "Other Cave" keeps its
+    // `refr_index` 1 despite the delete of the same index in "Cave".
+    grass_plugin_file_with_interiors(
+        &patch_path,
+        &["base-grass.esp"],
+        None,
+        &[],
+        &[(
+            "Cave",
+            vec![
+                (1, 1, "grass_blade", 10.0, true),
+                (1, 2, "grass_blade", 99.0, false),
+                (0, 1, "grass_blade", 40.0, false),
+            ],
+        )],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![]);
+    let grass_paths = vec![base_path, patch_path];
+    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let loaded = load_grass_plugins(
+        &vfs,
+        &grass_paths,
+        &HashMap::new(),
+        &make_args(),
+        &StaticOverrides::default(),
+        &reference_sources,
+    )
+    .unwrap();
+
+    let usage = &loaded.usage_info;
+    assert!(loaded.warnings.is_empty());
+    assert!(usage.exterior_references().is_none_or(|references| references.is_empty()));
+    assert_eq!(sorted_x_bits(&usage.cells["Cave"]), [40.0_f32.to_bits(), 99.0_f32.to_bits()]);
+    assert_eq!(sorted_x_bits(&usage.cells["Other Cave"]), [30.0_f32.to_bits()]);
+}
+
+/// Interior grass is thinned by the same density rule as exterior grass, sampled from the cell
+/// name rather than a grid coordinate, and stays deterministic across runs.
+#[test]
+fn interior_grass_density_thinning_is_deterministic() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let grass_path = data_dir.join("interior-grass.esp");
+    let references = (1..=64_u32)
+        .map(|index| (0, index, "grass_blade", index as f32 * 8.0, false))
+        .collect_vec();
+    grass_plugin_file_with_interiors(
+        &grass_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[],
+        &[("Meadow Cave", references)],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![]);
+    let grass_paths = vec![grass_path];
+    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let load = |density: f32| {
+        let args = UsageFilterOptions {
+            grass_density: density,
+            ..make_args()
+        };
+        let loaded = load_grass_plugins(
+            &vfs,
+            &grass_paths,
+            &HashMap::new(),
+            &args,
+            &StaticOverrides::default(),
+            &reference_sources,
+        )
+        .unwrap();
+        loaded
+            .usage_info
+            .cells
+            .get("Meadow Cave")
+            .map_or_else(Vec::new, sorted_x_bits)
+    };
+
+    assert_eq!(load(1.0).len(), 64);
+    assert!(load(0.0).is_empty());
+    let half = load(0.5);
+    assert!(!half.is_empty() && half.len() < 64, "{} placements survived", half.len());
+    assert_eq!(half, load(0.5));
+}
+
+/// An `[interiors]` exclusion keeps MGE out of that cell entirely, grass included, while an
+/// explicit inclusion and the absence of a verdict both let interior grass through.
+#[test]
+fn explicit_interior_exclusion_drops_its_grass() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let grass_path = data_dir.join("interior-grass.esp");
+    grass_plugin_file_with_interiors(
+        &grass_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[((0, 0), vec![(0, 1, "grass_blade", 10.0, false)])],
+        &[
+            ("Excluded Cave", vec![(0, 1, "grass_blade", 20.0, false)]),
+            ("Included Cave", vec![(0, 1, "grass_blade", 30.0, false)]),
+            ("Unlisted Cave", vec![(0, 1, "grass_blade", 40.0, false)]),
+        ],
+    );
+
+    let mut overrides = StaticOverrides::default();
+    overrides.interiors.insert("excluded cave".into(), false);
+    overrides.interiors.insert("included cave".into(), true);
+
+    let vfs = grass_test_vfs(data_dir, vec![]);
+    let grass_paths = vec![grass_path];
+    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let loaded = load_grass_plugins(
+        &vfs,
+        &grass_paths,
+        &HashMap::new(),
+        &make_args(),
+        &overrides,
+        &reference_sources,
+    )
+    .unwrap();
+
+    let usage = &loaded.usage_info;
+    assert_eq!(sorted_x_bits(usage.exterior_references().unwrap()), [10.0_f32.to_bits()]);
+    assert!(!usage.cells.contains_key("Excluded Cave"));
+    assert_eq!(sorted_x_bits(&usage.cells["Included Cave"]), [30.0_f32.to_bits()]);
+    assert_eq!(sorted_x_bits(&usage.cells["Unlisted Cave"]), [40.0_f32.to_bits()]);
+}
+
 /// The main load order requires plugin-unique reference indices and no longer works around
 /// groundcover files that restart numbering in every cell. Such a plugin loses placements; it
 /// belongs in `grass_plugins`, where identity is scoped per cell and the collision cannot occur.

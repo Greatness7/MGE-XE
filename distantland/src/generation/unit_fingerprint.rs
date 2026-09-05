@@ -365,7 +365,8 @@ fn build_texture_units(
 
 fn fingerprint_statics_global(projections: &Projections, usage: &UsageInfo<'_>) -> [u8; 32] {
     let mut writer = CanonicalWriter::new();
-    writer.write_str("statics_global_v3");
+    // v4: dedicated grass placements carry their interior cell name.
+    writer.write_str("statics_global_v4");
     writer.write_u64(projections.interiors.len() as u64);
     for (key, value) in &projections.interiors {
         writer.write_str(key);

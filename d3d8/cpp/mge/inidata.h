@@ -128,6 +128,7 @@ const iniSetting iniSettings[] = {
         0),
     NUM(Configuration.DL.InteriorFogStart, t_float, "distant_land.fog.interior_start", 0),
     NUM(Configuration.DL.InteriorFogEnd, t_float, "distant_land.fog.interior_end", 0),
+    NUM(Configuration.Grass.InteriorWind, t_float, "distant_land.grass.interior_wind", 0),
     NUM(Configuration.DL.WaterWaveHeight, t_uint8, "distant_land.water.wave_height", 0),
     NUM(
         Configuration.DL.WaterCaustics,

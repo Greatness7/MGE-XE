@@ -56,8 +56,9 @@ pub fn is_grass_plugin(path: &Path, data_dirs: &[PathBuf]) -> bool {
 ///   [`GRASS_PLUGIN_FOREIGN_RECORD_TOLERANCE`], streaming and without decoding.
 /// - **Gate A** requires a grass static to be available: defined by the plugin, or by one of its
 ///   masters. Groundcover written against a landmass mod commonly defines none of its own.
-/// - **Gate B** requires more than [`GRASS_PLUGIN_INSTANCE_THRESHOLD`] surviving exterior
-///   placements of one.
+/// - **Gate B** requires more than [`GRASS_PLUGIN_INSTANCE_THRESHOLD`] surviving placements of
+///   one, in exterior and interior cells alike, so groundcover written for interiors is suggested
+///   for the same list.
 ///
 /// Gate A's union is conservative rather than override resolution: a later non-grass `STAT` sharing
 /// an id with a master's grass `STAT` should shadow it, but `MAST` order gives plugin-relative
@@ -236,14 +237,14 @@ fn grass_gates(path: &Path, master_grass_ids: &[&HashSet<UString>]) -> Result<bo
     // `mast_index` is not consulted: it names the source of the reference, not of the base object's
     // definition, so filtering on it would drop the overrides and moved placements groundcover
     // legitimately carries. Without list context, `deleted` is the only reference state available.
+    //
+    // Interior cells count like exterior ones: generation places interior grass too, and a
+    // groundcover plugin written only for interiors must reach the same list.
     let mut count: u64 = 0;
     for range in cell_ranges {
         let Ok(TES3Object::Cell(cell)) = Reader::new(&bytes[range]).load::<TES3Object>() else {
             bail!("Failed to parse grass plugin {}", path.display());
         };
-        if cell.is_interior() {
-            continue;
-        }
         for reference in cell.references.values() {
             if reference.deleted.is_some() {
                 continue;
@@ -387,9 +388,30 @@ pub(crate) struct GrassPluginLoad<'a> {
     pub(crate) warnings: Vec<UsageWarning>,
 }
 
+/// The cell owning one grass placement.
+///
+/// Exterior cells are addressed by grid coordinate. Interiors keep their exact cell name, as the
+/// main loader does: the runtime resolves an interior world space by the engine's own name bytes,
+/// so the name written to `usage.data` must be the one the plugin carries.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum GrassCell {
+    Exterior((i32, i32)),
+    Interior(String),
+}
+
+impl GrassCell {
+    fn of(cell: &Cell) -> Self {
+        if cell.is_interior() {
+            Self::Interior(cell.name.clone())
+        } else {
+            Self::Exterior(cell.data.grid)
+        }
+    }
+}
+
 struct GrassCandidate {
     object_id: String,
-    cell: (i32, i32),
+    cell: GrassCell,
     refr_index: u32,
     /// Source that owns this placement's identity: the plugin that first defined it, which is the
     /// resolved master for a master-addressed reference and the placing plugin otherwise.
@@ -399,16 +421,17 @@ struct GrassCandidate {
     scale: f32,
 }
 
-type GrassCandidateSortKey<'a> = ((i32, i32), [u32; 3], [u32; 3], u32, &'a str, u32);
+type GrassCandidateSortKey<'a> = (&'a GrassCell, [u32; 3], [u32; 3], u32, &'a str, u32);
 
 /// Identity of one grass placement while the ordered grass list is being resolved.
 ///
 /// Scoped per cell because some groundcover generators restart `refr_index` at 0 in every cell,
 /// so a plugin-global refnum would collide. Both reference implementations key the same way:
 /// MGE-XE's legacy generator put cell coordinates in the key string, and OpenMW rebuilds its `refs`
-/// map for each cell in `Groundcover::collectInstances`. The final field distinguishes unresolved
-/// master references from local placements while they share the declaring plugin's fallback source.
-type GrassRefKey = ((i32, i32), SourceId, u32, u32);
+/// map for each cell in `Groundcover::collectInstances`. Interiors are scoped by name for the same
+/// reason. The final field distinguishes unresolved master references from local placements while
+/// they share the declaring plugin's fallback source.
+type GrassRefKey = (GrassCell, SourceId, u32, u32);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum UnresolvedMasterTarget {
@@ -521,9 +544,10 @@ pub(super) fn load_grass_plugins<'a>(
         }
     }
 
-    // Pass 3: resolve placements across the ordered list. Every exterior reference participates,
-    // grass-classified or not, so that a later plugin's override or delete lands on its target; the
-    // grass filter is applied afterwards, as OpenMW does when it looks up the groundcover model.
+    // Pass 3: resolve placements across the ordered list. Every reference participates, exterior or
+    // interior, grass-classified or not, so that a later plugin's override or delete lands on its
+    // target; the grass filter is applied afterwards, as OpenMW does when it looks up the
+    // groundcover model.
     let mut resolved: BTreeMap<GrassRefKey, GrassCandidate> = BTreeMap::new();
     let mut source_by_filename: HashMap<String, SourceId> = HashMap::new();
     let active_plugin_names: HashSet<String> = vfs.active_plugins().iter().map(|path| plugin_filename(path)).collect();
@@ -536,9 +560,7 @@ pub(super) fn load_grass_plugins<'a>(
     for (declaring_index, entry) in loaded.into_iter().enumerate() {
         let mut unresolved_masters: BTreeMap<UnresolvedMasterTarget, UnresolvedReferenceCounts> = BTreeMap::new();
         for cell in entry.plugin.into_objects_of_type::<Cell>() {
-            if cell.is_interior() {
-                continue;
-            }
+            let grass_cell = GrassCell::of(&cell);
             for ((mast_index, refr_index), reference) in cell.references {
                 let is_delete = reference.deleted.is_some();
                 // Only an earlier grass-list entry can own override/delete identity. An unresolved
@@ -567,7 +589,7 @@ pub(super) fn load_grass_plugins<'a>(
                     (entry.source, mast_index)
                 };
 
-                let key = (cell.data.grid, source, refr_index, unresolved_mast_index);
+                let key = (grass_cell.clone(), source, refr_index, unresolved_mast_index);
                 if is_delete {
                     resolved.remove(&key);
                     continue;
@@ -576,7 +598,7 @@ pub(super) fn load_grass_plugins<'a>(
                     key,
                     GrassCandidate {
                         object_id: reference.id.to_ascii_lowercase(),
-                        cell: cell.data.grid,
+                        cell: grass_cell.clone(),
                         refr_index,
                         source,
                         translation: reference.translation,
@@ -613,15 +635,23 @@ pub(super) fn load_grass_plugins<'a>(
         .collect();
     candidates.sort_unstable_by(|left, right| candidate_sort_key(left).cmp(&candidate_sort_key(right)));
 
-    let mut previous_position = None;
+    let mut previous_position: Option<(GrassCell, [u32; 3])> = None;
     let mut occurrence_salt = 0_u32;
     for (index, candidate) in candidates.into_iter().enumerate() {
-        let position = (candidate.cell, candidate.translation.map(f32::to_bits));
-        if previous_position == Some(position) {
+        let position = (candidate.cell.clone(), candidate.translation.map(f32::to_bits));
+        if previous_position.as_ref() == Some(&position) {
             occurrence_salt += 1;
         } else {
             previous_position = Some(position);
             occurrence_salt = 0;
+        }
+
+        // An interior explicitly excluded from distant land gets no grass either: its world space
+        // would otherwise still exist, and with it MGE's fog and blend passes for that cell.
+        if let GrassCell::Interior(name) = &candidate.cell
+            && overrides.interiors.get(name.as_uncased()) == Some(&false)
+        {
+            continue;
         }
 
         let (_, definition) = &definitions[&candidate.object_id];
@@ -632,16 +662,22 @@ pub(super) fn load_grass_plugins<'a>(
             .expect("dedicated grass candidates have grass-classified definitions");
         if density <= 0.0
             || (density < 1.0
-                && grass_plugin_density_sample(source_name, candidate.cell, candidate.translation, occurrence_salt)
+                && grass_plugin_density_sample(source_name, &candidate.cell, candidate.translation, occurrence_salt)
                     >= density)
         {
             continue;
         }
 
         // Identity is run-local: nothing downstream addresses a grass placement, so a dense
-        // counter is enough to keep the merged exterior map's keys distinct.
+        // counter is enough to keep the merged per-cell maps' keys distinct.
         let occurrence = u32::try_from(index + 1).context("Grass plugins have too many references")?;
-        usage_info.exterior_references_mut().insert(
+        // Exterior placements share the one exterior world space; interior placements form (or
+        // join) the world space of their cell, which `usage.data` serializes under that name.
+        let references = match &candidate.cell {
+            GrassCell::Exterior(_) => usage_info.exterior_references_mut(),
+            GrassCell::Interior(name) => usage_info.cells.entry(name.clone()).or_default(),
+        };
+        references.insert(
             StableRefKey::new(candidate.source, occurrence),
             DistantReference {
                 id: Cow::Borrowed(definition.mesh),
@@ -772,7 +808,7 @@ fn report_unresolved_masters(
 
 fn candidate_sort_key(candidate: &GrassCandidate) -> GrassCandidateSortKey<'_> {
     (
-        candidate.cell,
+        &candidate.cell,
         candidate.translation.map(f32::to_bits),
         candidate.rotation.map(f32::to_bits),
         candidate.scale.to_bits(),
@@ -781,11 +817,21 @@ fn candidate_sort_key(candidate: &GrassCandidate) -> GrassCandidateSortKey<'_> {
     )
 }
 
-fn grass_plugin_density_sample(source_name: &str, cell: (i32, i32), translation: [f32; 3], salt: u32) -> f32 {
+fn grass_plugin_density_sample(source_name: &str, cell: &GrassCell, translation: [f32; 3], salt: u32) -> f32 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(source_name.as_bytes());
-    hasher.update(&cell.0.to_le_bytes());
-    hasher.update(&cell.1.to_le_bytes());
+    match cell {
+        // Exterior samples hash exactly what they did before interiors joined, so an existing
+        // exterior thinning outcome never changes.
+        GrassCell::Exterior((x, y)) => {
+            hasher.update(&x.to_le_bytes());
+            hasher.update(&y.to_le_bytes());
+        }
+        GrassCell::Interior(name) => {
+            hasher.update(b"interior:");
+            hasher.update(name.as_bytes());
+        }
+    }
     for value in translation {
         hasher.update(&value.to_bits().to_le_bytes());
     }

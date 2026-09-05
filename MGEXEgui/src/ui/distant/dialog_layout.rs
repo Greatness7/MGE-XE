@@ -51,9 +51,15 @@ pub(super) const WEATHER_TINTS: [Color32; 10] = [
 /// `interact_size` is set locally so the spinner fills the cell rather than
 /// floating centred inside it (pitfall 3).
 pub(super) fn spinner(ui: &mut Ui, rect: Rect, drag: DragValue<'_>) {
+    spinner_enabled(ui, rect, drag, true);
+}
+
+/// [`spinner`] with the control's enabled state, for a cell that does not apply
+/// to its row and is shown greyed out rather than left blank.
+pub(super) fn spinner_enabled(ui: &mut Ui, rect: Rect, drag: DragValue<'_>, enabled: bool) {
     ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
         ui.spacing_mut().interact_size = rect.size();
-        ui.add(drag);
+        ui.add_enabled(enabled, drag);
     });
 }
 

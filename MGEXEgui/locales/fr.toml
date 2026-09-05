@@ -53,6 +53,7 @@ ashstorm = "Tempête de cendres"
 blight = "Tempête du Fléau"
 snow = "Neigeux"
 blizzard = "Tempête de neige"
+interior = "Intérieur"
 
 [distant]
 enabled = "Utiliser les paysages distants"
@@ -166,12 +167,13 @@ below_water_tip = "Définit le brouillard sous l'eau, en cellules. Un début né
 interiors_tip = "Définit le brouillard des intérieurs distants générés. Nécessite des distances manuelles et les statiques distants."
 exponential_tip = "Utilise la formule exponentielle de brouillard des paysages distants, plus dense avec la distance."
 scattering_tip = "Ajoute la diffusion atmosphérique au ciel et au terrain distant. Nécessite le brouillard exponentiel."
-weather_settings_tip = "Modifie les facteurs de vent, de portée du brouillard et de décalage pour chaque météo."
+weather_settings_tip = "Modifie les facteurs de vent, de portée du brouillard et de décalage pour chaque météo, ainsi que le vent constant des intérieurs."
 
 [distant.weather]
 title = "Configuration climatique des paysages distants"
 wind_factor = "Facteur vitesse vent"
 wind_factor_tip = "Le facteur de vent affecte la vitesse à laquelle l'herbe bouge, pour chaque type de météo, en fonction de la vitesse du vent."
+interior_tip = "Vent constant pour l'herbe des cellules intérieures, qui n'ont pas de météo. Les facteurs de brouillard ne s'appliquent pas en intérieur."
 fog_range_factor = "Facteur portée brouill."
 fog_range_factor_tip = "Définit le facteur de brouillard pour chaque type de météo de Morrowind. Il est multiplié par la distance standard du brouillard au-dessus de l’eau. La valeur autorisée va de 0,001 à 2,0."
 fog_offset = "Décalage brouill."
@@ -680,7 +682,7 @@ use_overrides_tip = "Applique les fichiers de remplacement dans l'ordre lors du 
 [generator.grass]
 select = "Sélectionnez les plugins d'herbe ou de couvre-sol"
 selected_count = "%{selected} sur %{total} sélectionnés"
-hint = "Réservés au générateur : ils ne sont pas ajoutés à l'ordre de chargement du jeu. Seules leurs herbes placées en extérieur sont utilisées, selon le « % densité d'herbe » de l'onglet Objets statiques."
+hint = "Réservés au générateur : ils ne sont pas ajoutés à l'ordre de chargement du jeu. Seules leurs herbes placées, en extérieur comme en intérieur, sont utilisées, selon le « % densité d'herbe » de l'onglet Objets statiques."
 none_found = "Aucun plugin d'herbe trouvé. Si votre couvre-sol est hors de Data Files, ajoutez son dossier via « Répertoires de données… »."
 in_load_order = "dans l'ordre de chargement"
 scanning = "Recherche des plugins d'herbe…"

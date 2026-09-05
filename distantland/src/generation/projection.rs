@@ -133,6 +133,9 @@ impl Projections {
     }
 
     /// Adds the already-classified dedicated grass placements from the final usage view.
+    ///
+    /// Interior placements are captured here too, carrying their cell name: the interior projections
+    /// above were taken before the grass list merged, so this is the only place they are seen.
     pub(crate) fn capture_dedicated_grass(
         &mut self,
         usage: &UsageInfo<'_>,
@@ -141,16 +144,21 @@ impl Projections {
         overrides: &StaticOverrides,
     ) {
         let sources: BTreeSet<_> = grass_plugins.iter().filter_map(|path| normalized_filename(path)).collect();
-        let Some(references) = usage.exterior_references() else {
-            return;
-        };
-        self.grass_placements = references
+        self.grass_placements = usage
+            .cells
             .iter()
-            .filter_map(|(&key, reference)| {
+            .flat_map(|(cell_name, references)| {
+                let interior_cell = (cell_name != "\0").then(|| cell_name.clone());
+                references
+                    .iter()
+                    .map(move |(&key, reference)| (interior_cell.clone(), key, reference))
+            })
+            .filter_map(|(interior_cell, key, reference)| {
                 let source = usage.reference_source_name(key.source())?;
                 sources.contains(source).then(|| GrassPlacementProjection {
                     source: source.to_owned(),
                     index: key.index(),
+                    interior_cell,
                     mesh_key: normalize(reference.id.as_ref()).into_owned(),
                     translation: vec3_bits(reference.translation),
                     rotation: vec3_bits(reference.rotation),
@@ -658,6 +666,8 @@ pub(crate) struct GrassPlacementProjection {
     pub(crate) source: String,
     /// Occurrence-stable source-local index.
     pub(crate) index: u32,
+    /// Exact name of the interior cell the placement sits in; `None` for the exterior.
+    pub(crate) interior_cell: Option<String>,
     pub(crate) mesh_key: String,
     /// Raw translation component bits.
     pub(crate) translation: [u32; 3],
@@ -674,6 +684,10 @@ impl CanonicalWrite for GrassPlacementProjection {
     fn write_canonical(&self, writer: &mut CanonicalWriter) {
         writer.write_str(&self.source);
         writer.write_u32(self.index);
+        writer.write_bool(self.interior_cell.is_some());
+        if let Some(interior_cell) = &self.interior_cell {
+            writer.write_str(interior_cell);
+        }
         writer.write_str(&self.mesh_key);
         write_vec3_bits(writer, self.translation);
         write_vec3_bits(writer, self.rotation);

@@ -26,10 +26,20 @@ identity.
   earlier grass-list file can supply placement override/delete identity.
 
 Placement identity is `(cell, resolved or fallback source plugin, refr_index)`. The cell is part of
-it because some groundcover generators restart `refr_index` at 0 in every cell. During resolution,
-an unresolved master index also distinguishes a fallback placement from a local placement with the
-same refnum. Identity is run-local: nothing downstream addresses a grass placement, so neither key
-detail reaches the output format.
+it because some groundcover generators restart `refr_index` at 0 in every cell; an exterior cell is
+its grid coordinate and an interior its exact name. During resolution, an unresolved master index
+also distinguishes a fallback placement from a local placement with the same refnum. Identity is
+run-local: nothing downstream addresses a grass placement, so neither key detail reaches the output
+format.
+
+Interior placements are kept and written to `usage.data` as the world space of their cell, the same
+block layout the main load order uses for distant interiors. Because the grass list merges after
+`filter_interiors`, an interior whose only distant content is grass still gets a block, and the
+runtime selects it by cell name on entry. The one interior rule that does reach grass is an explicit
+`[interiors]` exclusion: a cell an override or plugin metadata disables gets no grass either, since
+its world space would otherwise still exist and bring MGE's interior fog and blend passes with it.
+The exterior world space alone ever carries terrain, so interior grass is neither buried-culled
+against a heightmap nor merge-grouped.
 
 `plugins` is not a supported home for groundcover. There, identity is `(plugin, refr_index)` with no
 cell component, so reused per-cell indices collapse. The trace warning for this is not a structured
@@ -51,10 +61,11 @@ generation warning and does not reach the GUI. Use the dedicated list instead.
   plugin's `MAST` table. Non-delete references are eligible only as fallback placements and deletes
   are ignored.
 
-Density thinning hashes the normalized grass-plugin filename, exterior cell coordinates,
-position bits, and a deterministic coincident-placement salt. Grass geometry remains an
-ordinary static mesh, while `StaticGrass` keeps it structurally outside atlas packing and merge
-grouping.
+Density thinning hashes the normalized grass-plugin filename, the cell (exterior coordinates, or a
+tagged interior name), position bits, and a deterministic coincident-placement salt. Exterior
+samples hash exactly what they did before interiors joined, so existing thinning outcomes are
+unchanged. Grass geometry remains an ordinary static mesh, while `StaticGrass` keeps it
+structurally outside atlas packing and merge grouping.
 
 ## Classification helpers
 
@@ -72,7 +83,8 @@ Three gates:
 - **Gate A** requires a grass-prefixed `STAT` to be available: defined locally, or by one of the
   plugin's masters. Groundcover written against a landmass mod commonly defines none of its own
   (`Sky_Main_Grass.esp` has no `STAT` records at all).
-- **Gate B** requires more than 50 surviving exterior placements of one. `mast_index` is not
+- **Gate B** requires more than 50 surviving placements of one, counted across exterior and
+  interior cells alike, so groundcover written only for interiors is suggested too. `mast_index` is not
   consulted; only `deleted` references are skipped.
 
 Between A and B, each distinct master's grass ids are built once, streaming, sequentially. A

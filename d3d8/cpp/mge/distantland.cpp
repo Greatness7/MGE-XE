@@ -662,9 +662,21 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     static float smoothWind[2];
     if (!mwBridge->IsMenu()) {
         const float f = 0.02;
-        const float* wind = mwBridge->GetWindVector();
-        smoothWind[0] += f * (windScaling * wind[0] - smoothWind[0]);
-        smoothWind[1] += f * (windScaling * wind[1] - smoothWind[1]);
+        float targetWind[2];
+        if (mwBridge->CellHasWeather()) {
+            const float* wind = mwBridge->GetWindVector();
+            targetWind[0] = windScaling * wind[0];
+            targetWind[1] = windScaling * wind[1];
+        } else {
+            // Interiors have no weather, so the engine's wind vector is whatever the last
+            // exterior left behind. Grass there gets a small constant breeze instead, on a
+            // fixed diagonal so both sway axes move. The smoothing below eases the transition.
+            const float diagonal = 0.70710678f;
+            targetWind[0] = Configuration.Grass.InteriorWind * diagonal;
+            targetWind[1] = Configuration.Grass.InteriorWind * diagonal;
+        }
+        smoothWind[0] += f * (targetWind[0] - smoothWind[0]);
+        smoothWind[1] += f * (targetWind[1] - smoothWind[1]);
         effect->SetFloatArray(ehWindVec, smoothWind, 2);
     }
 
@@ -741,6 +753,7 @@ void DistantLand::adjustFog() {
         fogStart = float(lerp(Configuration.DL.InteriorFogEnd, Configuration.DL.InteriorFogStart, density));
         fogEnd = Configuration.DL.InteriorFogEnd;
         niceWeather = 0;
+        // No weather to scale; setupCommonEffect substitutes the constant interior grass wind.
         windScaling = 0;
         lightSunMult = 1.0;
         lightAmbMult = 1.0;
@@ -998,13 +1011,17 @@ bool DistantLand::selectDistantCell() {
             lastDistantVisCell = playerCell;
         }
 
-        // Get worldspace key
+        // Get worldspace key. Interiors are keyed by cell name, which is how generated interior
+        // statics and grass are found. An interior without a cell pointer yet has no key at all;
+        // the empty name would select the exterior instead.
         string cellname;
-        if (mwBridge->IsExterior()) {
-            cellname = string();
-        }
-        else {
-            cellname = mwBridge->getInteriorName();
+        if (!mwBridge->IsExterior()) {
+            const char* interiorName = mwBridge->getInteriorName();
+            if (!interiorName) {
+                DistantLandShare::hasCurrentWorldSpace = false;
+                return false;
+            }
+            cellname = interiorName;
         }
 
         DistantLandShare::hasCurrentWorldSpace = ipcClient.setWorldSpaceBlocking(cellname);

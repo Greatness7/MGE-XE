@@ -41,6 +41,8 @@ pub const FOG_BELOW_START_RANGE: (f32, f32) = (-99.9, 299.9);
 pub const FOG_BELOW_END_RANGE: (f32, f32) = (0.1, 300.0);
 pub const FOG_INTERIOR_START_RANGE: (f32, f32) = (-0.9, 299.9);
 pub const FOG_INTERIOR_END_RANGE: (f32, f32) = (0.1, 300.0);
+// Same span as the per-weather wind factors it stands in for.
+pub const GRASS_INTERIOR_WIND_RANGE: (f32, f32) = (0.0, 1.0);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -463,6 +465,7 @@ pub struct DistantLandSettings {
     pub very_far_static_min_size: f32,
     pub water: WaterSettings,
     pub fog: FogSettings,
+    pub grass: GrassSettings,
     pub shadows: ShadowSettings,
     pub per_pixel_lighting: bool,
     pub per_pixel_mode: PerPixelMode,
@@ -489,6 +492,7 @@ impl Default for DistantLandSettings {
             very_far_static_min_size: 800.0,
             water: WaterSettings::default(),
             fog: FogSettings::default(),
+            grass: GrassSettings::default(),
             shadows: ShadowSettings::default(),
             per_pixel_lighting: false,
             per_pixel_mode: PerPixelMode::Always,
@@ -551,6 +555,21 @@ impl Default for FogSettings {
             interior_start: 0.0,
             interior_end: 2.0,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GrassSettings {
+    /// Constant wind applied to grass in interiors, which have no weather to drive the
+    /// per-weather wind factors. In the same units as the exterior wind vector those factors
+    /// scale, so `0.0` leaves interior grass with only the shader's faint idle shimmer.
+    pub interior_wind: f32,
+}
+
+impl Default for GrassSettings {
+    fn default() -> Self {
+        Self { interior_wind: 0.075 }
     }
 }
 

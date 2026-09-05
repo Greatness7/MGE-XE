@@ -174,6 +174,16 @@ still installed.
 The host-only horizon setting with no obsolete C++ binding is
 `distant_land.horizon.rebuild_eye_threshold`.
 
+`distant_land.grass.interior_wind` has no obsolete INI predecessor either. It
+is the constant wind applied to grass placed in interior cells, which have no
+weather to drive the per-weather wind factors. It uses the same units as those
+factors and is clamped to `0.0..1.0`; `0.0` leaves interior grass with only the
+shader's faint idle shimmer. The GUI edits it as the Interior row of the
+Distant Land Weather Settings window, where the fog columns are disabled
+because interiors have no weather fog to scale. Interior grass comes from the generator's
+`grass_plugins` list, whose interior placements are baked into `usage.data`
+like exterior ones.
+
 ### Weather and lighting patterns
 
 For each weather name in `clear`, `cloudy`, `foggy`, `overcast`, `rain`,
@@ -217,7 +227,7 @@ registry, or structured Rust model owns them:
 - shader chain and all structured input collections.
 
 `d3d8/crates/config-contract-test` exports the real C++ binding table and verifies all
-130 rows against the Rust schema on the i686 target, including uniqueness,
+131 rows against the Rust schema on the i686 target, including uniqueness,
 storage widths, buffer capacities, `DONT_SAVE`, and default values.
 
 ## `Morrowind.ini`
