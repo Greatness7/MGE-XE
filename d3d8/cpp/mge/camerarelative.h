@@ -18,7 +18,8 @@
 // rotated and scaled by the parent's stored world rotation and scale. Local
 // translations are small and exact, and rotations do not degrade with
 // distance, so that sum in double is exact where the engine's stored float
-// world translation is not.
+// world translation is not. Results are memoized per frame, so a skeleton is
+// walked once however many body parts hang from it.
 //
 // Space convention while a main-view scene is active:
 //   - the real device and MGE's FFE/PPL shaders see world matrices whose
@@ -38,10 +39,11 @@ struct RenderedState;
 namespace CameraRelative {
 
 // Installs the engine hooks: the NiDX8Renderer::SetCameraData vtable slot
-// (exact camera pose), the RenderShape/RenderTriStrips slots (which node is
-// being drawn), and the SetModelTransform / SetSkinnedModelTransforms call
-// sites (exact per-draw and per-bone positions). One-shot for the process
-// lifetime; every site verifies what it replaces and fails closed.
+// (camera pose), the RenderShape/RenderTriStrips slots (which node is being
+// drawn), the SetModelTransform / SetSkinnedModelTransforms call sites (exact
+// per-draw and per-bone positions), and the PlayerAnimController camera update
+// call sites (exact first-person eye). One-shot for the process lifetime;
+// every site verifies what it replaces and fails closed.
 void installHooks();
 bool hooksInstalled();
 
@@ -82,14 +84,17 @@ void multiplyWorldView(const D3DXMATRIX* world, const D3DXMATRIX* view, D3DXMATR
 // Point-light position minus the camera position, in double.
 void relativePosition(const D3DVECTOR* position, D3DVECTOR* out);
 
-// Diagnostic probe (render.camera_relative_probe). For rigid main-scene draws
+// Frame boundary: retires the per-frame position cache and flushes the probe.
+void onPresent();
+
+// Diagnostic probe (render.camera_relative_probe). For rigid main-view draws
 // it compares the world-view translation that reaches the shader against a
 // double-precision reference built from the exact pose and, where the draw
 // hook produced one, the exact node position, and logs the maximum and mean
 // error in world units and in pixels every 300 frames. Works with the feature
-// on or off, which is what makes it a before/after measurement.
+// on or off, which is what makes it a before/after measurement. `scene` is
+// the proxy's main-view scene index; later scenes hold the first-person view.
 void probeProjection(const D3DMATRIX* engineProjection);
-void probeDraw(const RenderedState* rs);
-void probeFrameEnd();
+void probeDraw(const RenderedState* rs, int scene);
 
 }  // namespace CameraRelative

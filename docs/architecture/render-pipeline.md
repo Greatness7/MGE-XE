@@ -305,13 +305,30 @@ is the sum, down its parent chain, of each local translation rotated and scaled 
 stored world rotation and scale, all exact inputs, summed in double. Vtable hooks on
 `RenderShape` and `RenderTriStrips` record which node is being drawn (both `Display` paths pass
 `&geometry->worldTransform`); the five `SetModelTransform` call sites place rigid draws from
-that exact position; the three `SetSkinnedModelTransforms` call sites let the engine run and
-then re-upload each bone matrix composed in double from exact bone, root-parent and shape
-positions; and the `SetCameraData` hook derives the camera's own exact position the same way,
-so the arms and the eye share one set of inputs. A node whose recomposed position disagrees
-with its stored one by more than four units had its transform written directly and keeps the
-stored value. Every recovered pointer read is guarded, so a wrong caller falls back instead of
-faulting.
+that exact position; the three `SetSkinnedModelTransforms` call sites replace the engine version and
+upload each bone matrix once, composed in double from exact bone, root-parent and shape
+positions (the two model-space camera axes it also set are replicated); and the `SetCameraData` hook derives the camera's own exact position the same way.
+In first person the engine copies the stored world position of the `Camera` node of the
+first-person model into the world, arm and shadow camera roots each frame
+(`PlayerAnimController::updateCameraTransforms`); the five call sites of that function are
+patched so the copy is paired with the exact position of the node at that instant and with the
+roots it went into. A `SetCameraData` location is turned back into its `NiCamera` (the recovered
+object must carry the NiCamera vtable before anything else is read), and a camera hanging from
+one of those roots gets the exact position of the pair plus the float offset between its location
+and the copy, so the arms and the eye share one set of inputs; any other camera uses its own
+parent chain. Exact positions
+are memoized per frame in a fixed table keyed by node pointer, so a skeleton is walked once
+however many body parts hang from it. A node whose recomposed position disagrees with its
+stored one by more than the engine's plausible rounding (sixteen float steps at its magnitude,
+at least one unit) had its transform written directly and keeps the stored value. Every
+recovered pointer read is guarded, so a wrong caller falls back instead of faulting.
+
+What this cannot recover is precision lost before a value reaches the scene graph. A MWSE mod that
+writes the camera or the first-person model position from Lua (head bobbing, camera noise, body
+inertia) stores a float at world magnitude, so far from the origin its offset lands on the float grid
+(0.125 units at 135 cells) and the exact eye or arms step with it; stock rendering hides the same
+steps under its own jitter. Such mods need their own distance cutoffs, or an exact offset passed
+through MWSE separately from the float position.
 
 **Measuring.** `render.camera_relative_probe` compares, for every main-scene draw, the
 world-view translation that reaches the shader against a double-precision reference built from

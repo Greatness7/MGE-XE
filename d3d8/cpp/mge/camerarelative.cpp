@@ -10,6 +10,7 @@
 
 #include "configuration.h"
 #include "ffeshader.h"
+#include "mwpatches.h"
 #include "support/log.h"
 
 namespace {
@@ -43,26 +44,25 @@ struct Transform {
 static_assert(sizeof(Transform) == 0x34, "NI::Transform failed size validation");
 
 struct AVObject {
-    void* vTable;                    // 0x0
-    int refCount;                    // 0x4
-    unsigned char objectNet_0x8[0x10];  // 0x8  (name, extra data, controllers, flags)
-    AVObject* parentNode;            // 0x18
-    Point3 worldBoundCenter;         // 0x1C
-    float worldBoundRadius;          // 0x28
-    Matrix33* localRotation;         // 0x2C
-    Point3 localTranslate;           // 0x30
-    float localScale;                // 0x3C
-    Transform worldTransform;        // 0x40
+    void* vTable;                      // 0x0
+    int refCount;                      // 0x4
+    const char* name;                  // 0x8
+    unsigned char objectNet_0xC[0x8];  // 0xC  (extra data, controllers)
+    unsigned short flags;              // 0x14
+    unsigned short padding_0x16;       // 0x16
+    AVObject* parentNode;              // 0x18
+    Point3 worldBoundCenter;           // 0x1C
+    float worldBoundRadius;            // 0x28
+    Matrix33* localRotation;           // 0x2C
+    Point3 localTranslate;             // 0x30
+    float localScale;                  // 0x3C
+    Transform worldTransform;          // 0x40
     unsigned char padding_0x74[0x1C];  // 0x74
 };
 static_assert(sizeof(AVObject) == 0x90, "NI::AVObject failed size validation");
 static_assert(offsetof(AVObject, parentNode) == 0x18, "NI::AVObject::parentNode offset");
 static_assert(offsetof(AVObject, localTranslate) == 0x30, "NI::AVObject::localTranslate offset");
 static_assert(offsetof(AVObject, worldTransform) == 0x40, "NI::AVObject::worldTransform offset");
-
-constexpr std::size_t WORLD_TRANSLATION_OFFSET =
-    offsetof(AVObject, worldTransform) + offsetof(Transform, translation);  // 0x64
-static_assert(WORLD_TRANSLATION_OFFSET == 0x64, "NI::AVObject world translation offset");
 
 struct SkinPartition {
     struct Partition {
@@ -92,25 +92,37 @@ struct SkinData {
         unsigned short padding_0x4A; // 0x4A
     };
 
-    void* vTable;                    // 0x0
-    int refCount;                    // 0x4
-    void* partition;                 // 0x8
-    Transform transform;             // 0xC   root parent to skin
-    unsigned int numBones;           // 0x40
-    BoneData* boneData;              // 0x44
+    void* vTable;           // 0x0
+    int refCount;           // 0x4
+    void* partition;        // 0x8
+    Transform transform;    // 0xC   root parent to skin
+    unsigned int numBones;  // 0x40
+    BoneData* boneData;     // 0x44
 };
 static_assert(sizeof(SkinData) == 0x48, "NI::SkinData failed size validation");
 static_assert(sizeof(SkinData::BoneData) == 0x4C, "NI::SkinData::BoneData failed size validation");
 
 struct SkinInstance {
-    void* vTable;           // 0x0
-    int refCount;           // 0x4
-    SkinData* skinData;     // 0x8
-    AVObject* rootParent;   // 0xC
-    AVObject** bones;       // 0x10
-    int unknown_0x14;       // 0x14
+    void* vTable;          // 0x0
+    int refCount;          // 0x4
+    SkinData* skinData;    // 0x8
+    AVObject* rootParent;  // 0xC
+    AVObject** bones;      // 0x10
+    int unknown_0x14;      // 0x14
 };
 static_assert(sizeof(SkinInstance) == 0x18, "NI::SkinInstance failed size validation");
+
+// The renderer fields SetModelTransform and SetSkinnedModelTransforms update
+// besides the D3D world matrix: the camera axes expressed in model space.
+struct DX8Renderer {
+    unsigned char padding_0x0[0x2AC];
+    Point3 cameraRight;       // 0x2AC
+    Point3 cameraUp;          // 0x2B8
+    Point3 modelCameraRight;  // 0x2C4
+    Point3 modelCameraUp;     // 0x2D0
+};
+static_assert(offsetof(DX8Renderer, cameraRight) == 0x2AC, "NI::DX8Renderer::cameraRight offset");
+static_assert(offsetof(DX8Renderer, modelCameraUp) == 0x2D0, "NI::DX8Renderer::modelCameraUp offset");
 
 }  // namespace NI
 
@@ -128,14 +140,28 @@ constexpr std::uintptr_t RENDER_TRISTRIPS_ADDRESS = 0x6ACFC0;
 constexpr std::uintptr_t SET_MODEL_TRANSFORM_ADDRESS = 0x6AC9C0;
 constexpr std::uintptr_t SET_BONE_TRANSFORM_ADDRESS = 0x6ACB10;
 constexpr std::uintptr_t SET_SKINNED_MODEL_TRANSFORMS_ADDRESS = 0x6ACBE0;
+constexpr std::uintptr_t UPDATE_CAMERA_TRANSFORMS_ADDRESS = 0x542E60;
 
-// Every CALL to NiDX8Renderer::SetModelTransform. The batch and screen-poly
-// callers never pass a node's own transform, so the replacement falls back to
-// stock behavior there; they are patched for completeness of the space.
+// WorldController::{worldCamera 0x124, armCamera 0x150, shadowCamera 0x2B0}
+// + WorldControllerRenderCamera::sgCameraRoot (0xC): the roots the engine
+// copies the first-person eye into.
+constexpr std::uintptr_t WORLD_CONTROLLER_POINTER = 0x7C67DC;
+constexpr DWORD WORLD_CONTROLLER_CAMERA_ROOT_OFFSETS[] = { 0x130, 0x15C, 0x2BC };
+constexpr int CAMERA_ROOT_COUNT = 3;
+// NiCamera vtable, written by NiCamera::ctor (0x6CC200).
+constexpr std::uintptr_t NICAMERA_VTABLE = 0x74FAA8;
+// PlayerAnimController: the first-person model's "Camera" node, found by name
+// in MACP::setupCameras. In first person the engine copies its stored world
+// position into every camera root (PlayerAnimController::updateCameraTransforms).
+constexpr DWORD PLAYER_ANIM_CONTROLLER_HEAD_CAMERA_OFFSET = 0xD4;
+
 struct CallSite {
     std::uintptr_t address;
     const char* name;
 };
+// Every CALL to NiDX8Renderer::SetModelTransform. The batch and screen-poly
+// callers never pass a node's own transform, so the replacement falls back to
+// stock behavior there; they are patched for completeness of the space.
 constexpr CallSite SET_MODEL_TRANSFORM_SITES[] = {
     { 0x6AED2B, "DrawPrimitive -> SetModelTransform" },
     { 0x6AD0ED, "RenderPoints -> SetModelTransform" },
@@ -148,25 +174,25 @@ constexpr CallSite SET_SKINNED_MODEL_TRANSFORMS_SITES[] = {
     { 0x6AECE7, "DrawPrimitive -> SetSkinnedModelTransforms" },
     { 0x6AE3B9, "EndBatch -> SetSkinnedModelTransforms" },
 };
+constexpr CallSite UPDATE_CAMERA_TRANSFORMS_SITES[] = {
+    { 0x41C029, "TES3Game::renderNextFrame -> updateCameraTransforms" },
+    { 0x567A17, "MACP::updateScenegraph -> updateCameraTransforms" },
+    { 0x56871C, "MACP::setPosition -> updateCameraTransforms" },
+    { 0x45CDC3, "cellChangeWithCompanion -> updateCameraTransforms" },
+    { 0x48F64A, "DataHandler::sub_48F5F0 -> updateCameraTransforms" },
+};
 
 using SetCameraDataFn = void(__thiscall*)(
-    void* renderer,
-    const float* worldLocation,
-    const float* worldDirection,
-    const float* worldUp,
-    const float* worldRight,
-    const void* frustum,
-    const void* viewport);
+    void* renderer, const float* worldLocation, const float* worldDirection, const float* worldUp,
+    const float* worldRight, const void* frustum, const void* viewport);
 using RenderShapeFn = void(__thiscall*)(
     void* renderer, void* geometryData, void* skinInstance, NI::Transform* transform, void* worldBound);
 using SetModelTransformFn = void(__thiscall*)(void* renderer, const NI::Transform* transform);
 using SetBoneTransformFn = void(__thiscall*)(void* renderer, const NI::Transform* transform, int boneIndex);
 using SetSkinnedModelTransformsFn = void(__thiscall*)(
-    void* renderer,
-    NI::SkinInstance* skinInstance,
-    NI::SkinPartition::Partition* partition,
-    NI::Transform* transform,
-    void* bound);
+    void* renderer, NI::SkinInstance* skinInstance, NI::SkinPartition::Partition* partition,
+    NI::Transform* transform, void* bound);
+using UpdateCameraTransformsFn = void(__thiscall*)(void* playerAnimController);
 
 SetCameraDataFn originalSetCameraData = nullptr;
 RenderShapeFn originalRenderShape = nullptr;
@@ -175,11 +201,14 @@ const SetModelTransformFn engineSetModelTransform = reinterpret_cast<SetModelTra
 const SetBoneTransformFn engineSetBoneTransform = reinterpret_cast<SetBoneTransformFn>(SET_BONE_TRANSFORM_ADDRESS);
 const SetSkinnedModelTransformsFn engineSetSkinnedModelTransforms =
     reinterpret_cast<SetSkinnedModelTransformsFn>(SET_SKINNED_MODEL_TRANSFORMS_ADDRESS);
+const UpdateCameraTransformsFn engineUpdateCameraTransforms =
+    reinterpret_cast<UpdateCameraTransformsFn>(UPDATE_CAMERA_TRANSFORMS_ADDRESS);
 
 bool installAttempted = false;
 bool cameraHookInstalled = false;
 bool rigidHooksInstalled = false;
 bool skinnedHooksInstalled = false;
+bool eyeHooksInstalled = false;
 
 //---------------------------------------------------------------------------
 // Patch helpers
@@ -306,47 +335,132 @@ bool invert(const DTransform& a, DTransform* out) {
 }
 
 //---------------------------------------------------------------------------
-// Exact world translation
+// Exact world translation, memoized per frame
 //---------------------------------------------------------------------------
 
-// Nodes drawn through RenderShape follow their parents by construction. A
-// mismatch larger than this against the stored value means the world
-// transform was written directly, and the stored value is used instead.
-constexpr double EXACT_TOLERANCE = 4.0;
 constexpr int MAX_CHAIN_DEPTH = 64;
 
-bool exactWorldTranslationUnguarded(const NI::AVObject* node, double out[3]) {
-    double t[3] = { 0.0, 0.0, 0.0 };
-    const NI::AVObject* current = node;
-    for (int depth = 0; current; ++depth) {
-        if (depth > MAX_CHAIN_DEPTH) {
-            return false;
+// Whether the engine produced the stored translation from these inputs by its
+// own float update (NiAVObject::UpdateWorldData:
+// world.t = parent.t + parent.R * (local.t * parent.s)). When it did not, the
+// engine placed this node some other way (root motion, a direct write, a stale
+// local) and the stored value is the only truth; the chain then anchors on it
+// and continues exactly from there. The tolerance is the plausible rounding of
+// that update, sixteen float steps at the magnitude of the coordinate and at
+// least one unit, so a sub-unit disagreement never turns an exact chain into a
+// float-grid one (a grid step is 0.125 units at 135 cells, visible on a hand).
+constexpr int GUARD_STEPS = 16;
+constexpr float GUARD_UNIT_FLOOR = 1.0f;
+
+// Nodes the guard anchored, reported on the probe line.
+long long anchoredCount = 0;
+
+float floatStep(float magnitude) {
+    int exponent = 0;
+    std::frexp(magnitude, &exponent);
+    return std::ldexp(1.0f, exponent - 24);
+}
+
+bool withinGuard(float computed, float stored) {
+    const float delta = std::fabs(computed - stored);
+    if (delta <= GUARD_UNIT_FLOOR) {
+        return true;
+    }
+    const float magnitude = std::fabs(stored) > std::fabs(computed) ? std::fabs(stored) : std::fabs(computed);
+    return delta <= GUARD_STEPS * floatStep(magnitude);
+}
+
+bool storedFollowsParent(const NI::AVObject* node, const NI::AVObject* parent) {
+    const float s = parent->worldTransform.scale;
+    const float lx = node->localTranslate.x * s;
+    const float ly = node->localTranslate.y * s;
+    const float lz = node->localTranslate.z * s;
+    const float (*m)[3] = parent->worldTransform.rotation.m;
+    const NI::Point3& pt = parent->worldTransform.translation;
+    const NI::Point3& st = node->worldTransform.translation;
+    const float fx = pt.x + (m[0][0] * lx + m[0][1] * ly + m[0][2] * lz);
+    const float fy = pt.y + (m[1][0] * lx + m[1][1] * ly + m[1][2] * lz);
+    const float fz = pt.z + (m[2][0] * lx + m[2][1] * ly + m[2][2] * lz);
+    return withinGuard(fx, st.x) && withinGuard(fy, st.y) && withinGuard(fz, st.z);
+}
+
+// Open-addressed table keyed by node pointer, retired by generation at each
+// Present rather than cleared. A miss after the probe limit just recomputes.
+constexpr unsigned CACHE_SLOTS = 8192;
+constexpr unsigned CACHE_PROBE_LIMIT = 16;
+
+struct CacheEntry {
+    const NI::AVObject* node;
+    unsigned generation;
+    float stored[3];
+    double exact[3];
+};
+
+CacheEntry cache[CACHE_SLOTS];
+unsigned cacheGeneration = 1;
+
+CacheEntry* cacheSlot(const NI::AVObject* node) {
+    const std::uintptr_t key = reinterpret_cast<std::uintptr_t>(node);
+    unsigned index = static_cast<unsigned>((key >> 4) * 2654435761u) & (CACHE_SLOTS - 1);
+    for (unsigned probe = 0; probe < CACHE_PROBE_LIMIT; ++probe) {
+        CacheEntry& entry = cache[index];
+        if (entry.generation != cacheGeneration || entry.node == node) {
+            return &entry;
         }
-        const NI::AVObject* parent = current->parentNode;
-        if (parent) {
-            // world.t(child) = world.t(parent) + world.R(parent) * (local.t(child) * world.s(parent))
-            const double s = parent->worldTransform.scale;
-            const double lx = current->localTranslate.x * s;
-            const double ly = current->localTranslate.y * s;
-            const double lz = current->localTranslate.z * s;
-            const float (*m)[3] = parent->worldTransform.rotation.m;
-            t[0] += static_cast<double>(m[0][0]) * lx + static_cast<double>(m[0][1]) * ly + static_cast<double>(m[0][2]) * lz;
-            t[1] += static_cast<double>(m[1][0]) * lx + static_cast<double>(m[1][1]) * ly + static_cast<double>(m[1][2]) * lz;
-            t[2] += static_cast<double>(m[2][0]) * lx + static_cast<double>(m[2][1]) * ly + static_cast<double>(m[2][2]) * lz;
-        } else {
-            // A root's world transform is its local transform.
-            t[0] += current->localTranslate.x;
-            t[1] += current->localTranslate.y;
-            t[2] += current->localTranslate.z;
-        }
-        current = parent;
+        index = (index + 1) & (CACHE_SLOTS - 1);
+    }
+    return nullptr;
+}
+
+bool exactWorldTranslationUnguarded(const NI::AVObject* node, double out[3], int depth) {
+    if (!node || depth > MAX_CHAIN_DEPTH) {
+        return false;
     }
 
-    const double dx = t[0] - node->worldTransform.translation.x;
-    const double dy = t[1] - node->worldTransform.translation.y;
-    const double dz = t[2] - node->worldTransform.translation.z;
-    if (dx * dx + dy * dy + dz * dz > EXACT_TOLERANCE * EXACT_TOLERANCE) {
-        return false;
+    const NI::Point3& stored = node->worldTransform.translation;
+    CacheEntry* slot = cacheSlot(node);
+    if (slot && slot->generation == cacheGeneration && slot->node == node
+        && slot->stored[0] == stored.x && slot->stored[1] == stored.y && slot->stored[2] == stored.z) {
+        out[0] = slot->exact[0];
+        out[1] = slot->exact[1];
+        out[2] = slot->exact[2];
+        return true;
+    }
+
+    double t[3];
+    const NI::AVObject* parent = node->parentNode;
+    double pt[3];
+    if (parent && storedFollowsParent(node, parent) && exactWorldTranslationUnguarded(parent, pt, depth + 1)) {
+        // world.t(child) = world.t(parent) + world.R(parent) * (local.t(child) * world.s(parent))
+        const double s = parent->worldTransform.scale;
+        const double lx = node->localTranslate.x * s;
+        const double ly = node->localTranslate.y * s;
+        const double lz = node->localTranslate.z * s;
+        const float (*m)[3] = parent->worldTransform.rotation.m;
+        t[0] = pt[0] + static_cast<double>(m[0][0]) * lx + static_cast<double>(m[0][1]) * ly + static_cast<double>(m[0][2]) * lz;
+        t[1] = pt[1] + static_cast<double>(m[1][0]) * lx + static_cast<double>(m[1][1]) * ly + static_cast<double>(m[1][2]) * lz;
+        t[2] = pt[2] + static_cast<double>(m[2][0]) * lx + static_cast<double>(m[2][1]) * ly + static_cast<double>(m[2][2]) * lz;
+    } else {
+        // A root, or a node the engine placed without its parent chain: its
+        // stored translation is the only truth. Anchor there; descendants
+        // still get exact offsets from it.
+        t[0] = stored.x;
+        t[1] = stored.y;
+        t[2] = stored.z;
+        if (parent) {
+            ++anchoredCount;
+        }
+    }
+
+    if (slot) {
+        slot->node = node;
+        slot->generation = cacheGeneration;
+        slot->stored[0] = stored.x;
+        slot->stored[1] = stored.y;
+        slot->stored[2] = stored.z;
+        slot->exact[0] = t[0];
+        slot->exact[1] = t[1];
+        slot->exact[2] = t[2];
     }
 
     out[0] = t[0];
@@ -359,7 +473,7 @@ bool exactWorldTranslationUnguarded(const NI::AVObject* node, double out[3]) {
 // us, so a wrong caller would fault; the guard turns that into a fallback.
 bool exactWorldTranslation(const NI::AVObject* node, double out[3]) {
     __try {
-        return exactWorldTranslationUnguarded(node, out);
+        return exactWorldTranslationUnguarded(node, out, 0);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -368,6 +482,128 @@ bool exactWorldTranslation(const NI::AVObject* node, double out[3]) {
 const NI::AVObject* nodeFromWorldTransform(const NI::Transform* transform) {
     return reinterpret_cast<const NI::AVObject*>(
         reinterpret_cast<const char*>(transform) - offsetof(NI::AVObject, worldTransform));
+}
+
+//---------------------------------------------------------------------------
+// First-person eye
+//
+// In first person the engine copies the stored (rounded) world position of the
+// "Camera" node into the world, arm and shadow camera roots
+// (PlayerAnimController::updateCameraTransforms). The skeleton can move again
+// before the scene renders, and other code (crouch, MWSE camera mods) may move
+// the camera afterwards, so the copy is paired with the exact position of the
+// node at the moment it is made, together with the roots it went into. A
+// camera that hangs from one of those roots then has the exact position of
+// the pair plus the float offset between its location and the copy; any other
+// camera uses its own parent chain.
+//---------------------------------------------------------------------------
+
+constexpr int EYE_MAX_PARENT_DEPTH = 3;
+
+struct EyePair {
+    bool valid;
+    const NI::AVObject* roots[CAMERA_ROOT_COUNT];  // compared by value, never read
+    float stored[3];
+    double exact[3];
+};
+EyePair eyePair = {};
+long long eyeMatches = 0;
+long long eyeMisses = 0;
+
+void captureEyeUnguarded(const char* playerAnimController) {
+    eyePair.valid = false;
+    const NI::AVObject* head = *reinterpret_cast<const NI::AVObject* const*>(
+        playerAnimController + PLAYER_ANIM_CONTROLLER_HEAD_CAMERA_OFFSET);
+    if (!head) {
+        return;
+    }
+    const DWORD worldController = MWPatches::read_dword(WORLD_CONTROLLER_POINTER);
+    if (!worldController) {
+        return;
+    }
+    for (int i = 0; i < CAMERA_ROOT_COUNT; ++i) {
+        eyePair.roots[i] = reinterpret_cast<const NI::AVObject*>(
+            MWPatches::read_dword(worldController + WORLD_CONTROLLER_CAMERA_ROOT_OFFSETS[i]));
+    }
+    const NI::AVObject* worldRoot = eyePair.roots[0];
+    if (!worldRoot) {
+        return;
+    }
+
+    double exact[3];
+    if (!exactWorldTranslationUnguarded(head, exact, 0)) {
+        return;
+    }
+    const NI::Point3& headStored = head->worldTransform.translation;
+    const NI::Point3& eye = worldRoot->localTranslate;
+    eyePair.stored[0] = eye.x;
+    eyePair.stored[1] = eye.y;
+    eyePair.stored[2] = eye.z;
+    eyePair.exact[0] = exact[0] + (static_cast<double>(eye.x) - headStored.x);
+    eyePair.exact[1] = exact[1] + (static_cast<double>(eye.y) - headStored.y);
+    eyePair.exact[2] = exact[2] + (static_cast<double>(eye.z) - headStored.z);
+    eyePair.valid = true;
+}
+
+void __fastcall patchUpdateCameraTransforms(void* playerAnimController, void* /*edx*/) {
+    engineUpdateCameraTransforms(playerAnimController);
+    __try {
+        captureEyeUnguarded(static_cast<const char*>(playerAnimController));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        eyePair.valid = false;
+    }
+}
+
+// The NiCamera behind a SetCameraData location, or null. NiCamera::Click
+// passes &camera->worldTransform.translation and the renderer slot has no
+// other caller in the engine; the vtable test is the one read at a computed
+// address, so anything else fails it instead of being walked.
+const NI::AVObject* cameraFromLocation(const float* worldLocation) {
+    const NI::AVObject* camera = reinterpret_cast<const NI::AVObject*>(
+        reinterpret_cast<const char*>(worldLocation)
+        - offsetof(NI::AVObject, worldTransform) - offsetof(NI::Transform, translation));
+    return reinterpret_cast<std::uintptr_t>(camera->vTable) == NICAMERA_VTABLE ? camera : nullptr;
+}
+
+// Whether the camera hangs from a root the engine wrote the copy into. The
+// roots are compared by value only, so a stale pair simply fails to match.
+bool hangsFromCopiedRoot(const NI::AVObject* camera) {
+    const NI::AVObject* node = camera->parentNode;
+    for (int depth = 0; node && depth < EYE_MAX_PARENT_DEPTH; ++depth) {
+        for (int i = 0; i < CAMERA_ROOT_COUNT; ++i) {
+            if (eyePair.roots[i] && eyePair.roots[i] == node) {
+                return true;
+            }
+        }
+        node = node->parentNode;
+    }
+    return false;
+}
+
+bool eyeExactUnguarded(const float* worldLocation, double out[3]) {
+    const NI::AVObject* camera = cameraFromLocation(worldLocation);
+    if (!camera) {
+        return false;
+    }
+    if (eyePair.valid && hangsFromCopiedRoot(camera)) {
+        out[0] = eyePair.exact[0] + (static_cast<double>(worldLocation[0]) - eyePair.stored[0]);
+        out[1] = eyePair.exact[1] + (static_cast<double>(worldLocation[1]) - eyePair.stored[1]);
+        out[2] = eyePair.exact[2] + (static_cast<double>(worldLocation[2]) - eyePair.stored[2]);
+        ++eyeMatches;
+        return true;
+    }
+    ++eyeMisses;
+    return exactWorldTranslationUnguarded(camera, out, 0);
+}
+
+// Exact position of the camera whose location SetCameraData received; false
+// when the location does not belong to a NiCamera.
+bool eyeExact(const float* worldLocation, double out[3]) {
+    __try {
+        return eyeExactUnguarded(worldLocation, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -387,14 +623,8 @@ struct Pose {
 Pose pose;
 
 void __fastcall hookSetCameraData(
-    void* renderer,
-    void* /*edx*/,
-    const float* worldLocation,
-    const float* worldDirection,
-    const float* worldUp,
-    const float* worldRight,
-    const void* frustum,
-    const void* viewport) {
+    void* renderer, void* /*edx*/, const float* worldLocation, const float* worldDirection,
+    const float* worldUp, const float* worldRight, const void* frustum, const void* viewport) {
     if (worldLocation && worldDirection && worldUp && worldRight) {
         std::memcpy(pose.location, worldLocation, sizeof(pose.location));
         std::memcpy(pose.direction, worldDirection, sizeof(pose.direction));
@@ -402,11 +632,7 @@ void __fastcall hookSetCameraData(
         std::memcpy(pose.right, worldRight, sizeof(pose.right));
         pose.valid = true;
 
-        // NiCamera::Click passes &camera->worldTransform.translation, so the
-        // camera's own parent chain gives its exact position.
-        const NI::AVObject* camera = reinterpret_cast<const NI::AVObject*>(
-            reinterpret_cast<const char*>(worldLocation) - NI::WORLD_TRANSLATION_OFFSET);
-        pose.exactValid = exactWorldTranslation(camera, pose.exactLocation);
+        pose.exactValid = eyeExact(worldLocation, pose.exactLocation);
     } else {
         pose.valid = false;
         pose.exactValid = false;
@@ -470,8 +696,7 @@ void activate(const D3DMATRIX* engineView) {
 
     isActive = true;
     if (!loggedActivation) {
-        LOG::logline("-- Camera-relative rendering active (camera at %.1f, %.1f, %.1f; exact pose %s).",
-            origin[0], origin[1], origin[2], pose.exactValid ? "yes" : "no");
+        LOG::logline("-- Camera-relative rendering active (camera at %.1f, %.1f, %.1f).", origin[0], origin[1], origin[2]);
         loggedActivation = true;
     }
 }
@@ -548,22 +773,30 @@ DTransform exactWorldTransform(const NI::AVObject* node) {
     return out;
 }
 
-void __fastcall patchSetSkinnedModelTransforms(
-    void* renderer,
-    void* /*edx*/,
-    NI::SkinInstance* skinInstance,
-    NI::SkinPartition::Partition* partition,
-    NI::Transform* transform,
-    void* bound) {
-    // The engine's version also sets the renderer's model-space camera axes;
-    // let it run, then overwrite each bone matrix it uploaded.
-    engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
-
-    if (!isActive || !skinnedHooksInstalled || !skinInstance || !partition || !transform) {
-        return;
+// The tail of the engine's SetModelTransform and SetSkinnedModelTransforms:
+// the camera's right and up axes expressed in the model's rotated, scaled
+// frame (matrix33_static::transpose_mul_vec3 of rotation * scale).
+void setModelCameraAxes(void* renderer, const NI::Transform& transform) {
+    NI::DX8Renderer* dx8 = static_cast<NI::DX8Renderer*>(renderer);
+    const float s = transform.scale;
+    const float (*m)[3] = transform.rotation.m;
+    const NI::Point3 inputs[2] = { dx8->cameraRight, dx8->cameraUp };
+    NI::Point3* outputs[2] = { &dx8->modelCameraRight, &dx8->modelCameraUp };
+    for (int k = 0; k < 2; ++k) {
+        const NI::Point3& v = inputs[k];
+        outputs[k]->x = (m[0][0] * s) * v.x + (m[1][0] * s) * v.y + (m[2][0] * s) * v.z;
+        outputs[k]->y = (m[0][1] * s) * v.x + (m[1][1] * s) * v.y + (m[2][1] * s) * v.z;
+        outputs[k]->z = (m[0][2] * s) * v.x + (m[1][2] * s) * v.y + (m[2][2] * s) * v.z;
     }
-    const NI::SkinData* skinData = skinInstance->skinData;
-    if (!skinData || !skinData->boneData || !skinInstance->rootParent || !skinInstance->bones || !partition->bones) {
+}
+
+void __fastcall patchSetSkinnedModelTransforms(
+    void* renderer, void* /*edx*/, NI::SkinInstance* skinInstance, NI::SkinPartition::Partition* partition,
+    NI::Transform* transform, void* bound) {
+    const NI::SkinData* skinData = skinInstance ? skinInstance->skinData : nullptr;
+    if (!isActive || !skinnedHooksInstalled || !partition || !transform || !skinData
+        || !skinData->boneData || !skinInstance->rootParent || !skinInstance->bones || !partition->bones) {
+        engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
         return;
     }
 
@@ -576,15 +809,20 @@ void __fastcall patchSetSkinnedModelTransforms(
     const DTransform rootParent = exactWorldTransform(skinInstance->rootParent);
     DTransform inverseRootParent;
     if (!invert(rootParent, &inverseRootParent)) {
+        engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
         return;
     }
-    const DTransform skinToRoot = combine(combine(shape, fromNi(skinData->transform)), inverseRootParent);
-
     for (unsigned short i = 0; i < partition->numBones; ++i) {
         const unsigned short boneIndex = partition->bones[i];
         if (boneIndex >= skinData->numBones || !skinInstance->bones[boneIndex]) {
+            engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
             return;
         }
+    }
+
+    const DTransform skinToRoot = combine(combine(shape, fromNi(skinData->transform)), inverseRootParent);
+    for (unsigned short i = 0; i < partition->numBones; ++i) {
+        const unsigned short boneIndex = partition->bones[i];
         const DTransform bone = exactWorldTransform(skinInstance->bones[boneIndex]);
         const DTransform palette = combine(combine(skinToRoot, bone), fromNi(skinData->boneData[boneIndex].transform));
 
@@ -603,6 +841,8 @@ void __fastcall patchSetSkinnedModelTransforms(
         engineSetBoneTransform(renderer, &relative, i);
         worldRelativePending = false;
     }
+
+    setModelCameraAxes(renderer, *transform);
 }
 
 //---------------------------------------------------------------------------
@@ -626,11 +866,56 @@ int probeFrames = 0;
 long long probeSamples = 0;
 long long probeRelativeSamples = 0;
 long long probeExactSamples = 0;
+long long probeLaterSceneSamples = 0;
 double probeSumUnits = 0.0;
 double probeMaxUnits = 0.0;
+double probeLaterSceneMaxUnits = 0.0;
 double probeSumPx = 0.0;
 double probeMaxPx = 0.0;
 double probeFarthestCell = 0.0;
+
+void probeFrameEnd() {
+    if (!Configuration.CameraRelativeProbe) {
+        return;
+    }
+    if (++probeFrames < PROBE_WINDOW_FRAMES) {
+        return;
+    }
+
+    if (probeSamples > 0) {
+        // Tag by what the sampled draws actually used: Present runs after the UI
+        // view, so the live flag would always read absolute here.
+        const char* tag = probeRelativeSamples == 0 ? "absolute"
+            : probeRelativeSamples == probeSamples ? "relative" : "mixed";
+        LOG::logline(
+            "-- Camera-relative probe [%s, %lld/%lld relative, %lld exact, %lld pose mismatches, eye %lld/%lld, %lld anchored]: "
+            "%d frames, %lld rigid draws, %.1f cells out: "
+            "view-space error max %.4f mean %.5f units (later scenes: %lld draws, max %.4f); "
+            "on-screen error max %.3f mean %.4f px (1920 px frame)",
+            tag, probeRelativeSamples, probeSamples, probeExactSamples, mismatchCount,
+            eyeMatches, eyeMatches + eyeMisses, anchoredCount,
+            probeFrames, probeSamples, probeFarthestCell,
+            probeMaxUnits, probeSumUnits / static_cast<double>(probeSamples),
+            probeLaterSceneSamples, probeLaterSceneMaxUnits,
+            probeMaxPx, probeSumPx / static_cast<double>(probeSamples));
+    }
+
+    probeFrames = 0;
+    probeSamples = 0;
+    probeRelativeSamples = 0;
+    probeExactSamples = 0;
+    probeLaterSceneSamples = 0;
+    mismatchCount = 0;
+    eyeMatches = 0;
+    eyeMisses = 0;
+    anchoredCount = 0;
+    probeSumUnits = 0.0;
+    probeMaxUnits = 0.0;
+    probeLaterSceneMaxUnits = 0.0;
+    probeSumPx = 0.0;
+    probeMaxPx = 0.0;
+    probeFarthestCell = 0.0;
+}
 
 }  // namespace
 
@@ -676,9 +961,18 @@ void installHooks() {
     }
     skinnedHooksInstalled = skinned;
 
-    LOG::logline("-- Camera-relative rendering: hooks installed (camera yes, rigid draws %s, skinned draws %s); %s.",
+    // First-person eye: capture the head-node copy at the engine's camera update.
+    bool eye = true;
+    for (const CallSite& site : UPDATE_CAMERA_TRANSFORMS_SITES) {
+        eye = patchCallEnforced(site, UPDATE_CAMERA_TRANSFORMS_ADDRESS,
+            reinterpret_cast<const void*>(&patchUpdateCameraTransforms)) && eye;
+    }
+    eyeHooksInstalled = eye;
+
+    LOG::logline("-- Camera-relative rendering: hooks installed (camera yes, rigid draws %s, skinned draws %s, first-person eye %s); %s.",
         rigidHooksInstalled ? "yes" : "NO",
         skinnedHooksInstalled ? "yes" : "NO",
+        eyeHooksInstalled ? "yes" : "NO",
         Configuration.EnableCameraRelativeRendering ? "enabled" : "disabled by render.camera_relative");
 }
 
@@ -775,6 +1069,13 @@ void relativePosition(const D3DVECTOR* position, D3DVECTOR* out) {
     *out = result;
 }
 
+void onPresent() {
+    if (++cacheGeneration == 0) {
+        ++cacheGeneration;
+    }
+    probeFrameEnd();
+}
+
 //---------------------------------------------------------------------------
 // Probe
 //---------------------------------------------------------------------------
@@ -805,7 +1106,7 @@ void probeProjection(const D3DMATRIX* engineProjection) {
     probeFrameDraws = 0;
 }
 
-void probeDraw(const RenderedState* rs) {
+void probeDraw(const RenderedState* rs, int scene) {
     if (!Configuration.CameraRelativeProbe || !cameraHookInstalled || !probeHaveProjection || !probeFramePose.valid) {
         return;
     }
@@ -858,6 +1159,12 @@ void probeDraw(const RenderedState* rs) {
     if (errUnits > probeMaxUnits) {
         probeMaxUnits = errUnits;
     }
+    if (scene > 0) {
+        ++probeLaterSceneSamples;
+        if (errUnits > probeLaterSceneMaxUnits) {
+            probeLaterSceneMaxUnits = errUnits;
+        }
+    }
 
     // Only geometry in front of the camera can be projected; keep the sky,
     // objects behind the camera and objects inside the near zone out of the
@@ -883,48 +1190,6 @@ void probeDraw(const RenderedState* rs) {
     if (cell > probeFarthestCell) {
         probeFarthestCell = cell;
     }
-}
-
-void probeFrameEnd() {
-    if (!Configuration.CameraRelativeProbe) {
-        return;
-    }
-    if (++probeFrames < PROBE_WINDOW_FRAMES) {
-        return;
-    }
-
-    if (probeSamples > 0) {
-        // Tag by what the sampled draws actually used: Present runs after the UI
-        // view, so the live flag would always read absolute here.
-        const char* tag = probeRelativeSamples == 0 ? "absolute"
-            : probeRelativeSamples == probeSamples ? "relative" : "mixed";
-        LOG::logline(
-            "-- Camera-relative probe [%s, %lld/%lld relative, %lld exact, %lld pose mismatches]: %d frames, %lld rigid draws, %.1f cells out: "
-            "view-space error max %.4f mean %.5f units; on-screen error max %.3f mean %.4f px (1920 px frame)",
-            tag,
-            probeRelativeSamples,
-            probeSamples,
-            probeExactSamples,
-            mismatchCount,
-            probeFrames,
-            probeSamples,
-            probeFarthestCell,
-            probeMaxUnits,
-            probeSumUnits / static_cast<double>(probeSamples),
-            probeMaxPx,
-            probeSumPx / static_cast<double>(probeSamples));
-    }
-
-    probeFrames = 0;
-    probeSamples = 0;
-    probeRelativeSamples = 0;
-    probeExactSamples = 0;
-    mismatchCount = 0;
-    probeSumUnits = 0.0;
-    probeMaxUnits = 0.0;
-    probeSumPx = 0.0;
-    probeMaxPx = 0.0;
-    probeFarthestCell = 0.0;
 }
 
 }  // namespace CameraRelative

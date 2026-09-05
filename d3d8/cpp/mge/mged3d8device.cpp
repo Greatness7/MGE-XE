@@ -191,7 +191,7 @@ HRESULT _stdcall MGEProxyDevice::GetIndexedSkinningCaps(MgeIndexedSkinningCaps* 
 }
 
 HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
-    CameraRelative::probeFrameEnd();
+    CameraRelative::onPresent();
 
     auto mwBridge = MWBridge::get();
 
@@ -595,9 +595,9 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
         (rs.fvf & D3DFVF_LASTBETA_UBYTE4) != 0;
 
     bool isShadowStencil = isStencilScene && stencilRef <= 1;
-    if (rendertargetNormal && isMainView && sceneCount == 0 && !isShadowStencil) {
+    if (rendertargetNormal && isMainView && !isShadowStencil) {
         // Measures the captured matrices only, so it does not need distant land.
-        CameraRelative::probeDraw(&rs);
+        CameraRelative::probeDraw(&rs, sceneCount);
     }
 
     if (DistantLand::canRenderDistantLand() && rendertargetNormal && isMainView && !isShadowStencil) {
