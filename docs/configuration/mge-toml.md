@@ -178,9 +178,12 @@ The host-only horizon setting with no obsolete C++ binding is
 is the constant wind applied to grass placed in interior cells, which have no
 weather to drive the per-weather wind factors. It uses the same units as those
 factors and is clamped to `0.0..1.0`; `0.0` leaves interior grass with only the
-shader's faint idle shimmer. The GUI edits it as the Interior row of the
-Distant Land Weather Settings window, where the fog columns are disabled
-because interiors have no weather fog to scale. Interior grass comes from the generator's
+shader's faint idle shimmer. It reaches only cells without weather: an
+interior flagged to behave like an exterior, such as a Mournhold district, has
+weather and keeps the per-weather wind factors, sun shadows and fog like any
+exterior cell. The GUI edits it as the Interior row of the Distant Land Weather
+Settings window, where the fog columns are disabled because interiors have no
+weather fog to scale. Interior grass comes from the generator's
 `grass_plugins` list, whose interior placements are baked into `usage.data`
 like exterior ones.
 
