@@ -266,3 +266,71 @@ Patterns to preserve when touching this code:
   StageBlend smooths the seam. The depth texture (`texDepthFrame`) is the
   only unified depth representation; if you add a feature that needs scene depth, append
   to it in the appropriate stage rather than reading the device z-buffer.
+
+## 10. Camera-relative rendering
+
+`render.camera_relative`, off by default while it is being tested. Owned by
+`d3d8/cpp/mge/camerarelative.{h,cpp}`.
+
+**Problem.** Far from the world origin the game's float32 world coordinates are large enough
+that arithmetic on them rounds by a visible amount: one float step is 0.03 units at 32 cells
+out and 0.06 units at 64. The engine hands the proxy an exact world matrix per draw
+(`NiDX8Renderer::SetModelTransform` copies the translation verbatim) but a view matrix whose
+translation it already rounded (`SetCameraData` dots a world-magnitude location with the
+camera basis in float), and `captureTransform` multiplied the two with D3DX in float. The
+rounding differs per object and per camera rotation, which shows as shimmering objects,
+cracks along landscape patch edges, and a whole-scene shift when the view turns.
+
+**Mechanism.**
+
+- A vtable hook on `NiDX8Renderer::SetCameraData` (slot `0x74F588`, verified before it is
+  written) records the exact camera location and basis before the engine builds its view.
+- `SetTransform(D3DTS_VIEW)` for a main-view scene activates the space when the incoming
+  rotation matches the recorded pose bitwise. While active, the recorder view
+  (`rs.viewTransform`) and the real device's view are rotation-only; every world matrix has the
+  camera position subtracted in double before it is captured (`rs.worldViewTransforms`, the
+  indexed-skinning palette, the DXVK PPL packet) and before it reaches the real device; point
+  lights get the same offset in `SetLight` and in the FFE light transform.
+- `rs.worldTransforms` stays absolute. The sky and water passes replay it against `mwView`,
+  which `renderStage0` now takes from `CameraRelative::absoluteView()` (the pose-derived
+  absolute view with camera effects applied) instead of reading the device.
+- View space is unchanged geometrically: the camera sits at its origin either way. Depth,
+  shadow receivers, fog and lighting consume the same values as before, only more precise.
+
+**Actors and the first-person view.** The engine rounds every node's world translation in
+its own scene-graph update, and composes the skin palette in float at world magnitude, before
+any of the above runs, so the matrices it hands the proxy already carry that error for
+anything that moves. The hooks recover the exact position instead: a node's world translation
+is the sum, down its parent chain, of each local translation rotated and scaled by the parent's
+stored world rotation and scale, all exact inputs, summed in double. Vtable hooks on
+`RenderShape` and `RenderTriStrips` record which node is being drawn (both `Display` paths pass
+`&geometry->worldTransform`); the five `SetModelTransform` call sites place rigid draws from
+that exact position; the three `SetSkinnedModelTransforms` call sites replace the engine version and
+upload each bone matrix once, composed in double from exact bone, root-parent and shape
+positions (the two model-space camera axes it also set are replicated); and the `SetCameraData` hook derives the camera's own exact position the same way.
+In first person the engine copies the stored world position of the `Camera` node of the
+first-person model into the world, arm and shadow camera roots each frame
+(`PlayerAnimController::updateCameraTransforms`); the five call sites of that function are
+patched so the copy is paired with the exact position of the node at that instant and with the
+roots it went into. A `SetCameraData` location is turned back into its `NiCamera` (the recovered
+object must carry the NiCamera vtable before anything else is read), and a camera hanging from
+one of those roots gets the exact position of the pair plus the float offset between its location
+and the copy, so the arms and the eye share one set of inputs; any other camera uses its own
+parent chain. Exact positions
+are memoized per frame in a fixed table keyed by node pointer, so a skeleton is walked once
+however many body parts hang from it. A node whose recomposed position disagrees with its
+stored one by more than the engine's plausible rounding (sixteen float steps at its magnitude,
+at least one unit) had its transform written directly and keeps the stored value. Every
+recovered pointer read is guarded, so a wrong caller falls back instead of faulting.
+
+What this cannot recover is precision lost before a value reaches the scene graph. A MWSE mod that
+writes the camera or the first-person model position from Lua (head bobbing, camera noise, body
+inertia) stores a float at world magnitude, so far from the origin its offset lands on the float grid
+(0.125 units at 135 cells) and the exact eye or arms step with it; stock rendering hides the same
+steps under its own jitter. Such mods need their own distance cutoffs, or an exact offset passed
+through MWSE separately from the float position.
+
+**Measuring.** `render.camera_relative_probe` compares, for every main-scene draw, the
+world-view translation that reaches the shader against a double-precision reference built from
+the exact pose, and logs the maximum and mean error in world units and pixels every 300
+frames. It works with the feature on or off, which makes it the before/after measurement.

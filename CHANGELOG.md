@@ -6,6 +6,13 @@
 
 - Distant statics now stream in and out as you travel instead of all loading at startup.
   This means VRAM usage no longer scales with the size of your mod list.
+- Camera-relative rendering, opt-in (`render.camera_relative`). Far from the map origin,
+  objects, terrain edges and the whole scene shimmer as the camera moves because the game's
+  float32 world coordinates round by a visible amount. The near scene is now combined with the
+  camera in double precision, relative to the exact camera position, so that rounding never
+  reaches the screen. Actors, creatures and the first-person arms are placed from the exact
+  positions their skeletons imply rather than the engine's rounded ones, which stops their
+  trembling far out. `render.camera_relative_probe` logs the measured error every 300 frames.
 
 ### Changed
 
