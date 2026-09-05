@@ -53,6 +53,7 @@ ashstorm = "Popielna burza"
 blight = "Zaraza"
 snow = "Śnieg"
 blizzard = "Zamieć"
+interior = "Wnętrza"
 
 [distant]
 enabled = "Użyj odległego terenu"
@@ -166,12 +167,13 @@ below_water_tip = "Ustawia początek i koniec mgły pod wodą. Ujemny początek 
 interiors_tip = "Ustawia mgłę wygenerowanych wnętrz. Wymaga ręcznych odległości i odległych statycznych obiektów."
 exponential_tip = "Używa wykładniczej formuły mgły odległego terenu, gęstniejącej wraz z odległością."
 scattering_tip = "Dodaje rozpraszanie atmosferyczne nieba i odległego terenu. Wymaga mgły wykładniczej."
-weather_settings_tip = "Edytuje współczynniki wiatru, zasięgu i przesunięcia mgły dla każdego typu pogody."
+weather_settings_tip = "Edytuje współczynniki wiatru, zasięgu i przesunięcia mgły dla każdego typu pogody oraz stały wiatr we wnętrzach."
 
 [distant.weather]
 title = "Opcje pogody odległego terenu"
 wind_factor = "Prędkość wiatru"
 wind_factor_tip = "Współczynnik wiatru wpływa na to, jak szybko faluje trawa ze względu na wiatr."
+interior_tip = "Stały wiatr dla trawy w komórkach wewnętrznych, które nie mają pogody. Współczynniki mgły nie mają zastosowania we wnętrzach."
 fog_range_factor = "Zasięg mgły"
 fog_range_factor_tip = "Ustawia współczynnik mgły dla każdego rodzaju pogody w Morrowind. Jest on mnożony przez standardowy zasięg mgły nad wodą. Dozwolony zakres wartości wynosi od 0,001 do 2,0."
 fog_offset = "Przes. mgły"
@@ -680,7 +682,7 @@ use_overrides_tip = "Stosuje pliki nadpisujące w kolejności podczas klasyfikac
 [generator.grass]
 select = "Wybierz wtyczki z trawą lub roślinnością"
 selected_count = "Wybrano %{selected} z %{total}"
-hint = "Tylko dla generatora: nie są dodawane do kolejności ładowania gry. Używane są wyłącznie ich zewnętrzne rozmieszczenia trawy, skalowane przez „% gęstości trawy” na karcie Obiekty statyczne."
+hint = "Tylko dla generatora: nie są dodawane do kolejności ładowania gry. Używane są wyłącznie ich rozmieszczenia trawy, w komórkach zewnętrznych i wewnętrznych, skalowane przez „% gęstości trawy” na karcie Obiekty statyczne."
 none_found = "Nie znaleziono wtyczek z trawą. Jeśli roślinność jest poza Data Files, dodaj jej folder w „Katalogi danych…”."
 in_load_order = "w kolejności ładowania"
 scanning = "Wyszukiwanie wtyczek z trawą…"

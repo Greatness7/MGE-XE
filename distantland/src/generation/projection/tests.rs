@@ -121,6 +121,45 @@ fn dedicated_grass_globals_are_list_order_independent() {
     assert_eq!(forward, reverse);
 }
 
+/// Interior grass placements are only ever seen by the dedicated capture, so it must carry the
+/// cell name: two runs differing only in which interior a placement sits in must not hash alike.
+#[test]
+fn dedicated_grass_captures_interior_placements_with_their_cell() {
+    let temp = tempdir().unwrap();
+    let fixture = build_hermetic_fixture(BASELINE_WORLD_V1_GRASSLIST, temp.path()).unwrap();
+    let job = hermetic_generation_job(&fixture, &temp.path().join("output"));
+    let projections = capture_job(&job);
+
+    let interior_cells: BTreeSet<_> = projections
+        .grass_placements
+        .iter()
+        .filter_map(|placement| placement.interior_cell.as_deref())
+        .collect();
+    assert_eq!(interior_cells, BTreeSet::from(["Fixture Grass Interior"]));
+    assert!(
+        projections
+            .grass_placements
+            .iter()
+            .any(|placement| placement.interior_cell.is_none()),
+        "exterior placements stay unnamed"
+    );
+
+    let mut renamed = projections.clone();
+    for placement in &mut renamed.grass_placements {
+        if placement.interior_cell.is_some() {
+            placement.interior_cell = Some("Elsewhere".to_owned());
+        }
+    }
+    let canonical = |placements: &[GrassPlacementProjection]| {
+        let mut writer = CanonicalWriter::new();
+        for placement in placements {
+            placement.write_canonical(&mut writer);
+        }
+        writer.into_bytes()
+    };
+    assert_ne!(canonical(&projections.grass_placements), canonical(&renamed.grass_placements));
+}
+
 #[test]
 fn boundary_move_changes_only_source_and_destination_buckets() {
     let mut usage = UsageInfo::default();

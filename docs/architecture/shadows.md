@@ -333,7 +333,11 @@ half-texel offset with a flipped y.
 Grass is the only other reader. `renderGrassInst` binds `texSoftShadow` to `tex3`, and
 `XE Mod Grass.fx` calls the same `shadowDeltaZ` and `shadowESM` with the same cascade logic,
 differing only in that it transforms from world space rather than view space and applies the
-result directly to the pixel colour instead of relying on blend state.
+result directly to the pixel colour instead of relying on blend state. The atlas is only
+rendered for cells with weather, so when shadows are off or the cell has none (interiors with
+generated grass) `renderGrassInst` instead binds cascade matrices that place every receiver
+outside both cascades, and grass takes the unshadowed `dz = 1e-6` path rather than sampling
+whatever the last weather cell left in the atlas.
 
 Distant statics, distant terrain, the replacement water plane, and the sky and scattering
 passes do not sample the shadow map. Distant geometry casts but does not receive.

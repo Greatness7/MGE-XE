@@ -53,6 +53,7 @@ ashstorm = "Ashstorm"
 blight = "Blight"
 snow = "Snow"
 blizzard = "Blizzard"
+interior = "Interior"
 
 [distant]
 enabled = "Use Distant Land"
@@ -159,12 +160,13 @@ exponential_tip = "Uses the exponential Distant Land fog formula, which becomes 
 scattering = "Atmospheric scattering"
 scattering_tip = "Adds sky and distant-terrain atmospheric scattering. Requires exponential fog."
 weather_settings = "Weather settings…"
-weather_settings_tip = "Edits wind, fog-range, and fog-offset factors for every weather type."
+weather_settings_tip = "Edits wind, fog-range, and fog-offset factors for every weather type, and the constant wind for interiors."
 
 [distant.weather]
 title = "Distant Land Weather Settings"
 wind_factor = "Wind speed factor"
 wind_factor_tip = "The wind factor affects how fast grass moves in each weather due to wind speed."
+interior_tip = "Constant wind for grass in interior cells, which have no weather. Fog factors do not apply indoors."
 fog_range_factor = "Fog range factor"
 fog_range_factor_tip = "Here you can set fog factor for each Morrowind weather type. It is multiplied by the standard above water fog distance to get the fog for each weather. Allowed value range is from 0.001 to 2.0."
 fog_offset = "Fog offset"
@@ -659,7 +661,7 @@ edit_list_hint = "Open the selected file in its registered editor"
 [generator.grass]
 select = "Select grass/groundcover plugins"
 selected_count = "%{selected} of %{total} selected"
-hint = "Generator-only: these are not added to the game's load order. Only their exterior grass placements are used, scaled by '% grass density' on the Statics tab."
+hint = "Generator-only: these are not added to the game's load order. Only their grass placements are used, in exterior and interior cells, scaled by '% grass density' on the Statics tab."
 none_found = "No grass plugins found. If your groundcover lives outside Data Files, add its folder under 'Data directories…'."
 in_load_order = "in load order"
 scanning = "Looking for grass plugins…"

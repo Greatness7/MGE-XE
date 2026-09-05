@@ -125,7 +125,12 @@ unconditional.
   `buildGrassInstanceVB` batches transforms into an instance VB (`GrassInstStride` 48,
   up to `MaxGrassElements` 8192 per batch).
 - Grass draw (`renderGrassInst`, `PASS_RENDERGRASSINST`): hardware instancing, wind sway
-  (smoothed wind vector), shadow receiving, alpha-to-coverage.
+  (smoothed wind vector), shadow receiving, alpha-to-coverage. Interiors are distant cells
+  too when the generator baked grass for them (interior world spaces in `usage.data`, selected
+  by cell name). Without weather the smoothed wind targets the constant
+  `distant_land.grass.interior_wind` rather than the engine's stale exterior wind, and the
+  shadow cascades are bound as matrices that map every receiver outside the atlas, since the
+  atlas is only rendered for cells with weather.
 - Shadow overlay (`renderShadow`, `PASS_RENDERSHADOW`/`PASS_RENDERSHADOWFFE`): re-draws
   recorded z-writing geometry and projects the soft shadow map onto it with blending.
 - Depth texture (`captureNativeDepth` when enabled and supported, otherwise

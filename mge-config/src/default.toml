@@ -136,6 +136,12 @@ below_water_end = 0.3
 interior_start = 0.0
 interior_end = 2.0
 
+# Grass behaviour that weather cannot decide.
+[distant_land.grass]
+# Constant wind for grass in interiors, which have no weather. Same units as
+# the per-weather wind factors, clamped to 0..1; 0 leaves only the idle shimmer.
+interior_wind = 0.075
+
 # Sun-shadow controls.
 [distant_land.shadows]
 enabled = true

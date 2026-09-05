@@ -3,6 +3,7 @@
 #include "distantshader.h"
 #include "configuration.h"
 #include "mged3d8device.h"
+#include "mwbridge.h"
 #include "support/log.h"
 
 #include <algorithm>
@@ -103,8 +104,22 @@ void DistantLand::renderGrassInst() {
         return;
     }
 
-    effect->SetMatrixArray(ehShadowViewproj, smViewproj, 2);
-    effect->SetTexture(ehTex3, texSoftShadow);
+    // The shadow atlas is only rendered for cells with weather. Elsewhere, interiors with
+    // generated grass in particular, it and smViewproj are whatever the last such cell left
+    // behind, so map every receiver outside both cascades and the shader takes its unshadowed
+    // path (shadowDeltaZ). A translation of 2 in light clip space lands past the atlas margin.
+    if ((Configuration.MGEFlags & USE_SHADOWS) && MWBridge::get()->CellHasWeather()) {
+        effect->SetMatrixArray(ehShadowViewproj, smViewproj, 2);
+        effect->SetTexture(ehTex3, texSoftShadow);
+    } else {
+        static const D3DXMATRIX outsideAtlas(
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            0, 0, 0, 0,
+            2, 0, 0, 1);
+        static const D3DXMATRIX noShadow[2] = { outsideAtlas, outsideAtlas };
+        effect->SetMatrixArray(ehShadowViewproj, noShadow, 2);
+    }
     device->SetVertexDeclaration(GrassDecl);
 
     renderGrassCommon(effect);

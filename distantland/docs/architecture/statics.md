@@ -49,11 +49,15 @@ crate; it has no dependency on root generation settings, storage authority, or t
 are resolved against the same data directories but never enter the active load order. They form
 an override chain among themselves: later entries can override or delete earlier placements
 through `MAST`, and later grass `STAT` definitions of the same id win. The dedicated loader
-resolves exterior references across that chain before retaining placements whose final object is
-grass-classified; it ignores interior and terrain content and warns when an addressed master is
-absent from the grass list. Density thinning uses filename/cell/position/occurrence hashing. Grass
-meshes still use the normal VFS and static extraction path; `StaticGrass` gates keep them out of
-atlas packing and merge grouping while their placements are serialized into `usage.data`.
+resolves exterior and interior references across that chain before retaining placements whose
+final object is grass-classified; it ignores terrain content and warns when an addressed master is
+absent from the grass list. Exterior placements join the exterior world space; interior placements
+join the world space of their cell, keyed by exact cell name like the main loader's interiors, and
+bypass `filter_interiors` because the grass list merges after it, so an interior that holds only
+grass still reaches `usage.data`; only an explicit `[interiors]` exclusion also drops its grass.
+Density thinning uses filename/cell/position/occurrence hashing.
+Grass meshes still use the normal VFS and static extraction path; `StaticGrass` gates keep them out
+of atlas packing and merge grouping while their placements are serialized into `usage.data`.
 
 Filtering ([filter.rs](../../crates/usage/src/info/filter.rs)) happens in two waves:
 

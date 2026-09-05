@@ -6,6 +6,12 @@
 
 - Distant statics now stream in and out as you travel instead of all loading at startup.
   This means VRAM usage no longer scales with the size of your mod list.
+- Grass in interiors. Interior placements in the generator's grass plugin list are now baked into
+  distant land and rendered like exterior grass, and a groundcover plugin that only places grass in
+  interiors is detected for the Grass tab. Interior grass sways with a small constant wind that no
+  weather affects, set by the new `distant_land.grass.interior_wind` key in `mgeXE.toml` and edited
+  as the Interior row of the Distant Land Weather Settings window, and no longer samples the sun
+  shadow atlas left over from the last exterior.
 
 ### Changed
 
