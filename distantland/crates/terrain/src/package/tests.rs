@@ -98,25 +98,3 @@ fn control_texture_guard_reports_dimension_only_failures() {
     assert!(error.contains("dimension limit exceeded"));
     assert!(!error.contains("memory limit exceeded"));
 }
-
-#[test]
-fn control_texture_guard_low_fill_ratio_recommends_sparse_region_or_cell_clip() {
-    let error = validate_control_texture_region(
-        TerrainControlRegion {
-            origin_cell: [0, 0],
-            cell_size_xy: [256, 256],
-            material_size_xy: [4096, 4096],
-            populated_cell_count: 1,
-        },
-        TerrainControlTextureLimits {
-            max_size: 8192,
-            max_bytes: 1,
-        },
-        8,
-    )
-    .unwrap_err()
-    .to_string();
-
-    assert!(error.contains("user-provided cell clip"));
-    assert!(error.contains("fill_ratio=0.000"));
-}

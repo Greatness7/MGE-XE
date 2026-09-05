@@ -26,7 +26,6 @@ pub(crate) use material::*;
 const DEFAULT_PATCH_SIZE: f32 = 512.0;
 const DEFAULT_PATTERN_TILE_SIZE: u32 = 32;
 const DEFAULT_PATTERN_GUTTER_SIZE: u32 = 2;
-const LOW_FILL_RATIO_RECOMMENDATION_THRESHOLD: f64 = 0.5;
 
 /// Cheap inputs and fingerprint computed before materialization.
 ///
@@ -449,14 +448,9 @@ fn validate_control_texture_region(
             estimated_control_texture_bytes, control_texture_limits.max_bytes
         ));
     }
-    let recommendation = if fill_ratio < LOW_FILL_RATIO_RECOMMENDATION_THRESHOLD {
-        " Low fill_ratio suggests a future sparse-region path or a user-provided cell clip."
-    } else {
-        ""
-    };
 
     bail!(
-        "Terrain control texture guard failed: {}. origin_cell=({}, {}), cell_size_xy={}x{}, bounding_cell_count={}, populated_cell_count={}, fill_ratio={fill_ratio:.3}, material_size_xy={}x{}, estimated_control_texture_bytes={}, estimated_source_atlas_bytes={}.{}",
+        "Terrain control texture guard failed: {}. origin_cell=({}, {}), cell_size_xy={}x{}, bounding_cell_count={}, populated_cell_count={}, fill_ratio={fill_ratio:.3}, material_size_xy={}x{}, estimated_control_texture_bytes={}, estimated_source_atlas_bytes={}.",
         failure_kinds.join("; "),
         region.origin_cell[0],
         region.origin_cell[1],
@@ -468,7 +462,6 @@ fn validate_control_texture_region(
         material_height,
         estimated_control_texture_bytes,
         estimated_source_atlas_bytes,
-        recommendation,
     );
 }
 

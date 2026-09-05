@@ -1227,6 +1227,7 @@ dependencies = [
  "bytes_io",
  "distantland_formats",
  "distantland_foundation",
+ "distantland_texture",
  "distantland_vfs",
  "glam",
  "hashbrown 0.16.1",

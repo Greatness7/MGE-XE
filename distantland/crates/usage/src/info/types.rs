@@ -253,6 +253,11 @@ pub struct UsageInfo<'a> {
     ///
     /// Heights live only here; there is no parallel height-only map.
     pub terrain_cells: TerrainCells<'a>,
+    /// Retained terrain cell region after control-texture clip, if any clip was applied.
+    ///
+    /// Stored so the grass merge step can reuse the region computed during main merge
+    /// without recomputing it against a mutated map.
+    pub(super) terrain_control_clip: Option<TerrainControlClip>,
     /// Inclusion metadata for interior cells.
     pub interior_metadata: HashMap<UString, InteriorMetadata>,
     /// Ids of scripts anywhere in the load order that are classified as disabling their object.
@@ -396,4 +401,49 @@ impl<'a> UsageInfo<'a> {
     pub fn exterior_references_count(&self) -> usize {
         self.cells.get("\0").map_or(0, |references| references.len())
     }
+
+    /// Returns the terrain control clip result, if any clip was applied.
+    pub fn terrain_control_clip(&self) -> Option<&TerrainControlClip> {
+        self.terrain_control_clip.as_ref()
+    }
+}
+
+/// Number of material patches per LAND cell in each axis.
+pub(super) const MATERIAL_PATCHES_PER_CELL: u32 = 16;
+
+/// Resource limits for the terrain control-texture region, expressed in cell-level terms
+/// so the usage crate can check them without depending on the terrain crate's byte estimation.
+///
+/// The caller derives these from `GenerationSettings::max_terrain_control_texture_size`
+/// and `max_terrain_control_texture_bytes` using the terrain package's own formulas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TerrainControlClipLimits {
+    /// Maximum width or height of the terrain cell bounding rectangle.
+    pub(crate) max_dimension_cells: u32,
+    /// Maximum estimated control-texture byte footprint.
+    pub(crate) max_bytes: u64,
+}
+
+impl TerrainControlClipLimits {
+    /// Derives cell-level limits from the control texture size cap (in texels) and byte cap.
+    ///
+    /// Both caps are validated non-zero by `GenerationSettings::validate`. Flooring the cell
+    /// dimension is conservative for caps that are not multiples of the patch grid.
+    pub(crate) const fn from_settings(max_size: u32, max_bytes: u64) -> Self {
+        Self {
+            max_dimension_cells: max_size / MATERIAL_PATCHES_PER_CELL,
+            max_bytes,
+        }
+    }
+}
+
+/// Result of clipping the terrain cell region to fit within control-texture limits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerrainControlClip {
+    /// Lowest retained cell coordinate, as `[x, y]`.
+    pub retained_min: [i32; 2],
+    /// Highest retained cell coordinate, as `[x, y]`.
+    pub retained_max: [i32; 2],
+    /// Grid coordinates of cells that were dropped.
+    pub dropped_cells: Vec<(i32, i32)>,
 }
