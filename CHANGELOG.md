@@ -9,7 +9,8 @@
   interiors is detected for the Grass tab. Interior grass sways with a small constant wind that no
   weather affects, set by the new `distant_land.grass.interior_wind` key in `mgeXE.toml` and edited
   as the Interior row of the Distant Land Weather Settings window, and no longer samples the sun
-  shadow atlas left over from the last exterior.
+  shadow atlas left over from the last exterior. Interiors flagged to behave like exteriors, such
+  as Mournhold's districts, have weather and treat their grass exactly like exterior grass.
 
 ## v0.20.3 beta
 

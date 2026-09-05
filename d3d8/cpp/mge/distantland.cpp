@@ -668,9 +668,11 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
             targetWind[0] = windScaling * wind[0];
             targetWind[1] = windScaling * wind[1];
         } else {
-            // Interiors have no weather, so the engine's wind vector is whatever the last
-            // exterior left behind. Grass there gets a small constant breeze instead, on a
-            // fixed diagonal so both sway axes move. The smoothing below eases the transition.
+            // A cell without weather (an interior not flagged to behave like an exterior; the
+            // flagged ones, such as Mournhold's districts, take the weather branch above like
+            // any exterior) leaves the engine's wind vector at whatever the last weather cell
+            // set. Grass there gets a small constant breeze instead, on a fixed diagonal so
+            // both sway axes move. The smoothing below eases the transition.
             const float diagonal = 0.70710678f;
             targetWind[0] = Configuration.Grass.InteriorWind * diagonal;
             targetWind[1] = Configuration.Grass.InteriorWind * diagonal;
