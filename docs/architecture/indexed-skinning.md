@@ -21,12 +21,12 @@ The engine reads `D3DCAPS8.MaxVertexBlendMatrices`, which is four, and passes it
 - the maximum number of bone influences retained per vertex, and
 - the maximum number of distinct bones available to an entire partition.
 
-Four influences per vertex is reasonable. Limiting the whole partition
-to the same four-bone set is what causes the draw-call explosion. Every partition gets
-its own vertex and index buffers, matrix setup, state changes, and draw submission. Hands
-can need dozens of draws; full-body NPC or creature models can contribute more than 200.
-MGE XE then replays relevant geometry for depth and shadow passes, multiplying the cost.
-In dense cities this is one of the game's largest CPU bottlenecks.
+Four influences per vertex is reasonable. Limiting the whole partition to the same
+four-bone set is what causes the draw-call explosion. Every partition gets its own vertex
+and index buffers, matrix setup, state changes, and draw submission. Hands can need dozens
+of draws; full-body NPC or creature models can contribute more than 200. MGE XE then
+replays relevant geometry for depth and shadow passes, multiplying the cost. In dense
+cities this is one of the game's largest CPU bottlenecks.
 
 Testing ruled out two alternatives:
 
@@ -61,9 +61,8 @@ partitionMultiplier      = 1.906
 preExistingPartitions    = 383,253 (99.92%)
 ```
 
-These are historical measurements from temporary instrumentation. The capture records
-the window and frame counts but not the scene, save, build, or configuration, so treat
-them as a design baseline rather than a current beta performance guarantee.
+The capture records window and frame counts but not the scene, save, build, or
+configuration, so these are a design baseline, not a current performance claim.
 
 Per-window multipliers ranged from 1.70 to 2.35. The theoretical one-partition floor
 removes 347,482 partition draws across the sample, 144.78 per frame, or 47.53% of
@@ -95,10 +94,9 @@ source comments nor commit messages record why. The 1.906 aggregate multiplier a
 from 16 and does not describe the shipped build.
 
 In-game tests validated the 8-bone build. Treat it as deliberate but unexplained, not an
-oversight to correct. Before changing it,
-re-profile, and update `mgeindexedskinning.h`, the DXVK build, and this document
-together. All three must agree, or the capability handshake in §5 will refuse to enable
-the feature.
+oversight to correct. Before changing it, re-profile, and update `mgeindexedskinning.h`,
+the DXVK build, and this document together. All three must agree, or the capability
+handshake in §5 will refuse to enable the feature.
 
 ## 3. Data flow
 
@@ -156,10 +154,8 @@ namespace MorrowindIndexedSkinning {
 ```
 
 The NetImmerse layouts, engine addresses, and patch helpers are private to that module.
-It carries local minimal declarations of `NiObject`/`NiPointer`, `NiSkinPartition` and its
-`Partition`, `NiSkinData`, `NiSkinInstance`, `NiGeometryData`, `NiDX8Renderer`, and
-`NiDX8VertexBufferManager`, each with size assertions so layout drift is a build break
-rather than runtime corruption.
+Every local layout carries a size assertion, so drift is a build break rather than runtime
+corruption.
 
 ### 4.1 Patch sites
 
@@ -187,13 +183,15 @@ earlier write, so every hook preserves stock behavior while authorization is fal
 `hooksInstalled()` becomes true only after all four succeed.
 
 The module hooks `PackSkinnedVB` at entry via a trampoline, not at known call sites. A
-missed call site would reach the original packer with `numBones > 4`
-and overwrite the buffer.
+missed call site would reach the original packer with `numBones > 4` and overwrite the
+buffer.
 
 ### 4.2 Partition rebuilding
 
 On an intercepted skinned draw, with the feature authorized:
 
+- **Stock-only geometry.** Keep whatever it has. Its partition is legitimately dense and
+  would otherwise be rebuilt every frame.
 - **Null partition.** Leave it; the engine's lazy creation path handles it.
 - **Dense partition.** If `partitions[0].bonePalette == nullptr`, release through normal
   `NiPointer` refcounting, null the engine's pointer, and let it rebuild.
@@ -204,13 +202,60 @@ On an intercepted skinned draw, with the feature authorized:
 Lazy render-thread rebuilding preserves the engine's lifecycle and avoids loader/render
 concurrency.
 
-If indexed partitioning produces no usable result, the module rebuilds with the original
-arguments. When that stock result is usable, it records the partition as a stock fallback
-so the module does not retry it each frame. Each fallback-cache entry holds an engine
-reference, not a bare pointer. Otherwise an unrelated allocation could recycle a released
-partition's address, and the cache could misread it as a previous fallback. A failed stock
-result is not cached. `onDeviceReleased()` clears the cache while the Morrowind runtime is
-alive, so a static destructor does not release engine references during teardown.
+If indexed partitioning produces no usable result, the module frees what it produced and
+rebuilds with the original arguments, then records the *geometry* as stock-only so no skin
+instance sharing it retries. The cache is keyed by geometry rather than by the partition
+object because the failure is a property of the mesh's bone layout, and it holds an engine
+reference rather than a bare pointer: an unrelated allocation could otherwise recycle a
+released address and be misread as a previous fallback. `onDeviceReleased()` clears the
+cache while the Morrowind runtime is alive, so a static destructor does not release engine
+references during teardown.
+
+### 4.3 Validating the builder's output
+
+`NiSkinPartition::MergeBoneSets` (`0x6C7590`) holds the surviving set of a pair merge in a
+stack slot, then runs a duplicate scan whose own swap-with-last (`0x6C7790`) never updates
+that slot. The merge cannot invalidate it — the inner candidate index starts at outer + 1
+(`0x6C75C0`), so the survivor is never the moved-from element — but the scan can: once the
+survivor sits in the last active slot, deleting any subset moves it down and leaves the index
+pointing past `usedCount`. The `!=` guard at `0x6C771A` no longer recognizes the survivor,
+which is then compared against itself, judged redundant, and freed at `0x6C7788`. Triangles
+that depended on it match no set, and the unguarded walk in `MakeBoneSets` (`0x6C77C0`, no
+bound on the bone-set index) reads past the array:
+
+- Garbage that satisfies containment stores an out-of-range partition index, which
+  `MakePartitions` silently drops. Those triangles are never drawn — and it still returns
+  true. Observed on `sky\r\xsky_wormmouth_01.nif` `Tri Body 0`: 1248 of 1707 triangles
+  partitioned, losing the whole `mouth`/`head 2` bone cluster.
+- Garbage that is not mappable faults in the comparator at `0x6C610B`. Same walk, outcome
+  decided by heap contents, which is why the crash is intermittent and the holes are not.
+
+Nothing in that chain reads the bone limits, so stock Morrowind is exposed too; a union
+capped at four bones just merges far less often than one capped at eighteen, and loses a few
+triangles rather than a whole bone cluster. Assume the builder can fail whatever it was
+asked, and check the result:
+
+- **Coverage.** A triangle belongs to exactly one partition, so
+  `sum(partitions[i].numTriangles) == geomData->triangleCount` is exact. Short means dropped
+  geometry, and the mesh goes to the stock path. Vertex counts cannot be used this way —
+  correct partitioning duplicates boundary vertices, so the sum legitimately exceeds
+  `vertexCount`.
+- **Faults.** The indexed call runs under `__try`/`__except` for `EXCEPTION_ACCESS_VIOLATION`,
+  inside a `CrashLog::ExpectedFaultScope` so that a build with `MGE_ENABLE_CRASH_LOG` does not
+  read a recovered fault as a crash or spend one of its sixteen first-chance slots on it. The
+  faulted call's allocations are lost; that is bounded by one occurrence per geometry.
+
+Freeing a rejected result is required, not optional: `MakePartitions` overwrites
+`this->partitions` without releasing what was there. The module frees it the way
+`NiSkinPartition::dtor` does (`0x6C6B23`) — `Partition`'s first vtable slot is MSVC's vector
+deleting destructor, and flag 3 also releases the element-count cookie in front of the array.
+It clears `partitionCount` even when there is no array to free, because `MakeBoneSets`
+publishes the count (`0x6C77FF`) before `MakePartitions` publishes the array (`0x6C7ACA`) and
+the fault window lies between them.
+
+`NiDX8Renderer::DrawSkinnedPrimitive` dereferences `skinPartition->partitions` at `0x6ADF1C`
+regardless of what `MakePartitions` returned, so returning false is not a usable failure
+signal from the hook — the object must always come back with a valid partition array.
 
 ## 5. Capability handshake
 
@@ -236,7 +281,7 @@ point and reports a zero palette unless *all* of:
 
 - every engine hook installed successfully,
 - `render.indexed_skinning` is true,
-- the generated fixed-function effect exposes an 8-matrix `vertexBlendPalette`, and
+- the generated fixed-function effect exposes an `N`-matrix `vertexBlendPalette`, and
   `XE Main.fx` and `XE Depth.fx` expose the indexed shadow and depth passes,
 - the underlying device reports enough indexed matrices.
 
@@ -296,11 +341,10 @@ non-indexed draws would reuse the same cached shader.
   `vertexBlendPalette[0..1]` for `shadowToCameraProj` is unrelated to actor skinning, and
   MGE XE preserves it.
 
-Before authorizing indexed partitions, MGE XE reflects the compiled core effects and
-requires an `N`-element matrix palette plus the indexed color, depth, and shadow passes.
-Skinned draws that arrive before effect initialization receive a pending capability result
-and retry later. A stale or mod-overridden core shader therefore leaves the stock partition
-path active instead of allowing the DLL and replay shaders to disagree.
+The shader half of the §5 gate is reflection over the compiled core effects, so a stale or
+mod-overridden core shader leaves the stock partition path active instead of letting the
+DLL and the replay shaders disagree. Skinned draws that arrive before effect
+initialization receive a pending capability result and retry later.
 
 The vertex packer also sanitizes non-finite weights and palette indices outside the current
 partition. This is done once when the vertex buffer is created, not in any per-frame draw
@@ -327,7 +371,7 @@ Consequences worth knowing:
   behavior nor performance. Pre-feature MWSE does not touch any of the four patch sites.
 - An old development MWSE build carrying the feature is incompatible. The checked
   installation in §4.1 detects and logs its altered call targets and prologue, then leaves
-  the MGE XE-owned feature disabled. MGE XE does not support simultaneous ownership.
+  the MGE XE-owned feature disabled.
 - Two implementation details differ from the prototype because MGE XE's environment
   differs. The packer uses D3D9 `Lock`/`Unlock`/`Release`; MGE XE does not wrap vertex
   buffers. `d3d8header.h` defines `IDirect3DVertexBuffer8` as `void`, and
@@ -344,18 +388,12 @@ indexed_skinning = true
 
 Default `false`; the block above opts in. MGE XE reads it once at process start;
 changing it takes effect only after a full game restart and never applies to existing
-partitions. It is a standalone
-`bool` in `ConfigurationStruct` rather than an `MGEFlags` bit, because that legacy
-bitfield is full. See [mge-toml.md](../configuration/mge-toml.md).
+partitions. It is a standalone `bool` in `ConfigurationStruct` rather than an `MGEFlags`
+bit, because that legacy bitfield is full. See
+[mge-toml.md](../configuration/mge-toml.md).
 
-Four independent gates in normal MGE rendering leave the stock `(4, 4)` path intact:
-
-1. **Hook installation failure.** Every installed wrapper delegates stock behavior.
-2. **Shader compatibility failure.** In normal MGE rendering, stale or overridden core
-   effects keep the feature off; MGE-disabled and proxy-only modes skip this MGE shader gate.
-3. **Capability failure.** The module creates no indexed partition.
-4. **`render.indexed_skinning = false`.** The feature stays disabled for the process
-   lifetime.
+Any §5 authorization condition failing leaves the stock `(4, 4)` path intact: the hooks
+delegate to the original engine functions and no indexed partition is built.
 
 MGE XE does not support disabling the feature *after* it builds indexed partitions;
 doing so would require converting them back to `(4, 4)`. This is why the setting is
@@ -364,30 +402,10 @@ restart-only.
 The custom DXVK `d3d9.dll` can stay installed while the feature is off. MGE XE can keep
 its indexed shader code compiled in; without indexed partitions it is dormant.
 
-## 9. Verification
+## 9. Runtime verification
 
-Static checks:
-
-- Engine layouts pass their size assertions on i686.
-- Every hook verifies its expected original bytes or CALL target.
-- The hook installer is one-shot; partial installation cannot authorize indexed
-  partitions.
-- Palette constants agree between MGE XE's shaders, MGE XE's C++, and DXVK.
-
-Smallest build checks that cover the change:
-
-```sh
-cargo check -p d3d8 --target i686-pc-windows-msvc
-cargo test -p mge-config
-cargo run -p config-contract-test --target i686-pc-windows-msvc
-```
-
-The contract test cross-checks every C++ `iniSettings[]` row against the Rust schema for
-path, storage width, and default, and asserts the total binding count. Adding or removing
-a setting requires an explicit count update.
-
-Runtime matrix. Indexed skinning's acceptance criteria are almost all runtime-observable,
-so compile checks cannot substitute for these tests:
+Indexed skinning's acceptance criteria are almost all runtime-observable, so compile
+checks cannot substitute for these tests:
 
 1. MGE XE + custom DXVK, no MWSE installed.
 2. The same, plus clean upstream MWSE.
@@ -403,10 +421,6 @@ Record per scene: frame time, main-render geometry correctness, depth and shadow
 and the capability/hook-install log lines. The runtime logs unusable indexed partitions
 that fall back to stock rebuilding, but it does not expose per-scene partition-draw or
 rebuild counters; those require external instrumentation or a profiler.
-
-Release criteria: partition draws drop consistently with the tested build; no weight or
-index corruption; main, depth, and shadow passes agree visually; an unmatched stack never
-enters indexed partition mode.
 
 ## 10. Non-goals
 
