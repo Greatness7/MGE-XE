@@ -121,10 +121,10 @@ MWSE never touches the new slots. There is no cross-binary layout test anywhere.
 struct, so every field in it looks writable from Lua. Some are only read during init and
 ignore later writes.
 
-`ShadowResolution` is the known case. `DistantLand::initShadow` reads it once to size
-`texShadow`, `texSoftShadow`, and `surfShadowZ`, and `ehShadowRcpRes` is pushed once in
-`initShader`. Writing it after startup changes neither, so the setting takes effect on
-the next renderer restart. See [shadows.md](shadows.md).
+`ShadowResolution` is the known case. `DistantLand::initShadow` reads it once to size the
+two shadow atlases (`texShadow[2]`, `surfShadow[2]`, `surfShadowColor`), and `ehShadowRcpRes`
+is pushed once in `initShader`. Writing it after startup changes neither, so the setting
+takes effect on the next renderer restart. See [shadows.md](shadows.md).
 
 Narrowing the exposed struct would fix the whole class, but it is an ABI change MWSE
 reads by member offset, so it is not a local edit.

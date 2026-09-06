@@ -405,6 +405,13 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
         "distant_land.shadows.map_resolution",
         &mut warnings,
     );
+    clamp_f32(
+        &mut distant.shadows.static_range,
+        0.0,
+        DRAW_DISTANCE_RANGE.1,
+        "distant_land.shadows.static_range",
+        &mut warnings,
+    )?;
 
     let horizon = &mut distant.horizon;
     clamp_f32(

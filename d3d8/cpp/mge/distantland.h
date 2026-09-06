@@ -69,6 +69,9 @@ public:
     static constexpr int kMaxPostPointLights = 32;
     static constexpr D3DFORMAT kFormatIntz =
         static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+    // Render target that allocates no memory, for depth-only passes
+    static constexpr D3DFORMAT kFormatNull =
+        static_cast<D3DFORMAT>(MAKEFOURCC('N', 'U', 'L', 'L'));
 
     struct TerrainRuntimeConstants {
         D3DXVECTOR2 worldOrigin;
@@ -239,16 +242,22 @@ public:
     static IDirect3DSurface9* surfRain, *surfRipples, *surfRippleBuffer;
     static IDirect3DVertexBuffer9* vbWaveSim;
 
-    static IDirect3DTexture9* texShadow, *texSoftShadow;
-    static IDirect3DSurface9* surfShadowZ;
+    // Two atlases: the one receivers sample, and the next, built a cascade per frame and
+    // cross-faded in
+    static IDirect3DTexture9* texShadow[2];
+    static IDirect3DSurface9* surfShadow[2], *surfShadowColor;
+    static int shadowCurrent, shadowBuilding, shadowBuildLayer;
+    static bool shadowCurrentValid, shadowBuildComplete;
+    static DWORD shadowBlendStart;
+    static float shadowBlend;
     static IDirect3DVertexBuffer9* vbFullFrame;
 
     // Must match shadowCascades in "XE Mod Shadow Data.fx". That file is user-replaceable
     // through shaders/core-mods, so a stale copy silently disagrees with this value.
-    static constexpr int kShadowCascades = 2;
+    static constexpr int kShadowCascades = 4;
 
     static D3DXMATRIX mwView, mwProj;
-    static D3DXMATRIX smView[kShadowCascades], smProj[kShadowCascades], smViewproj[kShadowCascades];
+    static D3DXMATRIX smView[kShadowCascades], smProj[kShadowCascades], smViewproj[2][kShadowCascades];
     static D3DXVECTOR4 eyeVec, eyePos, sunVec, sunPos;
     static float sunVis;
     static RGBVECTOR sunCol, sunAmb, ambCol;
@@ -265,7 +274,7 @@ public:
 
     static D3DXHANDLE ehRcpRes, ehShadowRcpRes;
     static D3DXHANDLE ehWorld, ehView, ehProj;
-    static D3DXHANDLE ehShadowViewproj;
+    static D3DXHANDLE ehShadowViewproj, ehShadowCascade, ehShadowDistant, ehShadowBlend, ehTexShadowNext;
     static D3DXHANDLE ehVertexBlendState, ehVertexBlendPalette;
     static D3DXHANDLE ehAlphaRef, ehMaterialAlpha;
     static D3DXHANDLE ehHasAlpha, ehHasBones, ehHasVCol;
@@ -413,8 +422,9 @@ public:
     static bool projectionIsCanonical(const D3DXMATRIX& projection);
 
     static void renderShadowMap();
-    static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, const D3DXMATRIX* inverseCameraProj, const D3DXMATRIX* viewproj, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
-    static void renderShadowLayer(int layer, float radius, const D3DXMATRIX* inverseCameraProj);
+    static void renderShadowLayerGeneric(MWBridge* mwBridge, int layer, D3DXMATRIX* view, D3DXMATRIX* proj, VisibleSet& visible_set);
+    static void renderShadowLayer(int layer, float radius);
+    static void uploadShadowMatrices(const D3DXMATRIX* pre);
     static void renderShadow();
     static void renderShadowDebug();
 

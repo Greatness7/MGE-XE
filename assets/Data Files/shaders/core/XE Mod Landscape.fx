@@ -103,7 +103,15 @@ struct TerrainVertOut {
     float3 normalWS : TEXCOORD1;
     float3 color : TEXCOORD2;
     centroid float4 fog : TEXCOORD3;
+    centroid float shadowLight : COLOR0;
+    float4 worldpos : TEXCOORD4;
 };
+
+// Shadow receiver terms, using the near receiver pass's sun estimate so the handoff matches
+void shadowLandVert(float4 worldpos, float3 normalWS, inout TerrainVertOut OUT) {
+    OUT.shadowLight = shadowSunEstimate(saturate(dot(normalWS, -sunVec)));
+    OUT.worldpos = worldpos;
+}
 
 float decodeByte(float value) {
     return floor(value * 255.0 + 0.5);
@@ -152,10 +160,12 @@ TerrainVertOut LandscapeVS(TerrainVertIn IN) {
     pos.z += landBias(dist);
 
     TransformedVert v = transformLandVert(pos);
+    float4 worldpos = mul(pos, world);
     OUT.pos = v.pos;
-    OUT.terrainLocalXY = mul(pos, world).xy - terrainWorldOrigin;
+    OUT.terrainLocalXY = worldpos.xy - terrainWorldOrigin;
     OUT.normalWS = 2.0 * IN.normal.xyz - 1.0;
     OUT.color = IN.color.rgb;
+    shadowLandVert(worldpos, normalize(OUT.normalWS), OUT);
     return OUT;
 }
 
@@ -174,10 +184,12 @@ TerrainVertOut LandscapeReflVS(TerrainVertIn IN) {
     pos.z += -16 * saturate(1 - pos.z/16);
 
     TransformedVert v = transformLandVert(pos);
+    float4 worldpos = mul(pos, world);
     OUT.pos = v.pos;
-    OUT.terrainLocalXY = mul(pos, world).xy - terrainWorldOrigin;
+    OUT.terrainLocalXY = worldpos.xy - terrainWorldOrigin;
     OUT.normalWS = 2.0 * IN.normal.xyz - 1.0;
     OUT.color = IN.color.rgb;
+    shadowLandVert(worldpos, normalize(OUT.normalWS), OUT);
     return OUT;
 }
 
@@ -206,6 +218,13 @@ float4 LandscapePS(TerrainVertOut IN) : COLOR0 {
     float3 albedo = lerp(nearAlbedo, farAlbedo, coarse);
     float3 lighting = sunAmb + sunCol * saturate(dot(normalize(IN.normalWS), -sunVec));
     float3 result = albedo * IN.color * lighting;
+
+    // Sun shadow, darkened the same way as the near receiver pass
+    [branch] if(shadowDistant > 0) {
+        float v = IN.shadowLight * shadowVisibility(IN.worldpos, normalize(IN.normalWS), sunVec);
+        result *= 1 - v * shadecolor;
+    }
+
     return float4(fogApply(result, IN.fog), 1);
 }
 

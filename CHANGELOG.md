@@ -6,9 +6,27 @@
 
 - Distant statics now stream in and out as you travel instead of all loading at startup.
   This means VRAM usage no longer scales with the size of your mod list.
+- Camera-relative rendering, opt-in (`render.camera_relative`). Far from the map origin,
+  objects, terrain edges and the whole scene shimmer as the camera moves because the game's
+  float32 world coordinates round by a visible amount. The near scene is now combined with the
+  camera in double precision, relative to the exact camera position, so that rounding never
+  reaches the screen. Actors, creatures and the first-person arms are placed from the exact
+  positions their skeletons imply rather than the engine's rounded ones, which stops their
+  trembling far out. `render.camera_relative_probe` logs the measured error every 300 frames.
 
 ### Changed
 
+- Sun shadows are rebuilt. Casters render into a hardware depth atlas read with
+  percentage-closer compares instead of a blurred exponential map, in four cascades (1000,
+  4000 and 16000 units, then the draw distance) instead of two, and distant terrain and
+  statics now receive shadows as well as cast them. Two atlases are cross-faded in time, so
+  shadow edges move continuously as the sun turns instead of hopping, and a teleport or a
+  load rebuilds them at the new position within a few frames. Shadows follow the sky light
+  the engine lights with rather than the sun disc, so they agree with the shading and with
+  the engine's own actor shadows at every hour. New `distant_land.shadows.static_range`
+  (cells, default 4, 0 for no limit) bounds how far from the camera distant statics cast;
+  terrain always casts over the whole draw distance. The eight core shaders under
+  `Data Files\shaders\core` must be updated with the DLL.
 - Distant statics use about 23% less video memory and disk space.
 - `MGE_DL_VERSION` 17 to 18. Distant land must be regenerated after updating.
 

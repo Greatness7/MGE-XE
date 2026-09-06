@@ -134,32 +134,39 @@ DebugOut ShadowDebugVS(float4 pos : POSITION) {
 
     OUT.pos = float4(0, 0, 0, 1);
     OUT.pos.x = 1 + 0.25 * (rcpRes.x/rcpRes.y) * (pos.x - 1);
-    OUT.pos.y = 1 + 1.0/512.0 + 0.5 * (pos.y - 1);
+    OUT.pos.y = 1 + 1.0/512.0 + 0.25 * shadowCascades * (pos.y - 1);
     OUT.tex = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * pos.xy;
-    OUT.tex.y *= 2;
+    OUT.tex.y *= shadowCascades;
 
     return OUT;
 }
 
-float4 ShadowDebugPS(DebugOut IN) : COLOR0 {
-    float z, red = 0;
-    float4 shadowClip, eyeClip;
-
-    [branch] if(IN.tex.y < 1) {
-        // Sample depth
-        float2 t = IN.tex;
-        z = tex2Dlod(sampDepth, mapShadowToAtlas(t, 0)).r / ESM_scale;
-        // Convert pixel position from shadow clip space directly to camera clip space
-        shadowClip = float4(2*t.x - 1, 1 - 2*t.y, z, 1);
-        eyeClip = mul(shadowClip, vertexBlendPalette[0]);
+// The atlas is a depth texture, which D3D9 only exposes through comparison sampling.
+// Reconstruct a 3-bit depth by counting the slices the stored depth passes.
+float shadowDebugDepth(float4 t) {
+    float z = 0;
+    [unroll] for(int i = 1; i <= 8; ++i) {
+        t.z = i / 8.0;
+        z += tex2Dlod(sampShadow, t).r;
     }
-    else {
-        // Sample depth
-        float2 t = IN.tex - float2(0, 1);
-        z = tex2Dlod(sampDepth, mapShadowToAtlas(t, 1)).r / ESM_scale;
-        // Convert pixel position from shadow clip space directly to camera clip space
-        shadowClip = float4(2*t.x - 1, 1 - 2*t.y, z, 1);
-        eyeClip = mul(shadowClip, vertexBlendPalette[1]);
+    return z / 8.0;
+}
+
+float4 ShadowDebugPS(DebugOut IN) : COLOR0 {
+    float z = 0, red = 0;
+    float4 eyeClip = 0;
+
+    // Cascades are stacked vertically in the inset
+    int layer = (int)floor(IN.tex.y);
+    float2 t = IN.tex - float2(0, layer);
+
+    [unroll] for(int i = 0; i < shadowCascades; ++i) {
+        if(i == layer) {
+            z = shadowDebugDepth(mapShadowToAtlas(t, i));
+            // Convert pixel position from shadow clip space directly to camera clip space
+            float4 shadowClip = float4(2*t.x - 1, 1 - 2*t.y, z, 1);
+            eyeClip = mul(shadowClip, vertexBlendPalette[i]);
+        }
     }
 
     // Do perspective divide and mark the pixel if it falls within the camera frustum

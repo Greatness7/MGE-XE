@@ -56,8 +56,7 @@ struct GrassVertOut {
     centroid half4 color : COLOR0;
     centroid half4 fog : COLOR1;
 
-    float4 shadow0pos : TEXCOORD1;
-    float4 shadow1pos : TEXCOORD2;
+    float4 worldpos : TEXCOORD1;
 };
 
 GrassVertOut GrassInstVS(StatVertInstIn IN) {
@@ -81,11 +80,8 @@ GrassVertOut GrassInstVS(StatVertInstIn IN) {
     // Non-standard shadow luminance, to create sufficient contrast when ambient is high
     OUT.color.a = shadowSunEstimate(lambert);
 
-    // Find position in light space, output light depth
-    OUT.shadow0pos = mul(v.worldpos, shadowViewProj[0]);
-    OUT.shadow1pos = mul(v.worldpos, shadowViewProj[1]);
-    OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
-    OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
+    // Light space projection happens per pixel
+    OUT.worldpos = v.worldpos;
 
     OUT.texcoords = IN.texcoords;
     return OUT;
@@ -101,13 +97,11 @@ float4 GrassPS(GrassVertOut IN): COLOR0 {
     if(result.a < 64.0/255.0)
         discard;
 
-    // Soft shadowing
-    float dz = shadowDeltaZ(IN.shadow0pos, IN.shadow1pos);
-    float v = shadowESM(dz);
-
-    // Darken shadow area according to existing lighting (slightly towards blue)
-    v *= IN.color.a;
-    result.rgb *= 1 - v * shadecolor;
+    // Sun shadow, only while an atlas exists this frame
+    [branch] if(shadowDistant > 0) {
+        float v = IN.color.a * shadowVisibility(IN.worldpos, float3(0, 0, 0), sunVec);
+        result.rgb *= 1 - v * shadecolor;
+    }
 
     // Fogging
     result.rgb = fogApply(result.rgb, IN.fog);

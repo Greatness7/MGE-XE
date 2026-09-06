@@ -26,6 +26,8 @@ float4 mapShadowToAtlas(float2 t, int layer) {
 float shadowSunEstimate(float lambert) {
     float x = lambert * dot(sunCol, float3(0.36, 0.53, 0.11));
     x *= 0.25 + 0.75 * sunVis;
+    // Fade out over the last degrees of elevation, where the fit clamps the light direction
+    x *= smoothstep(sin(radians(shadowElevationFade.x)), sin(radians(shadowElevationFade.y)), -sunVec.z);
     return x / (shade + x);
 }
 
@@ -48,27 +50,80 @@ TransformedVert transformShadowVert(MorrowindVertIn IN) {
 }
 
 //------------------------------------------------------------
-// 2 layer cascade ortho ESM lookup
+// Cascaded ortho percentage-closer lookup
+//
+// Set 0 (shadowViewProj[0..3], shadowCascade[0..3]) is the current atlas, set 1 the next,
+// cross-faded by shadowBlend. Receivers project per pixel in the space the matrices expect:
+// view space with sunVecView in the near receiver pass, world space with sunVec otherwise.
 
-float shadowDeltaZ(float4 shadow0pos, float4 shadow1pos) {
-    float dz = 1e-6;
-
-    [branch] if(all(saturate(atlasMargin - abs(shadow0pos.xyz)))) {
-        // Layer 0, inner
-        float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadow0pos.xy;
-        dz = tex2Dlod(sampDepth, mapShadowToAtlas(shadowUV, 0)).r / ESM_scale - shadow0pos.z;
-    }
-    else if(all(saturate(atlasMargin - abs(shadow1pos.xyz)))) {
-        // Layer 1
-        float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadow1pos.xy;
-        dz = tex2Dlod(sampDepth, mapShadowToAtlas(shadowUV, 1)).r / ESM_scale - shadow1pos.z;
-    }
-
-    return dz;
+// Receiver in a cascade's clip space, pushed along the normal against self-shadowing, more at
+// grazing angles
+float4 shadowReceiverPos(float4 pos, float3 normal, float3 sunDir, int set, int layer) {
+    float ndotl = saturate(dot(normal, -sunDir));
+    float slope = sqrt(1 - ndotl * ndotl);
+    float offset = min(shadowNormalOffset * (0.5 + slope) * shadowCascade[set * shadowCascades + layer].x, shadowNormalOffsetMax);
+    float4 sp = mul(pos + float4(normal * offset, 0), shadowViewProj[set * shadowCascades + layer]);
+    sp.z /= sp.w;
+    return sp;
 }
 
-float shadowESM(float dz) {
-    return 1 - saturate(exp(ESM_c * dz + ESM_bias));
+// Lit fraction in [0, 1]: a 3x3 grid of bilinear compare taps, shadowFilterRadius cascade 0
+// texels apart in world units, or one tap from shadowSingleTapCascade on
+float shadowLayerLit(sampler atlas, float4 shadowpos, int set, int layer) {
+    float4 cascade = shadowCascade[set * shadowCascades + layer];
+    float2 shadowUV = (0.5 + 0.5*shadowRcpRes) + float2(0.5, -0.5) * shadowpos.xy;
+    float4 t = mapShadowToAtlas(shadowUV, layer);
+    t.z = shadowpos.z - (shadowBias + shadowBiasTexels * cascade.x) / cascade.y;
+
+    // layer is a literal once the caller's loop is unrolled, so this resolves at compile time
+    if(layer >= shadowSingleTapCascade) {
+        return tex2Dlod(atlas, t).r;
+    }
+
+    float spacing = shadowFilterRadius * shadowCascade[set * shadowCascades].x / cascade.x;
+    float2 d = spacing * shadowRcpRes * float2(shadowCascadeSize, 1);
+
+    float lit = 0;
+    [unroll] for(int y = -1; y <= 1; ++y) {
+        [unroll] for(int x = -1; x <= 1; ++x) {
+            lit += tex2Dlod(atlas, t + float4(x * d.x, y * d.y, 0, 0)).r;
+        }
+    }
+    return lit / 9.0;
+}
+
+// Innermost containing cascade from minLayer up, faded at the outer edge. layerOut is the
+// cascade used, shadowCascades if none
+float shadowSetVisibility(sampler atlas, int set, float4 pos, float3 normal, float3 sunDir, int minLayer, out int layerOut) {
+    layerOut = shadowCascades;
+    [unroll] for(int i = 0; i < shadowCascades; ++i) {
+        [branch] if(i >= minLayer) {
+            float4 sp = shadowReceiverPos(pos, normal, sunDir, set, i);
+            [branch] if(all(saturate(atlasMargin - abs(sp.xyz)))) {
+                float v = 1 - shadowLayerLit(atlas, sp, set, i);
+                if(i == shadowCascades - 1) {
+                    float2 fade = saturate(25 * (1 - abs(sp.xy)));
+                    v *= fade.x * fade.y;
+                }
+                layerOut = i;
+                return v;
+            }
+        }
+    }
+    return 0;
+}
+
+// Shadow term in [0, 1], 1 fully shadowed, cross-faded between the atlases. The next atlas is
+// walked from the current one's cascade: a finer one could contain the point only next to a
+// boundary
+float shadowVisibility(float4 pos, float3 normal, float3 sunDir) {
+    int layer, layerNext;
+    float v = shadowSetVisibility(sampShadow, 0, pos, normal, sunDir, 0, layer);
+    [branch] if(shadowBlend > 0) {
+        int minLayer = (layer < shadowCascades) ? layer : 0;
+        v = lerp(v, shadowSetVisibility(sampShadowNext, 1, pos, normal, sunDir, minLayer, layerNext), shadowBlend);
+    }
+    return v;
 }
 
 //------------------------------------------------------------
@@ -80,8 +135,8 @@ struct RenderShadowVertOut {
     centroid float light: COLOR0;
     centroid float alpha: COLOR1;
 
-    float4 shadow0pos: TEXCOORD1;
-    float4 shadow1pos: TEXCOORD2;
+    float4 viewpos: TEXCOORD1;
+    float3 normal: TEXCOORD2;
 };
 
 RenderShadowVertOut RenderShadowsBaseVS(MorrowindVertIn IN) {
@@ -103,11 +158,9 @@ RenderShadowVertOut RenderShadowsBaseVS(MorrowindVertIn IN) {
     else
         OUT.light *= saturate(4 * fogatt);
 
-    // Find position in light space, output light depth
-    OUT.shadow0pos = mul(v.viewpos, shadowViewProj[0]);
-    OUT.shadow1pos = mul(v.viewpos, shadowViewProj[1]);
-    OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
-    OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
+    // Light space projection happens per pixel
+    OUT.viewpos = v.viewpos;
+    OUT.normal = v.normal.xyz;
 
     OUT.texcoords = IN.texcoords;
     return OUT;
@@ -156,10 +209,8 @@ RenderShadowVertOut RenderShadowsIndexedBaseVS(MorrowindIndexedVertIn IN) {
     else
         OUT.light *= saturate(4 * fogatt);
 
-    OUT.shadow0pos = mul(v.viewpos, shadowViewProj[0]);
-    OUT.shadow1pos = mul(v.viewpos, shadowViewProj[1]);
-    OUT.shadow0pos.z = OUT.shadow0pos.z / OUT.shadow0pos.w;
-    OUT.shadow1pos.z = OUT.shadow1pos.z / OUT.shadow1pos.w;
+    OUT.viewpos = v.viewpos;
+    OUT.normal = v.normal.xyz;
     OUT.texcoords = IN.texcoords;
     return OUT;
 }
@@ -190,13 +241,7 @@ float4 RenderShadowsPS(RenderShadowVertOut IN): COLOR0 {
     }
 
     // Soft shadowing
-    float dz = shadowDeltaZ(IN.shadow0pos, IN.shadow1pos);
-    clip(-dz);
-    float v = shadowESM(dz) * IN.light * alpha;
-    
-    // Fade out shadows at map edges
-    float2 fade = saturate(25 * (1 - abs(IN.shadow1pos.xy)));
-    v = v * fade.x * fade.y;
+    float v = shadowVisibility(IN.viewpos, normalize(IN.normal), sunVecView) * IN.light * alpha;
 
     // Darken shadow area according to existing lighting (slightly towards blue)
     clip(v - 2.0/255.0);

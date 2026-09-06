@@ -114,6 +114,10 @@ struct ConfigurationStruct {
     // Restart-required. Standalone rather than an MGEFlags bit: that legacy
     // bitfield is full.
     bool EnableIndexedSkinning;
+    // Camera-relative rendering of the Morrowind near scene (see camerarelative.h).
+    bool EnableCameraRelativeRendering;
+    // Diagnostic: log the world-view precision error every 300 frames.
+    bool CameraRelativeProbe;
 
     struct {
         float zoom, zoomRate, zoomRateTarget;
@@ -160,6 +164,10 @@ struct ConfigurationStruct {
         bool AdaptiveGate;
         bool HierarchicalMarch;
     } Horizon;
+
+    // Cells from the eye within which distant statics cast shadows, 0 for no limit. Outside
+    // DL for the same reason as Horizon.
+    float ShadowStaticRange;
 
     struct {
         float SunMult[10];

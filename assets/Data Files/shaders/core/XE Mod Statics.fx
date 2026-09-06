@@ -35,17 +35,28 @@ TransformedVert transformStaticVert(StatVertIn IN) {
     return v;
 }
 
-float4 lightStaticVert(StatVertIn IN) {
+float3 staticNormalWorld(StatVertIn IN) {
     // Decompress normal
     float4 normal = float4(normalize(2 * IN.normal.xyz - 1), 0);
-    normal = mul(normal, world);
+    return mul(normal, world).xyz;
+}
+
+float4 lightStaticVert(StatVertIn IN) {
+    float3 normal = staticNormalWorld(IN);
 
     // Lighting (worldspace)
     // Emissive is stored in the 4th value of the normal vector
     float emissive = IN.normal.w;
-    float3 light = sunCol * saturate(dot(normal.xyz, -sunVec)) + sunAmb + emissive;
+    float3 light = sunCol * saturate(dot(normal, -sunVec)) + sunAmb + emissive;
 
     return float4(IN.color.rgb * light, IN.color.a);
+}
+
+// Shadow receiver terms, using the near receiver pass's sun estimate so the handoff matches
+void shadowStaticVert(StatVertIn IN, float4 worldpos, inout StatVertOut OUT) {
+    OUT.normalWS = staticNormalWorld(IN);
+    OUT.shadowLight = shadowSunEstimate(saturate(dot(OUT.normalWS, -sunVec)));
+    OUT.worldpos = worldpos;
 }
 
 float2 texcoordsModifier(StatVertIn IN) {
@@ -67,6 +78,7 @@ StatVertOut StaticExteriorVS(StatVertIn IN) {
     TransformedVert v = transformStaticVert(IN);
     OUT.pos = v.pos;
     OUT.color = lightStaticVert(IN);
+    shadowStaticVert(IN, v.worldpos, OUT);
 
     // Fogging (exterior)
     float3 eyevec = v.worldpos.xyz - eyePos.xyz;
@@ -83,6 +95,11 @@ StatVertOut StaticInteriorVS (StatVertIn IN) {
     TransformedVert v = transformStaticVert(IN);
     OUT.pos = v.pos;
     OUT.color = lightStaticVert(IN);
+
+    // No sun shadows without weather
+    OUT.shadowLight = 0;
+    OUT.worldpos = v.worldpos;
+    OUT.normalWS = float3(0, 0, 1);
 
     // Fogging (interior)
     float dist = length(v.viewpos.xyz);
@@ -104,6 +121,13 @@ float4 StaticPS (StatVertOut IN): COLOR0 {
     float4 result = tex2Dgrad(sampBaseTex, atlasUV, dx, dy);
 
     result.rgb *= IN.color.rgb;
+
+    // Sun shadow, darkened the same way as the near receiver pass
+    [branch] if(shadowDistant > 0) {
+        float v = IN.shadowLight * shadowVisibility(IN.worldpos, normalize(IN.normalWS), sunVec);
+        result.rgb *= 1 - v * shadecolor;
+    }
+
     result.rgb = fogApply(result.rgb, IN.fog);
 
     // Near handoff: dissolve distant statics in across the radial band so a batched

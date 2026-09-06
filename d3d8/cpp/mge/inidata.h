@@ -59,6 +59,8 @@ const iniSetting iniSettings[] = {
         0),
     BIT(Configuration.MGEFlags, USE_HW_SHADER_BIT, "render.enable_shaders", 0),
     NUM(Configuration.EnableIndexedSkinning, t_bool, "render.indexed_skinning", 0),
+    NUM(Configuration.EnableCameraRelativeRendering, t_bool, "render.camera_relative", 0),
+    NUM(Configuration.CameraRelativeProbe, t_bool, "render.camera_relative_probe", 0),
     NUM(Configuration.HDRReactionSpeed, t_float, "render.hdr_reaction_time", 0),
     NUM(Configuration.PerPixelLightFlags, t_uint32, "distant_land.per_pixel_mode", 0),
 
@@ -139,6 +141,7 @@ const iniSetting iniSettings[] = {
         t_uint32,
         "distant_land.shadows.map_resolution",
         0),
+    NUM(Configuration.ShadowStaticRange, t_float, "distant_land.shadows.static_range", 0),
 
     WEATHER_BIND(0, "clear"),
     WEATHER_BIND(1, "cloudy"),

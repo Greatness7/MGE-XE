@@ -377,6 +377,8 @@ pub struct RenderSettings {
     pub fog_mode: FogMode,
     pub enable_shaders: bool,
     pub indexed_skinning: bool,
+    pub camera_relative: bool,
+    pub camera_relative_probe: bool,
     pub hdr_reaction_time: f32,
     pub fps_counter: bool,
     pub messages: bool,
@@ -397,6 +399,8 @@ impl Default for RenderSettings {
             fog_mode: FogMode::RangeVertex,
             enable_shaders: false,
             indexed_skinning: false,
+            camera_relative: false,
+            camera_relative_probe: false,
             hdr_reaction_time: 2.0,
             fps_counter: false,
             messages: true,
@@ -559,6 +563,8 @@ impl Default for FogSettings {
 pub struct ShadowSettings {
     pub enabled: bool,
     pub map_resolution: u32,
+    /// Cells from the eye within which distant statics cast shadows; 0 means no limit.
+    pub static_range: f32,
 }
 
 impl Default for ShadowSettings {
@@ -566,6 +572,7 @@ impl Default for ShadowSettings {
         Self {
             enabled: true,
             map_resolution: 2048,
+            static_range: 4.0,
         }
     }
 }

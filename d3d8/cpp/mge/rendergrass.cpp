@@ -103,8 +103,9 @@ void DistantLand::renderGrassInst() {
         return;
     }
 
-    effect->SetMatrixArray(ehShadowViewproj, smViewproj, 2);
-    effect->SetTexture(ehTex3, texSoftShadow);
+    if (shadowCurrentValid) {
+        uploadShadowMatrices(nullptr);
+    }
     device->SetVertexDeclaration(GrassDecl);
 
     renderGrassCommon(effect);

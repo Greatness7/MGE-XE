@@ -158,14 +158,18 @@ IDirect3DSurface9* DistantLand::surfRipples;
 IDirect3DSurface9* DistantLand::surfRippleBuffer;
 IDirect3DVertexBuffer9* DistantLand::vbWaveSim;
 
-IDirect3DTexture9* DistantLand::texShadow;
-IDirect3DTexture9* DistantLand::texSoftShadow;
-IDirect3DSurface9* DistantLand::surfShadowZ;
+IDirect3DTexture9* DistantLand::texShadow[2];
+IDirect3DSurface9* DistantLand::surfShadow[2];
+IDirect3DSurface9* DistantLand::surfShadowColor;
+int DistantLand::shadowCurrent, DistantLand::shadowBuilding, DistantLand::shadowBuildLayer;
+bool DistantLand::shadowCurrentValid, DistantLand::shadowBuildComplete;
+DWORD DistantLand::shadowBlendStart;
+float DistantLand::shadowBlend;
 IDirect3DVertexBuffer9* DistantLand::vbFullFrame;
 
 D3DXMATRIX DistantLand::mwView, DistantLand::mwProj;
 D3DXMATRIX DistantLand::smView[kShadowCascades], DistantLand::smProj[kShadowCascades];
-D3DXMATRIX DistantLand::smViewproj[kShadowCascades];
+D3DXMATRIX DistantLand::smViewproj[2][kShadowCascades];
 D3DXVECTOR4 DistantLand::eyeVec, DistantLand::eyePos;
 D3DXVECTOR4 DistantLand::sunVec, DistantLand::sunPos;
 float DistantLand::sunVis;
@@ -233,7 +237,7 @@ D3DXHANDLE DistantLand::ehShadowRcpRes;
 D3DXHANDLE DistantLand::ehWorld;
 D3DXHANDLE DistantLand::ehView;
 D3DXHANDLE DistantLand::ehProj;
-D3DXHANDLE DistantLand::ehShadowViewproj;
+D3DXHANDLE DistantLand::ehShadowViewproj, DistantLand::ehShadowCascade, DistantLand::ehShadowDistant, DistantLand::ehShadowBlend, DistantLand::ehTexShadowNext;
 D3DXHANDLE DistantLand::ehVertexBlendState;
 D3DXHANDLE DistantLand::ehVertexBlendPalette;
 D3DXHANDLE DistantLand::ehAlphaRef;
@@ -821,6 +825,10 @@ bool DistantLand::initShader() {
     ehView = effect->GetParameterByName(0, "view");
     ehProj = effect->GetParameterByName(0, "proj");
     ehShadowViewproj = effect->GetParameterByName(0, "shadowViewProj");
+    ehShadowCascade = effect->GetParameterByName(0, "shadowCascade");
+    ehShadowDistant = effect->GetParameterByName(0, "shadowDistant");
+    ehShadowBlend = effect->GetParameterByName(0, "shadowBlend");
+    ehTexShadowNext = effect->GetParameterByName(0, "texShadowNext");
     ehVertexBlendState = effect->GetParameterByName(0, "vertexBlendState");
     ehVertexBlendPalette = effect->GetParameterByName(0, "vertexBlendPalette");
     ehAlphaRef = effect->GetParameterByName(0, "alphaRef");
@@ -1326,24 +1334,33 @@ bool DistantLand::initDynamicWaves() {
 }
 
 bool DistantLand::initShadow() {
-    const D3DFORMAT shadowFormat = D3DFMT_R16F, shadowZFormat = D3DFMT_D24S8;
     const UINT shadowSize = Configuration.DL.ShadowResolution, cascades = kShadowCascades;
     HRESULT hr;
 
-    // The shadow texture holds a horizontal-packed shadow atlas
-    hr = device->CreateTexture(cascades * shadowSize, shadowSize, 1, D3DUSAGE_RENDERTARGET, shadowFormat, D3DPOOL_DEFAULT, &texShadow, NULL);
-    if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow render target");
-        return false;
+    // Two shadow atlases, depth textures packed horizontally by cascade, sampled with hardware compare
+    for (int i = 0; i < 2; ++i) {
+        hr = device->CreateTexture(cascades * shadowSize, shadowSize, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D24S8, D3DPOOL_DEFAULT, &texShadow[i], NULL);
+        if (hr != D3D_OK) {
+            LOG::logline("!! Failed to create shadow depth texture");
+            return false;
+        }
+        texShadow[i]->GetSurfaceLevel(0, &surfShadow[i]);
     }
-    hr = device->CreateTexture(cascades * shadowSize, shadowSize, 1, D3DUSAGE_RENDERTARGET, shadowFormat, D3DPOOL_DEFAULT, &texSoftShadow, NULL);
+    shadowCurrent = 0;
+    shadowBuilding = 1;
+    shadowBuildLayer = 0;
+    shadowCurrentValid = false;
+    shadowBuildComplete = false;
+    shadowBlend = 0;
+
+    // D3D9 needs a colour target bound while rendering depth; NULL format costs no memory
+    hr = device->CreateRenderTarget(cascades * shadowSize, shadowSize, kFormatNull, D3DMULTISAMPLE_NONE, 0, FALSE, &surfShadowColor, NULL);
     if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow render target");
-        return false;
+        LOG::logline("-- NULL render target unsupported, shadow atlas uses a real colour surface");
+        hr = device->CreateRenderTarget(cascades * shadowSize, shadowSize, D3DFMT_R16F, D3DMULTISAMPLE_NONE, 0, FALSE, &surfShadowColor, NULL);
     }
-    hr = device->CreateDepthStencilSurface(cascades * shadowSize, shadowSize, shadowZFormat, D3DMULTISAMPLE_NONE, 0, TRUE, &surfShadowZ, NULL);
     if (hr != D3D_OK) {
-        LOG::logline("!! Failed to create shadow Z buffer");
+        LOG::logline("!! Failed to create shadow colour target");
         return false;
     }
     hr = device->CreateVertexBuffer(4 * 12, D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &vbFullFrame, 0);
@@ -2121,9 +2138,11 @@ void DistantLand::release() {
     safeRelease(WaterDecl);
     safeRelease(GrassDecl);
 
-    safeRelease(texShadow);
-    safeRelease(texSoftShadow);
-    safeRelease(surfShadowZ);
+    safeRelease(surfShadowColor);
+    for (int i = 0; i < 2; ++i) {
+        safeRelease(surfShadow[i]);
+        safeRelease(texShadow[i]);
+    }
 
     safeRelease(texWater);
     safeRelease(texReflection);

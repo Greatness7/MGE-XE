@@ -3,6 +3,7 @@
 #include "mgedinput.h"
 #include "configuration.h"
 #include "distantland.h"
+#include "camerarelative.h"
 #include "distantshader.h"
 #include "postshaders.h"
 #include "mwbridge.h"
@@ -287,8 +288,11 @@ void DistantLand::renderStage0() {
     // Update current cell and select distant static set
     selectDistantCell();
 
-    // Get Morrowind camera matrices
-    device->GetTransform(D3DTS_VIEW, &mwView);
+    // Get Morrowind camera matrices. In camera-relative space the device holds a
+    // rotation-only view; distant land keeps working in absolute coordinates.
+    if (!CameraRelative::absoluteView(&mwView)) {
+        device->GetTransform(D3DTS_VIEW, &mwView);
+    }
     device->GetTransform(D3DTS_PROJECTION, &mwProj);
 
     // Set variables derived from current game state and camera configuration
@@ -310,13 +314,16 @@ void DistantLand::renderStage0() {
             effect->EndPass();
 
             // Shadow map early render
+            bool shadowsRendered = false;
             if (Configuration.MGEFlags & USE_SHADOWS) {
                 if (mwBridge->CellHasWeather() && !mwBridge->IsMenu()) {
                     effectShadow->Begin(&passes, D3DXFX_DONOTSAVESTATE);
                     renderShadowMap();
                     effectShadow->End();
+                    shadowsRendered = true;
                 }
             }
+            effect->SetFloat(ehShadowDistant, (shadowsRendered && shadowCurrentValid) ? 1.0f : 0.0f);
 
             // Distant everything; bias the projection matrix such that
             // distant land gets drawn behind anything Morrowind would draw
