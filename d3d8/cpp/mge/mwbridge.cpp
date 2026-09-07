@@ -622,17 +622,11 @@ float MWBridge::getInteriorFogDens() {
 //-----------------------------------------------------------------------------
 
 DWORD MWBridge::PlayerPositionPointer() {
-    // FIXME(plan section 6.3): this is the audio listener position, not the
-    // player's. It tracks the player closely enough to have gone unnoticed. The
-    // canonical path is mobilePlayer->reference->position. Fixed in a later commit.
-    auto wc = worldController();
-    if (wc != nullptr) {
-        auto audioController = wc->audioController;
-        if (audioController != nullptr) {
-            return reinterpret_cast<DWORD>(&audioController->listenerPosition);
-        }
+    auto player = getPlayerMobile();
+    if (player == nullptr || player->reference == nullptr) {
+        return 0;
     }
-    return 0;
+    return reinterpret_cast<DWORD>(&player->reference->position);
 }
 
 //-----------------------------------------------------------------------------

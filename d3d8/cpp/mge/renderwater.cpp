@@ -367,6 +367,9 @@ void DistantLand::simulateDynamicWaves() {
     // Player local ripples
     // Move ripple texture with player; lock to texel alignment to prevent visible jitter
     const D3DXVECTOR3* playerPos = (const D3DXVECTOR3*)mwBridge->PlayerPositionPointer();
+    if (playerPos == nullptr) {
+        return;
+    }
     static int lastXpos = (int)floor(playerPos->x / waveTexWorldRes);
     static int lastYpos = (int)floor(playerPos->y / waveTexWorldRes);
 

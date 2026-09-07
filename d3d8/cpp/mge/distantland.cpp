@@ -700,7 +700,9 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     }
 
     // Other
-    effect->SetFloatArray(ehFootPos, (float*)mwBridge->PlayerPositionPointer(), 3);
+    if (auto footPos = (const float*)mwBridge->PlayerPositionPointer()) {
+        effect->SetFloatArray(ehFootPos, footPos, 3);
+    }
     effect->SetFloat(ehTime, mwBridge->simulationTime());
 }
 
