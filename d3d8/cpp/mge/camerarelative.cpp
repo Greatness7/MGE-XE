@@ -7,9 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 
 #include "configuration.h"
-#include "ffeshader.h"
 #include "mwpatches.h"
 #include "support/log.h"
 
@@ -205,6 +205,7 @@ const UpdateCameraTransformsFn engineUpdateCameraTransforms =
     reinterpret_cast<UpdateCameraTransformsFn>(UPDATE_CAMERA_TRANSFORMS_ADDRESS);
 
 bool installAttempted = false;
+bool installSkippedByConfig = false;
 bool cameraHookInstalled = false;
 bool rigidHooksInstalled = false;
 bool skinnedHooksInstalled = false;
@@ -235,6 +236,16 @@ bool writeRelativeCall(std::uintptr_t address, std::uintptr_t target) {
     return true;
 }
 
+bool writeVtableSlot(std::uintptr_t slot, std::uintptr_t value) {
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(reinterpret_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        return false;
+    }
+    *reinterpret_cast<std::uintptr_t*>(slot) = value;
+    VirtualProtect(reinterpret_cast<void*>(slot), sizeof(void*), oldProtect, &oldProtect);
+    return true;
+}
+
 bool patchCallEnforced(const CallSite& site, std::uintptr_t expectedTarget, const void* replacement) {
     std::uintptr_t currentTarget = 0;
     if (!readRelativeCallTarget(site.address, &currentTarget)) {
@@ -257,6 +268,22 @@ bool patchCallEnforced(const CallSite& site, std::uintptr_t expectedTarget, cons
     return true;
 }
 
+// Patches every site or none: a site that fails after earlier ones succeeded
+// puts those back to the stock target, so a hook conflict never leaves a
+// group half-owned.
+template <std::size_t N>
+bool patchCallSites(const CallSite (&sites)[N], std::uintptr_t stockTarget, const void* replacement) {
+    for (std::size_t i = 0; i < N; ++i) {
+        if (!patchCallEnforced(sites[i], stockTarget, replacement)) {
+            for (std::size_t j = 0; j < i; ++j) {
+                writeRelativeCall(sites[j].address, stockTarget);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 // Replaces a vtable slot only if it still holds the stock function; returns
 // the stock function through `original`.
 bool patchVtableSlotEnforced(std::uintptr_t slot, std::uintptr_t expected, const void* replacement,
@@ -269,14 +296,11 @@ bool patchVtableSlotEnforced(std::uintptr_t slot, std::uintptr_t expected, const
             static_cast<unsigned int>(expected));
         return false;
     }
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+    if (!writeVtableSlot(slot, reinterpret_cast<std::uintptr_t>(replacement))) {
         LOG::logline("!! Camera-relative rendering: %s slot could not be made writable.", name);
         return false;
     }
     *original = reinterpret_cast<void*>(current);
-    *reinterpret_cast<const void**>(slot) = replacement;
-    VirtualProtect(reinterpret_cast<void*>(slot), sizeof(void*), oldProtect, &oldProtect);
     return true;
 }
 
@@ -335,25 +359,21 @@ bool invert(const DTransform& a, DTransform* out) {
 }
 
 //---------------------------------------------------------------------------
-// Exact world translation, memoized per frame
+// Exact world translation, memoized per scene
 //---------------------------------------------------------------------------
 
 constexpr int MAX_CHAIN_DEPTH = 64;
 
 // Whether the engine produced the stored translation from these inputs by its
 // own float update (NiAVObject::UpdateWorldData:
-// world.t = parent.t + parent.R * (local.t * parent.s)). When it did not, the
+// world.t = parent.t + parent.s * (parent.R * local.t)). When it did not, the
 // engine placed this node some other way (root motion, a direct write, a stale
 // local) and the stored value is the only truth; the chain then anchors on it
-// and continues exactly from there. The tolerance is the plausible rounding of
-// that update, sixteen float steps at the magnitude of the coordinate and at
-// least one unit, so a sub-unit disagreement never turns an exact chain into a
-// float-grid one (a grid step is 0.125 units at 135 cells, visible on a hand).
+// and continues exactly from there. The check repeats the engine's arithmetic
+// in float and in the engine's operation order (rotate, then scale, then add),
+// so ordinary rounding stays within a few float steps; the tolerance is
+// sixteen steps at the magnitude of the coordinate.
 constexpr int GUARD_STEPS = 16;
-constexpr float GUARD_UNIT_FLOOR = 1.0f;
-
-// Nodes the guard anchored, reported on the probe line.
-long long anchoredCount = 0;
 
 float floatStep(float magnitude) {
     int exponent = 0;
@@ -363,29 +383,36 @@ float floatStep(float magnitude) {
 
 bool withinGuard(float computed, float stored) {
     const float delta = std::fabs(computed - stored);
-    if (delta <= GUARD_UNIT_FLOOR) {
-        return true;
-    }
     const float magnitude = std::fabs(stored) > std::fabs(computed) ? std::fabs(stored) : std::fabs(computed);
     return delta <= GUARD_STEPS * floatStep(magnitude);
 }
 
 bool storedFollowsParent(const NI::AVObject* node, const NI::AVObject* parent) {
     const float s = parent->worldTransform.scale;
-    const float lx = node->localTranslate.x * s;
-    const float ly = node->localTranslate.y * s;
-    const float lz = node->localTranslate.z * s;
+    const NI::Point3& l = node->localTranslate;
     const float (*m)[3] = parent->worldTransform.rotation.m;
     const NI::Point3& pt = parent->worldTransform.translation;
     const NI::Point3& st = node->worldTransform.translation;
-    const float fx = pt.x + (m[0][0] * lx + m[0][1] * ly + m[0][2] * lz);
-    const float fy = pt.y + (m[1][0] * lx + m[1][1] * ly + m[1][2] * lz);
-    const float fz = pt.z + (m[2][0] * lx + m[2][1] * ly + m[2][2] * lz);
+    const float rx = m[0][0] * l.x + m[0][1] * l.y + m[0][2] * l.z;
+    const float ry = m[1][0] * l.x + m[1][1] * l.y + m[1][2] * l.z;
+    const float rz = m[2][0] * l.x + m[2][1] * l.y + m[2][2] * l.z;
+    const float fx = pt.x + rx * s;
+    const float fy = pt.y + ry * s;
+    const float fz = pt.z + rz * s;
     return withinGuard(fx, st.x) && withinGuard(fy, st.y) && withinGuard(fz, st.z);
 }
 
 // Open-addressed table keyed by node pointer, retired by generation at each
-// Present rather than cleared. A miss after the probe limit just recomputes.
+// main-view activation and at Present rather than cleared. A miss after the
+// probe limit just recomputes. The slot count is headroom, not a measurement:
+// 48 bytes a slot, 384 KB resident whether or not the feature is on.
+//
+// A hit assumes the parent chain that produced the entry is unchanged. The
+// key covers the node's own stored translation, not the parent's rotation,
+// scale or exact translation, so a dependency that changes without moving
+// the stored float returns the exact value of the earlier pose. Retiring per
+// scene keeps that window to one scene, and the error is the accumulated
+// float rounding of the chain, the same as not having the feature.
 constexpr unsigned CACHE_SLOTS = 8192;
 constexpr unsigned CACHE_PROBE_LIMIT = 16;
 
@@ -398,6 +425,12 @@ struct CacheEntry {
 
 CacheEntry cache[CACHE_SLOTS];
 unsigned cacheGeneration = 1;
+
+void retireCache() {
+    if (++cacheGeneration == 0) {
+        ++cacheGeneration;
+    }
+}
 
 CacheEntry* cacheSlot(const NI::AVObject* node) {
     const std::uintptr_t key = reinterpret_cast<std::uintptr_t>(node);
@@ -447,9 +480,6 @@ bool exactWorldTranslationUnguarded(const NI::AVObject* node, double out[3], int
         t[0] = stored.x;
         t[1] = stored.y;
         t[2] = stored.z;
-        if (parent) {
-            ++anchoredCount;
-        }
     }
 
     if (slot) {
@@ -507,8 +537,6 @@ struct EyePair {
     double exact[3];
 };
 EyePair eyePair = {};
-long long eyeMatches = 0;
-long long eyeMisses = 0;
 
 void captureEyeUnguarded(const char* playerAnimController) {
     eyePair.valid = false;
@@ -547,6 +575,10 @@ void captureEyeUnguarded(const char* playerAnimController) {
 
 void __fastcall patchUpdateCameraTransforms(void* playerAnimController, void* /*edx*/) {
     engineUpdateCameraTransforms(playerAnimController);
+    if (!Configuration.EnableCameraRelativeRendering) {
+        eyePair.valid = false;
+        return;
+    }
     __try {
         captureEyeUnguarded(static_cast<const char*>(playerAnimController));
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -589,10 +621,8 @@ bool eyeExactUnguarded(const float* worldLocation, double out[3]) {
         out[0] = eyePair.exact[0] + (static_cast<double>(worldLocation[0]) - eyePair.stored[0]);
         out[1] = eyePair.exact[1] + (static_cast<double>(worldLocation[1]) - eyePair.stored[1]);
         out[2] = eyePair.exact[2] + (static_cast<double>(worldLocation[2]) - eyePair.stored[2]);
-        ++eyeMatches;
         return true;
     }
-    ++eyeMisses;
     return exactWorldTranslationUnguarded(camera, out, 0);
 }
 
@@ -632,7 +662,8 @@ void __fastcall hookSetCameraData(
         std::memcpy(pose.right, worldRight, sizeof(pose.right));
         pose.valid = true;
 
-        pose.exactValid = eyeExact(worldLocation, pose.exactLocation);
+        pose.exactValid = Configuration.EnableCameraRelativeRendering
+            && eyeExact(worldLocation, pose.exactLocation);
     } else {
         pose.valid = false;
         pose.exactValid = false;
@@ -652,11 +683,13 @@ D3DXMATRIX viewAbsoluteBase;   // absolute view rebuilt from the pose, no camera
 D3DXMATRIX viewAbsoluteEffects;
 bool loggedMismatch = false;
 bool loggedActivation = false;
-long long mismatchCount = 0;
+bool loggedLateEnable = false;
 
 // The engine writes the view rotation straight from the pose basis
 // (NiDX8Renderer::SetCameraData), so a bitwise comparison is the right test:
-// any other view that reaches the proxy is not this pose.
+// any other view that reaches the proxy is not this pose. Both sides are
+// direct loads with no arithmetic between them, so /fp:fast cannot perturb
+// the comparison.
 bool viewMatchesPose(const D3DMATRIX* view) {
     return view->_11 == pose.right[0] && view->_12 == pose.up[0] && view->_13 == pose.direction[0]
         && view->_21 == pose.right[1] && view->_22 == pose.up[1] && view->_23 == pose.direction[1]
@@ -694,12 +727,28 @@ void activate(const D3DMATRIX* engineView) {
     viewAbsoluteBase._43 = static_cast<float>(-dot3(pose.direction, origin));
     viewAbsoluteEffects = viewAbsoluteBase;
 
+    // Entries from the previous scene (or the eye capture before this one)
+    // may describe a pose the engine has since rewritten in place.
+    retireCache();
+
     isActive = true;
     if (!loggedActivation) {
         LOG::logline("-- Camera-relative rendering active (camera at %.1f, %.1f, %.1f).", origin[0], origin[1], origin[2]);
         loggedActivation = true;
     }
 }
+
+//---------------------------------------------------------------------------
+// Fixed-function lights
+//---------------------------------------------------------------------------
+
+struct LightUpload {
+    D3DLIGHT8 absolute;
+    bool relative;      // space the device holds it in
+    double origin[3];   // origin subtracted, when relative
+};
+
+std::unordered_map<DWORD, LightUpload> lightUploads;
 
 //---------------------------------------------------------------------------
 // Draw hooks
@@ -712,11 +761,10 @@ NI::Transform* currentGeometryTransform = nullptr;
 
 // Set immediately before an engine call that will issue SetTransform with a
 // matrix this module already made camera-relative; consumed by the proxy.
+// One bit is enough because each producer sets it around a single engine
+// call and both callees issue exactly one SetTransform each:
+// NiDX8Renderer::SetModelTransform (0x6AC9C0) and SetBoneTransform (0x6ACB10).
 bool worldRelativePending = false;
-
-// Exact absolute position of the rigid draw being placed, for the probe.
-bool probeExactValid = false;
-double probeExact[3] = {};
 
 void __fastcall hookRenderShape(
     void* renderer, void* /*edx*/, void* geometryData, void* skinInstance, NI::Transform* transform, void* worldBound) {
@@ -735,8 +783,6 @@ void __fastcall hookRenderTriStrips(
 }
 
 void __fastcall patchSetModelTransform(void* renderer, void* /*edx*/, const NI::Transform* transform) {
-    probeExactValid = false;
-
     if (isActive && rigidHooksInstalled && transform && transform == currentGeometryTransform) {
         double exact[3];
         if (exactWorldTranslation(nodeFromWorldTransform(transform), exact)) {
@@ -744,11 +790,6 @@ void __fastcall patchSetModelTransform(void* renderer, void* /*edx*/, const NI::
             relative.translation.x = static_cast<float>(exact[0] - origin[0]);
             relative.translation.y = static_cast<float>(exact[1] - origin[1]);
             relative.translation.z = static_cast<float>(exact[2] - origin[2]);
-
-            probeExact[0] = exact[0];
-            probeExact[1] = exact[1];
-            probeExact[2] = exact[2];
-            probeExactValid = true;
 
             worldRelativePending = true;
             engineSetModelTransform(renderer, &relative);
@@ -846,75 +887,32 @@ void __fastcall patchSetSkinnedModelTransforms(
 }
 
 //---------------------------------------------------------------------------
-// Probe
+// Installation
 //---------------------------------------------------------------------------
 
-constexpr int PROBE_WINDOW_FRAMES = 300;
-constexpr int PROBE_MAX_DRAWS_PER_FRAME = 256;
-constexpr double PROBE_FRAME_WIDTH_PX = 1920.0;
-// Draws closer than this to the eye are excluded from the pixel figure: the
-// perspective divide turns the float floor into pixels there, which says
-// nothing about what is visible.
-constexpr double PROBE_MIN_DEPTH_UNITS = 8.0;
-
-bool probeHaveProjection = false;
-D3DXMATRIX probeProjectionMatrix;
-Pose probeFramePose;
-double probeFrameOrigin[3] = {};
-int probeFrameDraws = 0;
-int probeFrames = 0;
-long long probeSamples = 0;
-long long probeRelativeSamples = 0;
-long long probeExactSamples = 0;
-long long probeLaterSceneSamples = 0;
-double probeSumUnits = 0.0;
-double probeMaxUnits = 0.0;
-double probeLaterSceneMaxUnits = 0.0;
-double probeSumPx = 0.0;
-double probeMaxPx = 0.0;
-double probeFarthestCell = 0.0;
-
-void probeFrameEnd() {
-    if (!Configuration.CameraRelativeProbe) {
-        return;
+// Both Display vtable slots and every SetModelTransform site, or none of them.
+bool installRigidHooks() {
+    void* original = nullptr;
+    if (!patchVtableSlotEnforced(RENDER_SHAPE_SLOT, RENDER_SHAPE_ADDRESS,
+            reinterpret_cast<const void*>(&hookRenderShape), "NiDX8Renderer::RenderShape", &original)) {
+        return false;
     }
-    if (++probeFrames < PROBE_WINDOW_FRAMES) {
-        return;
-    }
+    originalRenderShape = reinterpret_cast<RenderShapeFn>(original);
 
-    if (probeSamples > 0) {
-        // Tag by what the sampled draws actually used: Present runs after the UI
-        // view, so the live flag would always read absolute here.
-        const char* tag = probeRelativeSamples == 0 ? "absolute"
-            : probeRelativeSamples == probeSamples ? "relative" : "mixed";
-        LOG::logline(
-            "-- Camera-relative probe [%s, %lld/%lld relative, %lld exact, %lld pose mismatches, eye %lld/%lld, %lld anchored]: "
-            "%d frames, %lld rigid draws, %.1f cells out: "
-            "view-space error max %.4f mean %.5f units (later scenes: %lld draws, max %.4f); "
-            "on-screen error max %.3f mean %.4f px (1920 px frame)",
-            tag, probeRelativeSamples, probeSamples, probeExactSamples, mismatchCount,
-            eyeMatches, eyeMatches + eyeMisses, anchoredCount,
-            probeFrames, probeSamples, probeFarthestCell,
-            probeMaxUnits, probeSumUnits / static_cast<double>(probeSamples),
-            probeLaterSceneSamples, probeLaterSceneMaxUnits,
-            probeMaxPx, probeSumPx / static_cast<double>(probeSamples));
+    if (!patchVtableSlotEnforced(RENDER_TRISTRIPS_SLOT, RENDER_TRISTRIPS_ADDRESS,
+            reinterpret_cast<const void*>(&hookRenderTriStrips), "NiDX8Renderer::RenderTriStrips", &original)) {
+        writeVtableSlot(RENDER_SHAPE_SLOT, RENDER_SHAPE_ADDRESS);
+        return false;
     }
+    originalRenderTriStrips = reinterpret_cast<RenderShapeFn>(original);
 
-    probeFrames = 0;
-    probeSamples = 0;
-    probeRelativeSamples = 0;
-    probeExactSamples = 0;
-    probeLaterSceneSamples = 0;
-    mismatchCount = 0;
-    eyeMatches = 0;
-    eyeMisses = 0;
-    anchoredCount = 0;
-    probeSumUnits = 0.0;
-    probeMaxUnits = 0.0;
-    probeLaterSceneMaxUnits = 0.0;
-    probeSumPx = 0.0;
-    probeMaxPx = 0.0;
-    probeFarthestCell = 0.0;
+    if (!patchCallSites(SET_MODEL_TRANSFORM_SITES, SET_MODEL_TRANSFORM_ADDRESS,
+            reinterpret_cast<const void*>(&patchSetModelTransform))) {
+        writeVtableSlot(RENDER_TRISTRIPS_SLOT, RENDER_TRISTRIPS_ADDRESS);
+        writeVtableSlot(RENDER_SHAPE_SLOT, RENDER_SHAPE_ADDRESS);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -927,6 +925,12 @@ void installHooks() {
     }
     installAttempted = true;
 
+    if (!Configuration.EnableCameraRelativeRendering) {
+        installSkippedByConfig = true;
+        LOG::logline("-- Camera-relative rendering off (render.camera_relative); no engine hooks installed.");
+        return;
+    }
+
     void* original = nullptr;
     cameraHookInstalled = patchVtableSlotEnforced(SET_CAMERA_DATA_SLOT, SET_CAMERA_DATA_ADDRESS,
         reinterpret_cast<const void*>(&hookSetCameraData), "NiDX8Renderer::SetCameraData", &original);
@@ -937,58 +941,38 @@ void installHooks() {
     originalSetCameraData = reinterpret_cast<SetCameraDataFn>(original);
 
     // Rigid draws: which node is being drawn, and its placement.
-    bool rigid = patchVtableSlotEnforced(RENDER_SHAPE_SLOT, RENDER_SHAPE_ADDRESS,
-        reinterpret_cast<const void*>(&hookRenderShape), "NiDX8Renderer::RenderShape", &original);
-    if (rigid) {
-        originalRenderShape = reinterpret_cast<RenderShapeFn>(original);
-        rigid = patchVtableSlotEnforced(RENDER_TRISTRIPS_SLOT, RENDER_TRISTRIPS_ADDRESS,
-            reinterpret_cast<const void*>(&hookRenderTriStrips), "NiDX8Renderer::RenderTriStrips", &original);
-    }
-    if (rigid) {
-        originalRenderTriStrips = reinterpret_cast<RenderShapeFn>(original);
-        for (const CallSite& site : SET_MODEL_TRANSFORM_SITES) {
-            rigid = patchCallEnforced(site, SET_MODEL_TRANSFORM_ADDRESS,
-                reinterpret_cast<const void*>(&patchSetModelTransform)) && rigid;
-        }
-    }
-    rigidHooksInstalled = rigid;
+    rigidHooksInstalled = installRigidHooks();
 
     // Skinned draws: the bone palette.
-    bool skinned = true;
-    for (const CallSite& site : SET_SKINNED_MODEL_TRANSFORMS_SITES) {
-        skinned = patchCallEnforced(site, SET_SKINNED_MODEL_TRANSFORMS_ADDRESS,
-            reinterpret_cast<const void*>(&patchSetSkinnedModelTransforms)) && skinned;
-    }
-    skinnedHooksInstalled = skinned;
+    skinnedHooksInstalled = patchCallSites(SET_SKINNED_MODEL_TRANSFORMS_SITES, SET_SKINNED_MODEL_TRANSFORMS_ADDRESS,
+        reinterpret_cast<const void*>(&patchSetSkinnedModelTransforms));
 
     // First-person eye: capture the head-node copy at the engine's camera update.
-    bool eye = true;
-    for (const CallSite& site : UPDATE_CAMERA_TRANSFORMS_SITES) {
-        eye = patchCallEnforced(site, UPDATE_CAMERA_TRANSFORMS_ADDRESS,
-            reinterpret_cast<const void*>(&patchUpdateCameraTransforms)) && eye;
-    }
-    eyeHooksInstalled = eye;
+    eyeHooksInstalled = patchCallSites(UPDATE_CAMERA_TRANSFORMS_SITES, UPDATE_CAMERA_TRANSFORMS_ADDRESS,
+        reinterpret_cast<const void*>(&patchUpdateCameraTransforms));
 
-    LOG::logline("-- Camera-relative rendering: hooks installed (camera yes, rigid draws %s, skinned draws %s, first-person eye %s); %s.",
+    LOG::logline("-- Camera-relative rendering: hooks installed (camera yes, rigid draws %s, skinned draws %s, first-person eye %s).",
         rigidHooksInstalled ? "yes" : "NO",
         skinnedHooksInstalled ? "yes" : "NO",
-        eyeHooksInstalled ? "yes" : "NO",
-        Configuration.EnableCameraRelativeRendering ? "enabled" : "disabled by render.camera_relative");
-}
-
-bool hooksInstalled() {
-    return cameraHookInstalled;
+        eyeHooksInstalled ? "yes" : "NO");
 }
 
 void onViewTransform(const D3DMATRIX* engineView, bool mainView) {
     isActive = false;
 
-    if (!cameraHookInstalled || !Configuration.EnableCameraRelativeRendering || !mainView || !pose.valid) {
+    if (!cameraHookInstalled) {
+        if (installSkippedByConfig && Configuration.EnableCameraRelativeRendering && !loggedLateEnable) {
+            LOG::logline("-- Camera-relative rendering was enabled at runtime; its engine hooks install at startup, "
+                "so it takes effect after a restart.");
+            loggedLateEnable = true;
+        }
+        return;
+    }
+    if (!Configuration.EnableCameraRelativeRendering || !mainView || !pose.valid) {
         return;
     }
 
     if (!viewMatchesPose(engineView)) {
-        ++mismatchCount;
         if (!loggedMismatch) {
             LOG::logline("-- Camera-relative rendering: a main-view matrix did not match the recorded camera pose; "
                 "that scene stays in absolute space.");
@@ -1010,6 +994,9 @@ const D3DXMATRIX* recorderView() {
 
 void deviceView(const D3DXMATRIX* cameraEffects, D3DXMATRIX* out) {
     D3DXMatrixMultiply(out, &viewRotationOnly, cameraEffects);
+}
+
+void setCameraEffects(const D3DXMATRIX* cameraEffects) {
     D3DXMatrixMultiply(&viewAbsoluteEffects, &viewAbsoluteBase, cameraEffects);
 }
 
@@ -1069,127 +1056,41 @@ void relativePosition(const D3DVECTOR* position, D3DVECTOR* out) {
     *out = result;
 }
 
+void recordLightUpload(DWORD index, const D3DLIGHT8* absolute) {
+    LightUpload& upload = lightUploads[index];
+    upload.absolute = *absolute;
+    upload.relative = isActive;
+    upload.origin[0] = origin[0];
+    upload.origin[1] = origin[1];
+    upload.origin[2] = origin[2];
+}
+
+bool lightUploadStale(DWORD index, D3DLIGHT8* absolute) {
+    const auto found = lightUploads.find(index);
+    if (found == lightUploads.end()) {
+        return false;
+    }
+    const LightUpload& upload = found->second;
+    if (upload.absolute.Type == D3DLIGHT_DIRECTIONAL) {
+        return false;
+    }
+    const bool stale = upload.relative != isActive
+        || (isActive && (upload.origin[0] != origin[0] || upload.origin[1] != origin[1] || upload.origin[2] != origin[2]));
+    if (stale) {
+        *absolute = upload.absolute;
+    }
+    return stale;
+}
+
 void onPresent() {
-    if (++cacheGeneration == 0) {
-        ++cacheGeneration;
-    }
-    probeFrameEnd();
+    retireCache();
 }
 
-//---------------------------------------------------------------------------
-// Probe
-//---------------------------------------------------------------------------
-
-void probeProjection(const D3DMATRIX* engineProjection) {
-    if (!Configuration.CameraRelativeProbe) {
-        return;
-    }
-    probeProjectionMatrix = *engineProjection;
-    probeHaveProjection = true;
-
-    // The pose belongs to the scene this projection opens; keep a copy so a
-    // later SetCameraData for an off-screen camera cannot skew the reference.
-    probeFramePose = pose;
-    if (isActive) {
-        probeFrameOrigin[0] = origin[0];
-        probeFrameOrigin[1] = origin[1];
-        probeFrameOrigin[2] = origin[2];
-    } else if (pose.exactValid) {
-        probeFrameOrigin[0] = pose.exactLocation[0];
-        probeFrameOrigin[1] = pose.exactLocation[1];
-        probeFrameOrigin[2] = pose.exactLocation[2];
-    } else {
-        probeFrameOrigin[0] = pose.location[0];
-        probeFrameOrigin[1] = pose.location[1];
-        probeFrameOrigin[2] = pose.location[2];
-    }
-    probeFrameDraws = 0;
-}
-
-void probeDraw(const RenderedState* rs, int scene) {
-    if (!Configuration.CameraRelativeProbe || !cameraHookInstalled || !probeHaveProjection || !probeFramePose.valid) {
-        return;
-    }
-    // Skinned draws upload a bone palette, not the shape's placement.
-    if (rs->vertexBlendState != 0) {
-        return;
-    }
-    if (probeFrameDraws >= PROBE_MAX_DRAWS_PER_FRAME) {
-        return;
-    }
-    ++probeFrameDraws;
-
-    // Reference: the model origin of this draw, taken to view space with the
-    // exact pose in double. The exact node position is used when the draw
-    // hook produced one; otherwise the engine's stored world translation.
-    const D3DXMATRIX& worldAbs = rs->worldTransforms[0];
-    double absolute[3] = { worldAbs._41, worldAbs._42, worldAbs._43 };
-    if (probeExactValid) {
-        absolute[0] = probeExact[0];
-        absolute[1] = probeExact[1];
-        absolute[2] = probeExact[2];
-        ++probeExactSamples;
-    }
-    const double rel[3] = {
-        absolute[0] - probeFrameOrigin[0],
-        absolute[1] - probeFrameOrigin[1],
-        absolute[2] - probeFrameOrigin[2],
-    };
-    const double refView[3] = {
-        dot3(probeFramePose.right, rel),
-        dot3(probeFramePose.up, rel),
-        dot3(probeFramePose.direction, rel),
-    };
-
-    // What the shader multiplies by: the translation row of the uploaded
-    // world-view matrix is the model origin in view space.
-    const D3DXMATRIX& worldView = rs->worldViewTransforms[0];
-    const double gotView[3] = { worldView._41, worldView._42, worldView._43 };
-
-    const double errUnits = std::sqrt(
-        (gotView[0] - refView[0]) * (gotView[0] - refView[0])
-        + (gotView[1] - refView[1]) * (gotView[1] - refView[1])
-        + (gotView[2] - refView[2]) * (gotView[2] - refView[2]));
-
-    ++probeSamples;
-    if (isActive) {
-        ++probeRelativeSamples;
-    }
-    probeSumUnits += errUnits;
-    if (errUnits > probeMaxUnits) {
-        probeMaxUnits = errUnits;
-    }
-    if (scene > 0) {
-        ++probeLaterSceneSamples;
-        if (errUnits > probeLaterSceneMaxUnits) {
-            probeLaterSceneMaxUnits = errUnits;
-        }
-    }
-
-    // Only geometry in front of the camera can be projected; keep the sky,
-    // objects behind the camera and objects inside the near zone out of the
-    // pixel figure but not the unit figure.
-    if (refView[2] > PROBE_MIN_DEPTH_UNITS && gotView[2] > PROBE_MIN_DEPTH_UNITS) {
-        // Projection as the engine builds it: _11 and _22 scale, _34 = 1.
-        const double p11 = probeProjectionMatrix._11;
-        const double p22 = probeProjectionMatrix._22;
-        const double refX = (refView[0] * p11 / refView[2]) * 0.5 * PROBE_FRAME_WIDTH_PX;
-        const double refY = (refView[1] * p22 / refView[2]) * 0.5 * PROBE_FRAME_WIDTH_PX;
-        const double gotX = (gotView[0] * p11 / gotView[2]) * 0.5 * PROBE_FRAME_WIDTH_PX;
-        const double gotY = (gotView[1] * p22 / gotView[2]) * 0.5 * PROBE_FRAME_WIDTH_PX;
-        const double errPx = std::sqrt((gotX - refX) * (gotX - refX) + (gotY - refY) * (gotY - refY));
-        probeSumPx += errPx;
-        if (errPx > probeMaxPx) {
-            probeMaxPx = errPx;
-        }
-    }
-
-    const double cellX = std::fabs(probeFrameOrigin[0]) / 8192.0;
-    const double cellY = std::fabs(probeFrameOrigin[1]) / 8192.0;
-    const double cell = cellX > cellY ? cellX : cellY;
-    if (cell > probeFarthestCell) {
-        probeFarthestCell = cell;
-    }
+void onDeviceReleased() {
+    isActive = false;
+    worldRelativePending = false;
+    lightUploads.clear();
+    retireCache();
 }
 
 }  // namespace CameraRelative

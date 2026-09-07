@@ -461,18 +461,23 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
     if (a == D3DTS_VIEW) {
         // Decide the space of this scene before the recorder sees the view, so every
         // world matrix captured afterwards is combined with the same view.
-        CameraRelative::onViewTransform(b, rendertargetNormal && !detectMenu(b));
+        const bool mainView = rendertargetNormal && !detectMenu(b);
+        CameraRelative::onViewTransform(b, mainView);
+        // Lights the device still holds from the previous scene may be in the other space.
+        refreshActiveLights();
+        if (rendertargetNormal) {
+            isMainView = mainView;
+        }
     }
 
     captureTransform(a, b);
 
     if (rendertargetNormal) {
         if (a == D3DTS_VIEW) {
-            isMainView = !detectMenu(b);
-
             if (isMainView) {
                 D3DXMATRIX view;
                 if (CameraRelative::active()) {
+                    CameraRelative::setCameraEffects(&camEffectsMatrix);
                     CameraRelative::deviceView(&camEffectsMatrix, &view);
                 } else {
                     view = *b;
@@ -482,8 +487,6 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
             }
         } else if (a == D3DTS_PROJECTION) {
             if (isMainView) {
-                CameraRelative::probeProjection(b);
-
                 // Expand only the world projection; UI and load-bar projections must stay intact.
                 D3DXMATRIX proj = *b;
                 DistantLand::setProjection(&proj);
@@ -529,13 +532,32 @@ HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
         DistantLand::setSunLight(b);
     }
 
-    if (CameraRelative::active() && b->Type == D3DLIGHT_POINT) {
+    return uploadLight(a, b);
+}
+
+HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
+    CameraRelative::recordLightUpload(a, absolute);
+
+    if (CameraRelative::active() && absolute->Type != D3DLIGHT_DIRECTIONAL) {
         // Keep the fixed-function path's lights in the same space as its geometry.
-        D3DLIGHT8 light = *b;
-        CameraRelative::relativePosition(&b->Position, &light.Position);
+        D3DLIGHT8 light = *absolute;
+        CameraRelative::relativePosition(&absolute->Position, &light.Position);
         return ProxyDevice::SetLight(a, &light);
     }
-    return ProxyDevice::SetLight(a, b);
+    return ProxyDevice::SetLight(a, absolute);
+}
+
+void MGEProxyDevice::refreshLight(DWORD a) {
+    D3DLIGHT8 absolute;
+    if (CameraRelative::lightUploadStale(a, &absolute)) {
+        uploadLight(a, &absolute);
+    }
+}
+
+void MGEProxyDevice::refreshActiveLights() {
+    for (DWORD index : lightrs.active) {
+        refreshLight(index);
+    }
 }
 
 HRESULT _stdcall MGEProxyDevice::SetRenderState(D3DRENDERSTATETYPE a, DWORD b) {
@@ -595,11 +617,6 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
         (rs.fvf & D3DFVF_LASTBETA_UBYTE4) != 0;
 
     bool isShadowStencil = isStencilScene && stencilRef <= 1;
-    if (rendertargetNormal && isMainView && !isShadowStencil) {
-        // Measures the captured matrices only, so it does not need distant land.
-        CameraRelative::probeDraw(&rs, sceneCount);
-    }
-
     if (DistantLand::canRenderDistantLand() && rendertargetNormal && isMainView && !isShadowStencil) {
         rs.primType = a;
         rs.baseIndex = baseVertexIndex;
@@ -654,6 +671,7 @@ ULONG _stdcall MGEProxyDevice::Release() {
         // references. The executable patches stay installed; they are
         // process-lifetime and the next device renegotiates against them.
         MorrowindIndexedSkinning::onDeviceReleased();
+        CameraRelative::onDeviceReleased();
     }
 
     return r;
@@ -748,6 +766,9 @@ HRESULT _stdcall MGEProxyDevice::LightEnable(DWORD a, BOOL b) {
         if (std::find(lightrs.active.begin(), lightrs.active.end(), a) == lightrs.active.end()) {
             lightrs.active.push_back(a);
         }
+        // The engine re-enables a light without re-uploading it; the device
+        // copy may date from another scene or camera position.
+        refreshLight(a);
     } else {
         if (std::remove(lightrs.active.begin(), lightrs.active.end(), a) != lightrs.active.end()) {
             lightrs.active.pop_back();

@@ -12,7 +12,8 @@
   camera in double precision, relative to the exact camera position, so that rounding never
   reaches the screen. Actors, creatures and the first-person arms are placed from the exact
   positions their skeletons imply rather than the engine's rounded ones, which stops their
-  trembling far out. `render.camera_relative_probe` logs the measured error every 300 frames.
+  trembling far out. The engine hooks install at startup when the option is on, so turning it
+  on takes a restart.
 
 ### Changed
 

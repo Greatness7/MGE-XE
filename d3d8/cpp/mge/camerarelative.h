@@ -18,7 +18,7 @@
 // rotated and scaled by the parent's stored world rotation and scale. Local
 // translations are small and exact, and rotations do not degrade with
 // distance, so that sum in double is exact where the engine's stored float
-// world translation is not. Results are memoized per frame, so a skeleton is
+// world translation is not. Results are memoized per scene, so a skeleton is
 // walked once however many body parts hang from it.
 //
 // Space convention while a main-view scene is active:
@@ -34,18 +34,20 @@
 #include <d3d9.h>
 #include <d3dx9.h>
 
-struct RenderedState;
+#include "proxydx/d3d8header.h"
 
 namespace CameraRelative {
 
-// Installs the engine hooks: the NiDX8Renderer::SetCameraData vtable slot
-// (camera pose), the RenderShape/RenderTriStrips slots (which node is being
-// drawn), the SetModelTransform / SetSkinnedModelTransforms call sites (exact
-// per-draw and per-bone positions), and the PlayerAnimController camera update
-// call sites (exact first-person eye). One-shot for the process lifetime;
-// every site verifies what it replaces and fails closed.
+// Installs the engine hooks when render.camera_relative is on: the
+// NiDX8Renderer::SetCameraData vtable slot (camera pose), the
+// RenderShape/RenderTriStrips slots (which node is being drawn), the
+// SetModelTransform / SetSkinnedModelTransforms call sites (exact per-draw and
+// per-bone positions), and the PlayerAnimController camera update call sites
+// (exact first-person eye). One-shot for the process lifetime, so turning the
+// option on takes a restart; turning it off applies from the next scene. Every
+// site verifies what it replaces, and each hook group installs all of its
+// sites or none.
 void installHooks();
-bool hooksInstalled();
 
 // Called by the proxy for every D3DTS_VIEW it receives, before the recorder
 // captures it. Activates camera-relative space when `mainView` is set, the
@@ -55,11 +57,17 @@ void onViewTransform(const D3DMATRIX* engineView, bool mainView);
 
 bool active();
 
-// The view the recorder and the real device should use while active:
-// rotation only. `cameraEffects` is the proxy's zoom/shake matrix, applied the
-// same way the proxy applies it to the engine view.
+// The view the recorder should use while active: rotation only.
 const D3DXMATRIX* recorderView();
+
+// The view the real device should use while active: rotation only, with the
+// proxy's zoom/shake matrix applied the same way the proxy applies it to the
+// engine view.
 void deviceView(const D3DXMATRIX* cameraEffects, D3DXMATRIX* out);
+
+// Records the proxy's zoom/shake matrix for the active scene, so that
+// absoluteView() carries it. Called once per main-view activation.
+void setCameraEffects(const D3DXMATRIX* cameraEffects);
 
 // Absolute view for MGE's own world-space passes, with camera effects
 // applied, matching what GetTransform(D3DTS_VIEW) returned before this
@@ -81,20 +89,25 @@ bool takeWorldRelative();
 // out = world * view in double precision, rounded once to float.
 void multiplyWorldView(const D3DXMATRIX* world, const D3DXMATRIX* view, D3DXMATRIX* out);
 
-// Point-light position minus the camera position, in double.
+// Light position minus the camera position, in double.
 void relativePosition(const D3DVECTOR* position, D3DVECTOR* out);
 
-// Frame boundary: retires the per-frame position cache and flushes the probe.
+// Fixed-function lights. The engine uploads a light to the device only when
+// the light's own revision changes and otherwise just re-enables it, so a
+// position made camera-relative at upload would stay on the device while the
+// camera moved on. The proxy records every light it forwards, in absolute
+// space, together with the space and origin it was uploaded under, and asks
+// at each view and each LightEnable whether that still matches; when it does
+// not, it uploads the recorded light again.
+void recordLightUpload(DWORD index, const D3DLIGHT8* absolute);
+bool lightUploadStale(DWORD index, D3DLIGHT8* absolute);
+
+// Frame boundary: retires the per-scene position cache.
 void onPresent();
 
-// Diagnostic probe (render.camera_relative_probe). For rigid main-view draws
-// it compares the world-view translation that reaches the shader against a
-// double-precision reference built from the exact pose and, where the draw
-// hook produced one, the exact node position, and logs the maximum and mean
-// error in world units and in pixels every 300 frames. Works with the feature
-// on or off, which is what makes it a before/after measurement. `scene` is
-// the proxy's main-view scene index; later scenes hold the first-person view.
-void probeProjection(const D3DMATRIX* engineProjection);
-void probeDraw(const RenderedState* rs, int scene);
+// The proxy device is destroyed and recreated on fullscreen Alt-Tab. Nothing
+// uploaded to the old device survives, and no scene is active on the new one
+// until its first main view.
+void onDeviceReleased();
 
 }  // namespace CameraRelative
