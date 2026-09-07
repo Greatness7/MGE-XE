@@ -605,14 +605,4 @@ struct DX8RendererTextureData {
 };
 static_assert(sizeof(DX8RendererTextureData) == 0x68, "NI::DX8RendererTextureData failed size validation");
 
-//-----------------------------------------------------------------------------
-// Virtual table addresses
-//-----------------------------------------------------------------------------
-
-namespace VirtualTable {
-    inline constexpr uintptr_t MaterialProperty = 0x75036C;
-    inline constexpr uintptr_t TriShape = 0x7508B0;
-    inline constexpr uintptr_t SwitchNode = 0x750080;
-}
-
 }  // namespace NI

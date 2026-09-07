@@ -7,6 +7,7 @@
 // padding, sized so the `static_assert(sizeof(...))` below stays honest.
 
 #include "tes3/nitypes.h"
+#include "tes3/tes3addresses.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -526,7 +527,7 @@ struct WorldController {
     char pad_358[0x1C];                                 // 0x358
 
     static WorldController* get() {
-        return *reinterpret_cast<WorldController**>(0x7C67DC);
+        return *reinterpret_cast<WorldController**>(Address::global_worldController);
     }
 };
 static_assert(sizeof(WorldController) == 0x374, "TES3::WorldController failed size validation");
@@ -581,7 +582,7 @@ struct DataHandler {
     char pad_B544[0x14];               // 0xB544
 
     static DataHandler* get() {
-        return *reinterpret_cast<DataHandler**>(0x7C67E0);
+        return *reinterpret_cast<DataHandler**>(Address::global_dataHandler);
     }
 };
 static_assert(sizeof(DataHandler) == 0xB558, "TES3::DataHandler failed size validation");
@@ -621,7 +622,7 @@ struct Game {
     char pad_EC[0x24];           // 0xEC
 
     static Game* get() {
-        return *reinterpret_cast<Game**>(0x7C6CDC);
+        return *reinterpret_cast<Game**>(Address::global_game);
     }
 };
 static_assert(sizeof(Game) == 0x110, "TES3::Game failed size validation");

@@ -831,7 +831,7 @@ void MWBridge::markWaterNode(float k) {
         if (link->data == nullptr) {
             continue;
         }
-        if (reinterpret_cast<uintptr_t>(link->data->vTable) == NI::VirtualTable::MaterialProperty) {
+        if (reinterpret_cast<uintptr_t>(link->data->vTable) == TES3::Address::vtable_NiMaterialProperty) {
             material = reinterpret_cast<NI::MaterialProperty*>(link->data);
             break;
         }
@@ -857,7 +857,7 @@ void MWBridge::markMoonNodes(float k) {
         NI::Property* property = shadow->propertyNode.data;
 
         // Write to specular power member
-        if (property && reinterpret_cast<uintptr_t>(property->vTable) == NI::VirtualTable::MaterialProperty) {
+        if (property && reinterpret_cast<uintptr_t>(property->vTable) == TES3::Address::vtable_NiMaterialProperty) {
             reinterpret_cast<NI::MaterialProperty*>(property)->shininess = k;
         }
     }

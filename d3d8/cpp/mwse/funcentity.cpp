@@ -208,7 +208,7 @@ bool mwseModelSwitchNode::execute(mwseInstruction* _this) {
 
         // Check if child is an NiSwitchNode. NiSwitchNode itself is not declared;
         // its selected index sits at +0xB0.
-        if (child && reinterpret_cast<uintptr_t>(child->vTable) == NI::VirtualTable::SwitchNode) {
+        if (child && reinterpret_cast<uintptr_t>(child->vTable) == Address::vtable_NiSwitchNode) {
             int* switch_index = reinterpret_cast<int*>(reinterpret_cast<BYTE*>(child) + 0xb0);
             *switch_index = index;
         }

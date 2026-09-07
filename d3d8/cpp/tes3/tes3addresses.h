@@ -40,7 +40,18 @@ inline constexpr uintptr_t scriptTargetRef = 0x7CEBEC;
 // The engine's single global NI::Pick.
 inline constexpr uintptr_t global_pick = 0x7D12E8;
 
+// The three engine singletons. Each address holds a pointer to the object
+// rather than the object, so the `get()` accessors dereference once.
+inline constexpr uintptr_t global_worldController = 0x7C67DC;
+inline constexpr uintptr_t global_dataHandler = 0x7C67E0;
+inline constexpr uintptr_t global_game = 0x7C6CDC;
+
+// Compared against an object's vTable to recover its runtime type, which is how
+// MGE tells a TriShape from any other geometry without RTTI.
 inline constexpr uintptr_t vtable_NPCBase = 0x749DE8;
+inline constexpr uintptr_t vtable_NiMaterialProperty = 0x75036C;
+inline constexpr uintptr_t vtable_NiTriShape = 0x7508B0;
+inline constexpr uintptr_t vtable_NiSwitchNode = 0x750080;
 
 //-----------------------------------------------------------------------------
 // Code patch sites

@@ -52,7 +52,7 @@ static bool invokeRayTest(mwseInstruction* _this, const D3DXVECTOR3* pos, const 
                          hit_t, lastHit.distance);*/
 
             // Fix hit data for skinned meshes
-            if (reinterpret_cast<uintptr_t>(lastHit.object->vTable) == NI::VirtualTable::TriShape
+            if (reinterpret_cast<uintptr_t>(lastHit.object->vTable) == Address::vtable_NiTriShape
                 && lastHit.object->skinInstance) {
                 // Use reference origin if possible, as actors consist of several skinned meshes
                 Reference* refrHit = findNodeReference(lastHit.object);
