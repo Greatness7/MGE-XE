@@ -160,6 +160,8 @@ impl<'a> UsageInfo<'a> {
     /// This is done after the merge phase to ensure all references from all plugins
     /// are considered when calculating the cell's spatial span.
     ///
+    /// The verdicts are read back by [`Self::included_interiors`], which is how the grass merge
+    /// reaches the same decision for a cell whose only remaining content would be grass.
     pub(crate) fn filter_interiors(&mut self, args: &UsageFilterOptions, overrides: &StaticOverrides) {
         self.cells.retain(|name, references| {
             if name == "\0" {
@@ -188,6 +190,25 @@ impl<'a> UsageInfo<'a> {
 
             false
         });
+    }
+
+    /// Interior world spaces that survived [`Self::filter_interiors`], mapping each cell's
+    /// case-insensitive name to the exact name bytes the load order carries for it.
+    ///
+    /// This is the inclusion decision the grass merge reuses. An interior the filter dropped must
+    /// not reappear through a grass placement: its world space would then exist after all, and
+    /// with it MGE's interior fog and distance-blend passes for that cell. The verdicts are read
+    /// back from the surviving cells rather than re-derived, because the reference span
+    /// [`is_large_interior_refs`] measures is gone once the filter has run.
+    ///
+    /// An interior whose references were all filtered out before `filter_interiors` ran is absent
+    /// here, so grass alone cannot keep it.
+    pub(crate) fn included_interiors(&self) -> HashMap<UString, String> {
+        self.cells
+            .keys()
+            .filter(|name| name.as_str() != "\0")
+            .map(|name| (Uncased::new(name.clone()), name.clone()))
+            .collect()
     }
 
     /// Normalizes reference IDs to their underlying mesh paths and applies visibility overrides.

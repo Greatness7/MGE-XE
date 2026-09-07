@@ -390,19 +390,21 @@ pub(crate) struct GrassPluginLoad<'a> {
 
 /// The cell owning one grass placement.
 ///
-/// Exterior cells are addressed by grid coordinate. Interiors keep their exact cell name, as the
-/// main loader does: the runtime resolves an interior world space by the engine's own name bytes,
-/// so the name written to `usage.data` must be the one the plugin carries.
+/// Exterior cells are addressed by grid coordinate. Interiors carry the name the plugin spells,
+/// compared case-insensitively: the engine resolves cells that way, so a later plugin's override
+/// or delete must reach its target even when the two files disagree on casing. The name that
+/// reaches `usage.data` is not this one — [`load_grass_plugins`] re-keys each surviving placement
+/// onto the main load order's own spelling, which is what the runtime matches against.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum GrassCell {
     Exterior((i32, i32)),
-    Interior(String),
+    Interior(UString),
 }
 
 impl GrassCell {
     fn of(cell: &Cell) -> Self {
         if cell.is_interior() {
-            Self::Interior(cell.name.clone())
+            Self::Interior(Uncased::new(cell.name.clone()))
         } else {
             Self::Exterior(cell.data.grid)
         }
@@ -466,6 +468,7 @@ pub(super) fn load_grass_plugins<'a>(
     vfs: &'a Vfs,
     paths: &[PathBuf],
     main_objects: &HashMap<String, ObjectDefinition<'a>>,
+    included_interiors: &HashMap<UString, String>,
     args: &UsageFilterOptions,
     overrides: &StaticOverrides,
     reference_sources: &ReferenceSources,
@@ -646,13 +649,19 @@ pub(super) fn load_grass_plugins<'a>(
             occurrence_salt = 0;
         }
 
-        // An interior explicitly excluded from distant land gets no grass either: its world space
-        // would otherwise still exist, and with it MGE's fog and blend passes for that cell.
-        if let GrassCell::Interior(name) = &candidate.cell
-            && overrides.interiors.get(name.as_uncased()) == Some(&false)
-        {
-            continue;
-        }
+        // Grass obeys the same interior inclusion rules as the rest of distant land: an interior
+        // `filter_interiors` dropped must not come back through a grass placement, or its world
+        // space would exist after all, and with it MGE's interior fog and distance-blend passes
+        // for that cell. The lookup also yields the load order's own spelling of the name, so a
+        // grass plugin that cases it differently joins the one world space instead of forming a
+        // second one the runtime would never select.
+        let interior_name = match &candidate.cell {
+            GrassCell::Exterior(_) => None,
+            GrassCell::Interior(name) => match included_interiors.get(name) {
+                Some(included) => Some(included),
+                None => continue,
+            },
+        };
 
         let (_, definition) = &definitions[&candidate.object_id];
         let source_name = reference_sources
@@ -671,11 +680,11 @@ pub(super) fn load_grass_plugins<'a>(
         // Identity is run-local: nothing downstream addresses a grass placement, so a dense
         // counter is enough to keep the merged per-cell maps' keys distinct.
         let occurrence = u32::try_from(index + 1).context("Grass plugins have too many references")?;
-        // Exterior placements share the one exterior world space; interior placements form (or
-        // join) the world space of their cell, which `usage.data` serializes under that name.
-        let references = match &candidate.cell {
-            GrassCell::Exterior(_) => usage_info.exterior_references_mut(),
-            GrassCell::Interior(name) => usage_info.cells.entry(name.clone()).or_default(),
+        // Exterior placements share the one exterior world space; interior placements join the
+        // world space of their cell, which `usage.data` serializes under that name.
+        let references = match interior_name {
+            None => usage_info.exterior_references_mut(),
+            Some(name) => usage_info.cells.entry(name.clone()).or_default(),
         };
         references.insert(
             StableRefKey::new(candidate.source, occurrence),
@@ -815,7 +824,8 @@ fn grass_plugin_density_sample(source_name: &str, cell: &GrassCell, translation:
         }
         GrassCell::Interior(name) => {
             hasher.update(b"interior:");
-            hasher.update(name.as_bytes());
+            // Case-folded, so two plugins spelling one cell differently thin to the same subset.
+            hasher.update(name.as_str().to_ascii_lowercase().as_bytes());
         }
     }
     for value in translation {

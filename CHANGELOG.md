@@ -12,7 +12,9 @@
   weather affects, set by the new `distant_land.grass.interior_wind` key in `mgeXE.toml` and edited
   as the Interior row of the Distant Land Weather Settings window, and no longer samples the sun
   shadow atlas left over from the last exterior. Interiors flagged to behave like exteriors, such
-  as Mournhold's districts, have weather and treat their grass exactly like exterior grass.
+  as Mournhold's districts, have weather and treat their grass exactly like exterior grass. Grass
+  reaches only the interiors distant land already covers, so the Include options in the generator
+  window govern it too: an interior you exclude there stays on Morrowind's own fog and lighting.
 
 ### Changed
 

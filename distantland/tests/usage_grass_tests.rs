@@ -7,8 +7,8 @@ use distantland::{
     is_grass_plugin,
 };
 use distantland_test_support::{
-    BASELINE_WORLD_V1_GRASSLIST, BASELINE_WORLD_V1_MAINGRASS, FIXTURE_GRASS_PLUGIN_NAME, FIXTURE_PLUGIN_NAME,
-    FIXTURE_SECOND_GRASS_PLUGIN_NAME, build_hermetic_fixture,
+    BASELINE_WORLD_V1_GRASSLIST, BASELINE_WORLD_V1_MAINGRASS, FIXTURE_GRASS_INTERIOR_NAME, FIXTURE_GRASS_PLUGIN_NAME,
+    FIXTURE_PLUGIN_NAME, FIXTURE_SECOND_GRASS_PLUGIN_NAME, build_hermetic_fixture,
 };
 use itertools::Itertools;
 use tes3::esp::{Cell, Header, Plugin, Reference, Static, TES3Object};
@@ -139,16 +139,18 @@ fn main_load_order_collapses_groundcover_that_the_grass_list_keeps() {
         "the placements the main list keeps should be a subset of what the grass list keeps"
     );
 
-    // The grass list also keeps the plugin's one interior placement, as that cell's world space.
+    // The grass list also keeps the plugin's one interior placement, in the world space the load
+    // order already holds for that cell, alongside the cell's own statics.
     let interior = grass_usage
         .cells
-        .get("Fixture Grass Interior")
-        .expect("interior grass forms its own world space");
-    assert_eq!(interior.len(), 1);
-    assert!(
+        .get(FIXTURE_GRASS_INTERIOR_NAME)
+        .expect("the fixture interior is a distant world space");
+    assert_eq!(
         interior
             .values()
-            .all(|reference| reference.id.as_ref() == "grass\\fixture_grass.nif")
+            .filter(|reference| reference.id.as_ref() == "grass\\fixture_grass.nif")
+            .count(),
+        1
     );
 
     assert!(grass_warnings.is_empty(), "active content-master placements should not warn");

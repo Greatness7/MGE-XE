@@ -35,7 +35,18 @@ impl<'a> UsageInfo<'a> {
                 &reference_sources,
                 capture,
             );
-        let grass = load_grass_plugins(vfs, grass_plugins, &usage_info.objects, args, overrides, &reference_sources)?;
+        // Snapshot taken after `filter_interiors`: grass may only place into an interior distant
+        // land already keeps, and must spell the cell the way the load order does.
+        let included_interiors = usage_info.included_interiors();
+        let grass = load_grass_plugins(
+            vfs,
+            grass_plugins,
+            &usage_info.objects,
+            &included_interiors,
+            args,
+            overrides,
+            &reference_sources,
+        )?;
         usage_info.merge(grass.usage_info);
         // Step 2: re-apply clip to exterior references after grass merge. Grass references
         // may have been placed in the clipped region; the retained-bounds from step 1 are

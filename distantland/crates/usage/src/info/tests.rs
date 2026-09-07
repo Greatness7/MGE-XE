@@ -218,6 +218,7 @@ fn grass_list_applies_cross_plugin_overrides_deletes_and_definitions() {
         &vfs,
         &grass_paths,
         &main_objects,
+        &HashMap::new(),
         &make_args(),
         &StaticOverrides::default(),
         &reference_sources,
@@ -303,6 +304,7 @@ fn unresolved_master_and_local_reference_keys_do_not_collide() {
         &vfs,
         &grass_paths,
         &HashMap::new(),
+        &HashMap::new(),
         &make_args(),
         &StaticOverrides::default(),
         &reference_sources,
@@ -357,6 +359,74 @@ fn grass_plugin_file_with_interiors(
     plugin.save_path(path).unwrap();
 }
 
+/// The interior world spaces a direct [`load_grass_plugins`] call may place into, spelled as the
+/// main load order spells them. The full pipeline derives this from the cells that survive
+/// `filter_interiors`; tests calling the loader directly state it instead.
+fn included_interiors(names: &[&str]) -> HashMap<UString, String> {
+    names
+        .iter()
+        .map(|name| (Uncased::new((*name).to_owned()), (*name).to_owned()))
+        .collect()
+}
+
+/// One interior in a main-load-order plugin: its name, its cell flags beyond `IS_INTERIOR`, and
+/// the x coordinates of the statics placed in it. The span of those coordinates is what
+/// `is_large_interior_refs` measures.
+type TestMainInterior<'a> = (&'a str, tes3::esp::CellFlags, Vec<f32>);
+
+/// Writes a main-load-order plugin defining one static and placing it through named interiors, so
+/// those cells reach `filter_interiors` carrying both metadata and references.
+fn main_plugin_file_with_interiors(path: &std::path::Path, definition: (&str, &str), interiors: &[TestMainInterior<'_>]) {
+    use tes3::esp::{Cell, CellFlags, Header, Plugin, Reference, Static, TES3Object};
+
+    let mut objects: Vec<TES3Object> = vec![Header::default().into()];
+    objects.push(
+        Static {
+            id: definition.0.to_owned(),
+            mesh: definition.1.to_owned(),
+            ..Static::default()
+        }
+        .into(),
+    );
+    for (name, flags, positions) in interiors {
+        let mut cell = Cell::default();
+        cell.name = (*name).to_owned();
+        cell.data.flags = *flags | CellFlags::IS_INTERIOR;
+        for (index, &x) in positions.iter().enumerate() {
+            let refr_index = index as u32 + 1;
+            cell.references.insert(
+                (0, refr_index),
+                Reference {
+                    mast_index: 0,
+                    refr_index,
+                    id: definition.0.to_owned(),
+                    translation: [x, 0.0, 0.0],
+                    ..Reference::default()
+                },
+            );
+        }
+        objects.push(cell.into());
+    }
+    Plugin { objects }.save_path(path).unwrap();
+}
+
+/// Sets up a data directory holding a grass mesh, a plain static mesh, and a main plugin whose
+/// interiors are described by `interiors`. Returns the directory and the main plugin's path.
+fn interior_grass_fixture(
+    temp: &tempfile::TempDir,
+    interiors: &[TestMainInterior<'_>],
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let data_dir = temp.path().to_path_buf();
+    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
+    std::fs::create_dir_all(data_dir.join("Meshes/stat")).unwrap();
+    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+    std::fs::write(data_dir.join("Meshes/stat/rock.nif"), b"").unwrap();
+
+    let main_path = data_dir.join("main.esm");
+    main_plugin_file_with_interiors(&main_path, ("rock", "stat\\rock.nif"), interiors);
+    (data_dir, main_path)
+}
+
 fn sorted_x_bits(references: &References<'_>) -> Vec<u32> {
     references
         .values()
@@ -396,6 +466,7 @@ fn grass_list_keeps_interior_placements_under_their_cell_name() {
         &vfs,
         &grass_paths,
         &HashMap::new(),
+        &included_interiors(&["Balmora, Guild of Mages", "Ald-ruhn, Mages Guild"]),
         &make_args(),
         &StaticOverrides::default(),
         &reference_sources,
@@ -464,6 +535,7 @@ fn grass_list_resolves_interior_overrides_and_deletes_per_cell() {
         &vfs,
         &grass_paths,
         &HashMap::new(),
+        &included_interiors(&["Cave", "Other Cave"]),
         &make_args(),
         &StaticOverrides::default(),
         &reference_sources,
@@ -510,6 +582,7 @@ fn interior_grass_density_thinning_is_deterministic() {
             &vfs,
             &grass_paths,
             &HashMap::new(),
+            &included_interiors(&["Meadow Cave"]),
             &args,
             &StaticOverrides::default(),
             &reference_sources,
@@ -529,14 +602,208 @@ fn interior_grass_density_thinning_is_deterministic() {
     assert_eq!(half, load(0.5));
 }
 
-/// An `[interiors]` exclusion keeps MGE out of that cell entirely, grass included, while an
-/// explicit inclusion and the absence of a verdict both let interior grass through.
+/// Grass obeys `filter_interiors` in full, not only its explicit exclusions. An interior the
+/// filter dropped must not reappear as a world space carrying nothing but grass: MGE switches a
+/// cell to its distant-interior fog and distance-blend passes as soon as one exists for it.
+///
+/// This has to run through the whole pipeline. `load_grass_plugins` on its own cannot show it,
+/// because the filter runs in the main load pass, before the grass list is read at all.
 #[test]
-fn explicit_interior_exclusion_drops_its_grass() {
+fn interiors_the_filter_drops_do_not_return_through_grass() {
+    use tes3::esp::CellFlags;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (data_dir, main_path) = interior_grass_fixture(
+        &temp,
+        &[
+            // Spans 20000 units, so `include_large_interiors` keeps it.
+            ("Wide Cave", CellFlags::empty(), vec![0.0, 20000.0]),
+            // No water, not exterior-like, and well under the span threshold: dropped.
+            ("Small Cave", CellFlags::empty(), vec![0.0, 100.0]),
+        ],
+    );
+
+    let grass_path = data_dir.join("interior-grass.esp");
+    grass_plugin_file_with_interiors(
+        &grass_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[],
+        &[
+            ("Wide Cave", vec![(0, 1, "grass_blade", 30.0, false)]),
+            ("Small Cave", vec![(0, 1, "grass_blade", 40.0, false)]),
+        ],
+    );
+
+    let vfs = grass_test_vfs(&data_dir, vec![main_path]);
+    let (usage, ..) = UsageInfo::setup_with_grass_plugins_and_capture(
+        &vfs,
+        &[grass_path],
+        &make_args(),
+        &StaticOverrides::default(),
+        |_| (),
+    )
+    .unwrap();
+
+    assert!(!usage.cells.contains_key("Small Cave"));
+    assert!(
+        usage.cells["Wide Cave"]
+            .values()
+            .any(|reference| reference.id.as_ref() == "grass\\blade.nif")
+    );
+}
+
+/// An interior flagged "Behaves like exterior" — Mournhold's districts — keeps its grass exactly
+/// when that inclusion option is set, and loses it with the rest of the cell when it is not.
+#[test]
+fn behaves_like_exterior_interiors_follow_their_inclusion_option() {
+    use tes3::esp::CellFlags;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (data_dir, main_path) = interior_grass_fixture(
+        &temp,
+        &[("Mournhold, Great Bazaar", CellFlags::BEHAVES_LIKE_EXTERIOR, vec![0.0, 100.0])],
+    );
+
+    let grass_path = data_dir.join("interior-grass.esp");
+    grass_plugin_file_with_interiors(
+        &grass_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[],
+        &[("Mournhold, Great Bazaar", vec![(0, 1, "grass_blade", 30.0, false)])],
+    );
+
+    let vfs = grass_test_vfs(&data_dir, vec![main_path]);
+    // Only the exterior-like flag can keep this cell; it is too small for the span heuristic.
+    let load = |include_behaves_like_exterior: bool| {
+        let args = UsageFilterOptions {
+            include_behaves_like_exterior,
+            include_large_interiors: false,
+            ..make_args()
+        };
+        let (usage, ..) = UsageInfo::setup_with_grass_plugins_and_capture(
+            &vfs,
+            std::slice::from_ref(&grass_path),
+            &args,
+            &StaticOverrides::default(),
+            |_| (),
+        )
+        .unwrap();
+        usage
+            .cells
+            .get("Mournhold, Great Bazaar")
+            .is_some_and(|references| references.values().any(|r| r.id.as_ref() == "grass\\blade.nif"))
+    };
+
+    assert!(load(true));
+    assert!(!load(false));
+}
+
+/// A grass plugin that cases an interior's name differently joins the load order's world space
+/// instead of forming a second one under a spelling the runtime would never select.
+#[test]
+fn interior_grass_merges_into_the_load_orders_spelling_of_the_cell() {
+    use tes3::esp::CellFlags;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (data_dir, main_path) =
+        interior_grass_fixture(&temp, &[("Balmora, Guild of Mages", CellFlags::empty(), vec![0.0, 20000.0])]);
+
+    let grass_path = data_dir.join("interior-grass.esp");
+    grass_plugin_file_with_interiors(
+        &grass_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[],
+        &[("BALMORA, GUILD OF MAGES", vec![(0, 1, "grass_blade", 30.0, false)])],
+    );
+
+    let vfs = grass_test_vfs(&data_dir, vec![main_path]);
+    let (usage, ..) = UsageInfo::setup_with_grass_plugins_and_capture(
+        &vfs,
+        &[grass_path],
+        &make_args(),
+        &StaticOverrides::default(),
+        |_| (),
+    )
+    .unwrap();
+
+    assert_eq!(usage.interior_cells().count(), 1);
+    assert!(
+        usage.cells["Balmora, Guild of Mages"]
+            .values()
+            .any(|reference| reference.id.as_ref() == "grass\\blade.nif")
+    );
+}
+
+/// Override and delete resolution matches interior names case-insensitively, as the engine does,
+/// so a patch that cases the cell differently still lands on its target instead of accumulating
+/// alongside it.
+#[test]
+fn grass_list_resolves_interior_overrides_across_name_casing() {
     let temp = tempfile::tempdir().unwrap();
     let data_dir = temp.path();
     std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
     std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
+
+    let base_path = data_dir.join("base-grass.esp");
+    let patch_path = data_dir.join("patch-grass.esp");
+    grass_plugin_file_with_interiors(
+        &base_path,
+        &[],
+        Some(("grass_blade", "grass\\blade.nif")),
+        &[],
+        &[(
+            "Ald'ruhn, Vaults",
+            vec![(0, 1, "grass_blade", 10.0, false), (0, 2, "grass_blade", 20.0, false)],
+        )],
+    );
+    grass_plugin_file_with_interiors(
+        &patch_path,
+        &["base-grass.esp"],
+        None,
+        &[],
+        &[(
+            "ALD'RUHN, VAULTS",
+            vec![(1, 1, "grass_blade", 10.0, true), (1, 2, "grass_blade", 99.0, false)],
+        )],
+    );
+
+    let vfs = grass_test_vfs(data_dir, vec![]);
+    let grass_paths = vec![base_path, patch_path];
+    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
+    let loaded = load_grass_plugins(
+        &vfs,
+        &grass_paths,
+        &HashMap::new(),
+        &included_interiors(&["Ald'ruhn, Vaults"]),
+        &make_args(),
+        &StaticOverrides::default(),
+        &reference_sources,
+    )
+    .unwrap();
+
+    let usage = &loaded.usage_info;
+    assert_eq!(usage.interior_cells().count(), 1);
+    assert_eq!(sorted_x_bits(&usage.cells["Ald'ruhn, Vaults"]), [99.0_f32.to_bits()]);
+}
+
+/// An `[interiors]` exclusion keeps MGE out of that cell entirely, grass included, and an explicit
+/// inclusion carries grass into a cell the heuristics would have dropped.
+#[test]
+fn explicit_interior_overrides_decide_whether_grass_is_kept() {
+    use tes3::esp::CellFlags;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (data_dir, main_path) = interior_grass_fixture(
+        &temp,
+        &[
+            ("Excluded Cave", CellFlags::empty(), vec![0.0, 20000.0]),
+            ("Included Cave", CellFlags::empty(), vec![0.0, 100.0]),
+            ("Unlisted Cave", CellFlags::empty(), vec![0.0, 20000.0]),
+        ],
+    );
 
     let grass_path = data_dir.join("interior-grass.esp");
     grass_plugin_file_with_interiors(
@@ -555,24 +822,22 @@ fn explicit_interior_exclusion_drops_its_grass() {
     overrides.interiors.insert("excluded cave".into(), false);
     overrides.interiors.insert("included cave".into(), true);
 
-    let vfs = grass_test_vfs(data_dir, vec![]);
-    let grass_paths = vec![grass_path];
-    let reference_sources = ReferenceSources::from_plugin_lists(&[], &grass_paths);
-    let loaded = load_grass_plugins(
-        &vfs,
-        &grass_paths,
-        &HashMap::new(),
-        &make_args(),
-        &overrides,
-        &reference_sources,
-    )
-    .unwrap();
+    let vfs = grass_test_vfs(&data_dir, vec![main_path]);
+    let (usage, ..) =
+        UsageInfo::setup_with_grass_plugins_and_capture(&vfs, &[grass_path], &make_args(), &overrides, |_| ()).unwrap();
 
-    let usage = &loaded.usage_info;
-    assert_eq!(sorted_x_bits(usage.exterior_references().unwrap()), [10.0_f32.to_bits()]);
+    let grass_x_bits = |name: &str| {
+        usage.cells[name]
+            .values()
+            .filter(|reference| reference.id.as_ref() == "grass\\blade.nif")
+            .map(|reference| reference.translation.x.to_bits())
+            .sorted_unstable()
+            .collect_vec()
+    };
+
     assert!(!usage.cells.contains_key("Excluded Cave"));
-    assert_eq!(sorted_x_bits(&usage.cells["Included Cave"]), [30.0_f32.to_bits()]);
-    assert_eq!(sorted_x_bits(&usage.cells["Unlisted Cave"]), [40.0_f32.to_bits()]);
+    assert_eq!(grass_x_bits("Included Cave"), [30.0_f32.to_bits()]);
+    assert_eq!(grass_x_bits("Unlisted Cave"), [40.0_f32.to_bits()]);
 }
 
 /// The main load order requires plugin-unique reference indices and no longer works around
