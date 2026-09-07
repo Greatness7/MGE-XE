@@ -277,7 +277,14 @@ pipeline relies on.
   Turning it on at runtime takes effect after a restart; turning it off applies from the next
   scene. Each hook group (camera pose, rigid draws, skinned draws, first-person eye) installs
   all of its sites or none, so a conflict with another patcher never leaves a group half-owned.
-- **Space convention** while a main-view scene is active: the real device and the FFE/PPL
+- **Which scenes.** The `SetCameraData` hook recovers the `NiCamera` being clicked and
+  activates only when it is `WorldController::worldCamera` or `armCamera` (the pointers at
+  +0x134 and +0x160) and the render target is the back buffer. The menu, splash, shadow,
+  reflection and any mod-created camera render scenes that stay absolute, and so does the
+  identity view `NiDX8Renderer::RenderScreenPoly` sets around loading-screen polygons, which
+  belongs to no pose. Scenes are told apart by camera identity, never by matrix shape;
+  `detectMenu` stays for MGE's own main-view bookkeeping only.
+- **Space convention** while the world or first-person scene is active: the real device and the FFE/PPL
   shaders see world matrices whose translation is `world - camera` and a rotation-only view.
   `rs.worldTransforms` stays absolute for the sky and water replays, and `renderStage0` takes
   `mwView` from `CameraRelative::absoluteView()` instead of the device. View space is unchanged,
@@ -287,8 +294,10 @@ pipeline relies on.
   enabled set churns per object, so a point light rebased once in `SetLight` would keep a dead
   origin as the camera moves. The proxy records every light in absolute space and uploads it
   again, at each view and at each `LightEnable`, when the space or origin it was uploaded under
-  no longer matches. This is the general hazard of the feature: any engine-side redundancy
-  cache over a value that is now camera-dependent becomes a per-frame staleness bug. Lights are
+  no longer matches. Records are capped at 1024, evicting the least recently uploaded or
+  enabled light; the lights of an unloaded cell are never enabled again, so the cap only
+  matters if more than that many are hot at once. This is the general hazard of the feature:
+  any engine-side redundancy cache over a value that is now camera-dependent becomes a per-frame staleness bug. Lights are
   the only known instance; fixed-function clip planes would be another, but Morrowind never
   sets one.
 - **Limits.** Precision lost before a value reaches the scene graph cannot be recovered. A

@@ -148,8 +148,10 @@ constexpr std::uintptr_t UPDATE_CAMERA_TRANSFORMS_ADDRESS = 0x542E60;
 constexpr std::uintptr_t WORLD_CONTROLLER_POINTER = 0x7C67DC;
 constexpr DWORD WORLD_CONTROLLER_CAMERA_ROOT_OFFSETS[] = { 0x130, 0x15C, 0x2BC };
 constexpr int CAMERA_ROOT_COUNT = 3;
-// NiCamera vtable, written by NiCamera::ctor (0x6CC200).
-constexpr std::uintptr_t NICAMERA_VTABLE = 0x74FAA8;
+// WorldController::{worldCamera 0x124, armCamera 0x150}
+// + WorldControllerRenderCamera::cameraData.camera (0x10): the two NiCameras
+// whose scenes this module converts.
+constexpr DWORD WORLD_CONTROLLER_OWNED_CAMERA_OFFSETS[] = { 0x134, 0x160 };
 // PlayerAnimController: the first-person model's "Camera" node, found by name
 // in MACP::setupCameras. In first person the engine copies its stored world
 // position into every camera root (PlayerAnimController::updateCameraTransforms).
@@ -586,15 +588,32 @@ void __fastcall patchUpdateCameraTransforms(void* playerAnimController, void* /*
     }
 }
 
-// The NiCamera behind a SetCameraData location, or null. NiCamera::Click
-// passes &camera->worldTransform.translation and the renderer slot has no
-// other caller in the engine; the vtable test is the one read at a computed
-// address, so anything else fails it instead of being walked.
+// The NiCamera whose world translation SetCameraData received. NiCamera::Click
+// passes &camera->worldTransform.translation, and the renderer slot has no
+// other caller in the engine. The pointer is only compared, never read,
+// until cameraIsOwned has matched it against the engine's own cameras.
 const NI::AVObject* cameraFromLocation(const float* worldLocation) {
-    const NI::AVObject* camera = reinterpret_cast<const NI::AVObject*>(
+    return reinterpret_cast<const NI::AVObject*>(
         reinterpret_cast<const char*>(worldLocation)
         - offsetof(NI::AVObject, worldTransform) - offsetof(NI::Transform, translation));
-    return reinterpret_cast<std::uintptr_t>(camera->vTable) == NICAMERA_VTABLE ? camera : nullptr;
+}
+
+// Whether the scene this camera renders is one this module converts: the
+// engine's world camera or its first-person arm camera. The menu, splash,
+// shadow, reflection and any mod-created camera render scenes that stay
+// absolute, and so does the identity view NiDX8Renderer::RenderScreenPoly
+// (0x6ADD20) sets around loading-screen polygons, which belongs to no pose.
+bool cameraIsOwned(const NI::AVObject* camera) {
+    const DWORD worldController = MWPatches::read_dword(WORLD_CONTROLLER_POINTER);
+    if (!worldController) {
+        return false;
+    }
+    for (DWORD offset : WORLD_CONTROLLER_OWNED_CAMERA_OFFSETS) {
+        if (reinterpret_cast<std::uintptr_t>(camera) == MWPatches::read_dword(worldController + offset)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Whether the camera hangs from a root the engine wrote the copy into. The
@@ -612,11 +631,7 @@ bool hangsFromCopiedRoot(const NI::AVObject* camera) {
     return false;
 }
 
-bool eyeExactUnguarded(const float* worldLocation, double out[3]) {
-    const NI::AVObject* camera = cameraFromLocation(worldLocation);
-    if (!camera) {
-        return false;
-    }
+bool eyeExactUnguarded(const NI::AVObject* camera, const float* worldLocation, double out[3]) {
     if (eyePair.valid && hangsFromCopiedRoot(camera)) {
         out[0] = eyePair.exact[0] + (static_cast<double>(worldLocation[0]) - eyePair.stored[0]);
         out[1] = eyePair.exact[1] + (static_cast<double>(worldLocation[1]) - eyePair.stored[1]);
@@ -626,11 +641,10 @@ bool eyeExactUnguarded(const float* worldLocation, double out[3]) {
     return exactWorldTranslationUnguarded(camera, out, 0);
 }
 
-// Exact position of the camera whose location SetCameraData received; false
-// when the location does not belong to a NiCamera.
-bool eyeExact(const float* worldLocation, double out[3]) {
+// Exact position of an owned camera; false when its chain cannot be walked.
+bool eyeExact(const NI::AVObject* camera, const float* worldLocation, double out[3]) {
     __try {
-        return eyeExactUnguarded(worldLocation, out);
+        return eyeExactUnguarded(camera, worldLocation, out);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -642,6 +656,7 @@ bool eyeExact(const float* worldLocation, double out[3]) {
 
 struct Pose {
     bool valid = false;
+    bool owned = false;  // world or first-person camera
     bool exactValid = false;
     float location[3] = {};
     double exactLocation[3] = {};
@@ -661,11 +676,19 @@ void __fastcall hookSetCameraData(
         std::memcpy(pose.up, worldUp, sizeof(pose.up));
         std::memcpy(pose.right, worldRight, sizeof(pose.right));
         pose.valid = true;
+        pose.owned = false;
+        pose.exactValid = false;
 
-        pose.exactValid = Configuration.EnableCameraRelativeRendering
-            && eyeExact(worldLocation, pose.exactLocation);
+        if (Configuration.EnableCameraRelativeRendering) {
+            const NI::AVObject* camera = cameraFromLocation(worldLocation);
+            pose.owned = cameraIsOwned(camera);
+            if (pose.owned) {
+                pose.exactValid = eyeExact(camera, worldLocation, pose.exactLocation);
+            }
+        }
     } else {
         pose.valid = false;
+        pose.owned = false;
         pose.exactValid = false;
     }
 
@@ -681,7 +704,6 @@ double origin[3] = {};
 D3DXMATRIX viewRotationOnly;   // recorder view while active
 D3DXMATRIX viewAbsoluteBase;   // absolute view rebuilt from the pose, no camera effects
 D3DXMATRIX viewAbsoluteEffects;
-bool loggedMismatch = false;
 bool loggedActivation = false;
 bool loggedLateEnable = false;
 
@@ -742,13 +764,41 @@ void activate(const D3DMATRIX* engineView) {
 // Fixed-function lights
 //---------------------------------------------------------------------------
 
+// Light ids belong to NiLight objects and grow over a session, and the
+// lights of an unloaded cell are never enabled again. The records are
+// capped; at capacity the least recently uploaded or enabled light is
+// evicted. A live light loses its record only if more than the limit of
+// other lights are touched between two of its own touches, and then keeps
+// the device's last position until the engine uploads it again.
+constexpr std::size_t LIGHT_RECORD_LIMIT = 1024;
+
 struct LightUpload {
     D3DLIGHT8 absolute;
-    bool relative;      // space the device holds it in
-    double origin[3];   // origin subtracted, when relative
+    bool relative;            // space the device holds it in
+    double origin[3];         // origin subtracted, when relative
+    std::uint64_t lastTouch;  // upload or enable order
 };
 
 std::unordered_map<DWORD, LightUpload> lightUploads;
+std::uint64_t lightTouchCounter = 0;
+
+LightUpload& lightRecord(DWORD index) {
+    auto found = lightUploads.find(index);
+    if (found == lightUploads.end()) {
+        if (lightUploads.size() >= LIGHT_RECORD_LIMIT) {
+            auto oldest = lightUploads.begin();
+            for (auto it = lightUploads.begin(); it != lightUploads.end(); ++it) {
+                if (it->second.lastTouch < oldest->second.lastTouch) {
+                    oldest = it;
+                }
+            }
+            lightUploads.erase(oldest);
+        }
+        found = lightUploads.emplace(index, LightUpload{}).first;
+    }
+    found->second.lastTouch = ++lightTouchCounter;
+    return found->second;
+}
 
 //---------------------------------------------------------------------------
 // Draw hooks
@@ -957,7 +1007,7 @@ void installHooks() {
         eyeHooksInstalled ? "yes" : "NO");
 }
 
-void onViewTransform(const D3DMATRIX* engineView, bool mainView) {
+void onViewTransform(const D3DMATRIX* engineView, bool renderTargetNormal) {
     isActive = false;
 
     if (!cameraHookInstalled) {
@@ -968,16 +1018,14 @@ void onViewTransform(const D3DMATRIX* engineView, bool mainView) {
         }
         return;
     }
-    if (!Configuration.EnableCameraRelativeRendering || !mainView || !pose.valid) {
+    if (!Configuration.EnableCameraRelativeRendering || !renderTargetNormal || !pose.valid || !pose.owned) {
         return;
     }
 
+    // Any other view that reaches the proxy while this pose is current (the
+    // identity view around a screen polygon, for one) is not this scene and
+    // stays absolute; the engine restores the pose's own view afterwards.
     if (!viewMatchesPose(engineView)) {
-        if (!loggedMismatch) {
-            LOG::logline("-- Camera-relative rendering: a main-view matrix did not match the recorded camera pose; "
-                "that scene stays in absolute space.");
-            loggedMismatch = true;
-        }
         return;
     }
 
@@ -1057,7 +1105,7 @@ void relativePosition(const D3DVECTOR* position, D3DVECTOR* out) {
 }
 
 void recordLightUpload(DWORD index, const D3DLIGHT8* absolute) {
-    LightUpload& upload = lightUploads[index];
+    LightUpload& upload = lightRecord(index);
     upload.absolute = *absolute;
     upload.relative = isActive;
     upload.origin[0] = origin[0];
@@ -1070,7 +1118,8 @@ bool lightUploadStale(DWORD index, D3DLIGHT8* absolute) {
     if (found == lightUploads.end()) {
         return false;
     }
-    const LightUpload& upload = found->second;
+    LightUpload& upload = found->second;
+    upload.lastTouch = ++lightTouchCounter;
     if (upload.absolute.Type == D3DLIGHT_DIRECTIONAL) {
         return false;
     }
@@ -1089,6 +1138,9 @@ void onPresent() {
 void onDeviceReleased() {
     isActive = false;
     worldRelativePending = false;
+    pose.valid = false;
+    pose.owned = false;
+    pose.exactValid = false;
     lightUploads.clear();
     retireCache();
 }

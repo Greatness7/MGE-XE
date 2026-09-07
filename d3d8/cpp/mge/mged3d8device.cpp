@@ -461,28 +461,28 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
     if (a == D3DTS_VIEW) {
         // Decide the space of this scene before the recorder sees the view, so every
         // world matrix captured afterwards is combined with the same view.
-        const bool mainView = rendertargetNormal && !detectMenu(b);
-        CameraRelative::onViewTransform(b, mainView);
+        CameraRelative::onViewTransform(b, rendertargetNormal);
         // Lights the device still holds from the previous scene may be in the other space.
         refreshActiveLights();
-        if (rendertargetNormal) {
-            isMainView = mainView;
-        }
     }
 
     captureTransform(a, b);
 
     if (rendertargetNormal) {
         if (a == D3DTS_VIEW) {
-            if (isMainView) {
+            isMainView = !detectMenu(b);
+
+            if (CameraRelative::active()) {
+                // The scene was chosen by camera identity; the device view has to
+                // match the camera-relative world matrices it is about to receive.
                 D3DXMATRIX view;
-                if (CameraRelative::active()) {
-                    CameraRelative::setCameraEffects(&camEffectsMatrix);
-                    CameraRelative::deviceView(&camEffectsMatrix, &view);
-                } else {
-                    view = *b;
-                    view *= camEffectsMatrix;
-                }
+                CameraRelative::setCameraEffects(&camEffectsMatrix);
+                CameraRelative::deviceView(&camEffectsMatrix, &view);
+                return ProxyDevice::SetTransform(a, &view);
+            }
+            if (isMainView) {
+                D3DXMATRIX view = *b;
+                view *= camEffectsMatrix;
                 return ProxyDevice::SetTransform(a, &view);
             }
         } else if (a == D3DTS_PROJECTION) {

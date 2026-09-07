@@ -21,7 +21,7 @@
 // world translation is not. Results are memoized per scene, so a skeleton is
 // walked once however many body parts hang from it.
 //
-// Space convention while a main-view scene is active:
+// Space convention while the world or first-person scene is active:
 //   - the real device and MGE's FFE/PPL shaders see world matrices whose
 //     translation is (world - camera) and a rotation-only view;
 //   - RenderedState::worldTransforms stays absolute for the passes that replay
@@ -50,10 +50,12 @@ namespace CameraRelative {
 void installHooks();
 
 // Called by the proxy for every D3DTS_VIEW it receives, before the recorder
-// captures it. Activates camera-relative space when `mainView` is set, the
-// feature is enabled, and `engineView` carries the rotation of the last
-// recorded pose; deactivates otherwise.
-void onViewTransform(const D3DMATRIX* engineView, bool mainView);
+// captures it. Activates camera-relative space when the feature is enabled,
+// the render target is the back buffer, the last recorded pose belongs to
+// the engine's world or first-person camera, and `engineView` carries that
+// pose's rotation; deactivates otherwise. Scenes are told apart by which
+// NiCamera the engine clicked, never by the shape of the matrix.
+void onViewTransform(const D3DMATRIX* engineView, bool renderTargetNormal);
 
 bool active();
 
@@ -106,8 +108,8 @@ bool lightUploadStale(DWORD index, D3DLIGHT8* absolute);
 void onPresent();
 
 // The proxy device is destroyed and recreated on fullscreen Alt-Tab. Nothing
-// uploaded to the old device survives, and no scene is active on the new one
-// until its first main view.
+// uploaded to the old device survives, the recorded pose is dropped, and no
+// scene is active on the new one until its first owned camera is clicked.
 void onDeviceReleased();
 
 }  // namespace CameraRelative
