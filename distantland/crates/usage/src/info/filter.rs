@@ -168,6 +168,12 @@ impl<'a> UsageInfo<'a> {
                 return true;
             }
 
+            // An unnamed interior cannot be addressed at runtime: `selectDistantCell` builds the
+            // same empty key the exterior world space uses, so the record could never be selected.
+            if name.is_empty() {
+                return false;
+            }
+
             if let Some(&enabled) = overrides.interiors.get(name.as_uncased()) {
                 return enabled;
             }

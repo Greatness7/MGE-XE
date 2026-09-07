@@ -840,6 +840,31 @@ fn explicit_interior_overrides_decide_whether_grass_is_kept() {
     assert_eq!(grass_x_bits("Unlisted Cave"), [40.0_f32.to_bits()]);
 }
 
+/// An unnamed interior cannot be addressed at runtime — `selectDistantCell` would build the same
+/// empty key the exterior world space uses — so it is dropped ahead of any override.
+#[test]
+fn unnamed_interiors_are_always_dropped() {
+    let mut usage: UsageInfo<'static> = UsageInfo::default();
+    usage.cells.insert("\0".to_string(), Default::default());
+    usage.cells.insert(String::new(), Default::default());
+    usage.interior_metadata.insert(
+        String::new().into(),
+        InteriorMetadata {
+            behaves_like_exterior: true,
+            has_water: true,
+            water_height: 0.0,
+        },
+    );
+
+    let mut overrides = StaticOverrides::default();
+    overrides.interiors.insert("".into(), true);
+
+    usage.filter_interiors(&make_args(), &overrides);
+
+    assert!(usage.cells.contains_key("\0"));
+    assert!(!usage.cells.contains_key(""));
+}
+
 /// The main load order requires plugin-unique reference indices and no longer works around
 /// groundcover files that restart numbering in every cell. Such a plugin loses placements; it
 /// belongs in `grass_plugins`, where identity is scoped per cell and the collision cannot occur.
