@@ -82,23 +82,6 @@ bool MWBridge::CanLoad() {
 
 //-----------------------------------------------------------------------------
 
-DWORD MWBridge::GetAlwaysRun() {
-    assert(m_loaded);
-    // FIXME(plan section 6.4): this is `vanityDisabled`, not the always-run flag.
-    // IsAlwaysRun() and GetAutoRun() read the fields 3 and 4 bytes past it, which
-    // are the real ones. Preserved verbatim for now; fixed in a later commit.
-    return reinterpret_cast<DWORD>(&getPlayerMobile()->vanityDisabled);
-}
-
-//-----------------------------------------------------------------------------
-
-DWORD MWBridge::GetAutoRun() {
-    assert(m_loaded);
-    return reinterpret_cast<DWORD>(&getPlayerMobile()->autoRun);
-}
-
-//-----------------------------------------------------------------------------
-
 DWORD MWBridge::GetShadowToggleAddr() {
     assert(m_loaded);
     auto shadowManager = worldController()->shadowManager;
@@ -202,13 +185,6 @@ bool MWBridge::IsCrosshair() {
     // Read as a byte rather than through the bool: the writers above preserve
     // bits 1-7, so only bit 0 is the crosshair state.
     return (*reinterpret_cast<const BYTE*>(&worldController()->cursorOff) & 1) == 0;
-}
-
-//-----------------------------------------------------------------------------
-
-bool MWBridge::IsAlwaysRun() {
-    assert(m_loaded);
-    return getPlayerMobile()->alwaysRun;
 }
 
 //-----------------------------------------------------------------------------

@@ -27,8 +27,6 @@ public:
     inline bool IsLoaded();
     bool CanLoad();
 
-    DWORD GetAlwaysRun();
-    DWORD GetAutoRun();
     DWORD GetShadowToggleAddr();
     DWORD GetShadowRealAddr();
     DWORD GetShadowFovAddr();
@@ -40,7 +38,6 @@ public:
     bool IsLoadScreen();
     bool IsCombat();
     bool IsCrosshair();
-    bool IsAlwaysRun();
 
     DWORD GetNextTrack();
     DWORD GetMusicVol();
