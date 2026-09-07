@@ -448,7 +448,7 @@ struct WorldControllerRenderCamera {
     };
 
     void* vTable;                        // 0x00
-    NI::Pointer<NI::Renderer> renderer;  // 0x04
+    NI::Pointer<NI::DX8Renderer> renderer;  // 0x04
     NI::Pointer<NI::Node> root;          // 0x08
     NI::Pointer<NI::Node> cameraRoot;    // 0x0C
     CameraData cameraData;               // 0x10
@@ -470,7 +470,7 @@ struct WorldController {
     unsigned int systemTimeMillis;                      // 0x20
     char pad_24[0x8];                                   // 0x24
     float deltaTime;                                    // 0x2C
-    NI::Renderer* renderer;                             // 0x30
+    NI::DX8Renderer* renderer;                             // 0x30
     AudioController* audioController;                   // 0x34
     char pad_38[0x18];                                  // 0x38
     MouseController* mouseController;                   // 0x50

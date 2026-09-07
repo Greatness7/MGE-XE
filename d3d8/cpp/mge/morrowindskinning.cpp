@@ -15,202 +15,15 @@
 #include "proxydx/d3d8interface.h"
 #include "support/crashlog.h"
 #include "support/log.h"
+#include "tes3/nitypes.h"
 
 // Adapted from the MWSE fork's indexed-skinning implementation (GPLv2):
 // SharedSE/NIDX8Renderer.{h,cpp}, SharedSE/NISkinInstance.{h,cpp} and the
-// MWSE_INDEXED_SKINNING block of MWSE/PatchUtil.cpp. The engine-facing behavior is unchanged;
-// the NetImmerse layouts are re-declared locally so MGE XE carries no dependency on MWSE.
+// MWSE_INDEXED_SKINNING block of MWSE/PatchUtil.cpp. The engine-facing behavior is
+// unchanged; the NetImmerse layouts live in tes3/nitypes.h, transcribed from MWSE
+// so MGE XE carries no build dependency on it.
 
 namespace {
-
-//---------------------------------------------------------------------------
-// Minimal NetImmerse ABI
-//
-// Only the layouts the four hooks actually touch. Every type carries a size
-// assertion; these describe the supported 32-bit Morrowind executable, so a
-// layout drift is a build break rather than a runtime corruption.
-//---------------------------------------------------------------------------
-
-namespace NI {
-
-struct Object;
-
-struct ObjectVTable {
-    void(__thiscall* destructor)(Object*, int);  // 0x0
-};
-
-struct Object {
-    ObjectVTable* vTable;  // 0x0
-    int refCount;          // 0x4
-};
-static_assert(sizeof(Object) == 0x8, "NI::Object failed size validation");
-
-// The engine's intrusive refcounted handle (NiPointer). Assigning through it
-// is what releases an incompatible partition back to the engine.
-template <class T>
-class Pointer {
-public:
-    Pointer(T* pointer = nullptr) {
-        claim(pointer);
-    }
-
-    Pointer(const Pointer<T>& other) {
-        claim(other.m_pointer);
-    }
-
-    ~Pointer() {
-        release();
-    }
-
-    Pointer<T>& operator=(const Pointer<T>& other) {
-        if (m_pointer != other.m_pointer) {
-            claim(other.m_pointer);
-        }
-        return *this;
-    }
-
-    Pointer<T>& operator=(T* pointer) {
-        if (m_pointer != pointer) {
-            claim(pointer);
-        }
-        return *this;
-    }
-
-    operator T*() const {
-        return m_pointer;
-    }
-
-    T* operator->() const {
-        return m_pointer;
-    }
-
-    T* get() const {
-        return m_pointer;
-    }
-
-private:
-    T* m_pointer = nullptr;
-
-    void release() {
-        if (m_pointer) {
-            T* const released = m_pointer;
-            m_pointer = nullptr;
-            if (--released->refCount == 0) {
-                released->vTable->destructor(static_cast<Object*>(released), 1);
-            }
-        }
-    }
-
-    void claim(T* pointer) {
-        release();
-        m_pointer = pointer;
-        if (m_pointer) {
-            m_pointer->refCount++;
-        }
-    }
-};
-static_assert(sizeof(Pointer<Object>) == 0x4, "NI::Pointer failed size validation");
-
-struct Point2 {
-    float x, y;
-};
-static_assert(sizeof(Point2) == 0x8, "NI::Point2 failed size validation");
-
-struct Point3 {
-    float x, y, z;
-};
-static_assert(sizeof(Point3) == 0xC, "NI::Point3 failed size validation");
-
-// Matches D3DCOLOR; the packer copies it straight into a D3DFVF_DIFFUSE slot.
-struct PackedColor {
-    unsigned char r, g, b, a;
-};
-static_assert(sizeof(PackedColor) == 0x4, "NI::PackedColor failed size validation");
-
-struct SkinPartition : Object {
-    struct Partition {
-        void* vtbl;                        // 0x0
-        unsigned short* bones;             // 0x4
-        float* weights;                    // 0x8
-        unsigned short* vertices;          // 0xC
-        unsigned char* bonePalette;        // 0x10
-        void* triangles;                   // 0x14
-        unsigned short* stripLengths;      // 0x18
-        unsigned short numVertices;        // 0x1C
-        unsigned short numTriangles;       // 0x1E
-        unsigned short numBones;           // 0x20
-        unsigned short numStripLengths;    // 0x22
-        unsigned short numBonesPerVertex;  // 0x24
-        void* bufferData;                  // 0x28
-    };
-
-    unsigned int partitionCount;  // 0x8
-    Partition* partitions;        // 0xC
-};
-static_assert(sizeof(SkinPartition) == 0x10, "NI::SkinPartition failed size validation");
-static_assert(
-    sizeof(SkinPartition::Partition) == 0x2C,
-    "NI::SkinPartition::Partition failed size validation");
-
-struct SkinData : Object {
-    Pointer<SkinPartition> partition;  // 0x8
-    unsigned char transform[0x34];     // 0xC  (NiTransform, passed through only)
-    unsigned int numBones;             // 0x40
-    void* boneData;                    // 0x44
-};
-static_assert(sizeof(SkinData) == 0x48, "NI::SkinData failed size validation");
-
-struct SkinInstance : Object {
-    Pointer<SkinData> skinData;  // 0x8
-    void* rootParent;            // 0xC
-    void** bones;                // 0x10
-    int unknown_0x14;            // 0x14
-};
-static_assert(sizeof(SkinInstance) == 0x18, "NI::SkinInstance failed size validation");
-
-struct GeometryData : Object {
-    unsigned short vertexCount;  // 0x8
-    unsigned short textureSets;  // 0xA
-    unsigned char bounds[0x10];  // 0xC  (NiBound, unused here)
-    Point3* vertex;              // 0x1C
-    Point3* normal;              // 0x20
-    PackedColor* color;          // 0x24
-    Point2* textureCoords;       // 0x28
-    unsigned int uniqueID;       // 0x2C
-    unsigned short revisionID;   // 0x30
-    bool unknown_0x32;           // 0x32
-};
-static_assert(sizeof(GeometryData) == 0x34, "NI::GeometryData failed size validation");
-
-// NiTriBasedGeomData. MakePartitions reads the triangle count unconditionally,
-// so every geometry that reaches it is triangle-based.
-struct TriBasedGeomData : GeometryData {
-    unsigned short triangleCount;  // 0x34
-};
-static_assert(sizeof(TriBasedGeomData) == 0x38, "NI::TriBasedGeomData failed size validation");
-
-struct DX8VertexBufferManager {
-    void* vTable;                 // 0x0
-    int unknown_0x4;              // 0x4
-    IDirect3DDevice8* d3dDevice;  // 0x8
-};
-static_assert(
-    sizeof(DX8VertexBufferManager) == 0xC,
-    "NI::DX8VertexBufferManager failed size validation");
-
-// Only the device pointer is needed. The full NiDX8Renderer is 0x6A0 bytes;
-// declaring the remainder would be maintenance with no consumer.
-struct DX8Renderer {
-    unsigned char padding_0x0[0x24];
-    IDirect3DDevice8* d3dDevice;  // 0x24
-};
-static_assert(
-    offsetof(DX8Renderer, d3dDevice) == 0x24,
-    "NI::DX8Renderer::d3dDevice failed offset validation");
-
-struct CriticalSection;
-
-}  // namespace NI
 
 //---------------------------------------------------------------------------
 // Engine entry points
@@ -224,7 +37,7 @@ NI::CriticalSection* const vertexBufferCriticalSection =
     reinterpret_cast<NI::CriticalSection*>(0x7DEA78);
 
 const auto NI_SkinPartition_makePartitions = reinterpret_cast<bool(__thiscall*)(
-    NI::SkinPartition*, NI::TriBasedGeomData*, NI::SkinData*, unsigned char, unsigned char)>(
+    NI::SkinPartition*, NI::TriBasedGeometryData*, NI::SkinData*, unsigned char, unsigned char)>(
     0x6C78F0);
 
 // `transform` and `worldBound` are forwarded untouched, so their layouts do
@@ -608,7 +421,7 @@ void negotiateIndexedSkinning(NI::DX8Renderer* renderer) {
 // See docs/architecture/indexed-skinning.md §4.3.
 bool partitionsCoverAllTriangles(
     NI::SkinPartition* skinPartition,
-    NI::TriBasedGeomData* geometryData) {
+    NI::TriBasedGeometryData* geometryData) {
     unsigned int coveredTriangles = 0;
     for (unsigned int i = 0; i < skinPartition->partitionCount; ++i) {
         coveredTriangles += skinPartition->partitions[i].numTriangles;
@@ -713,7 +526,7 @@ void __fastcall PatchDrawSkinnedPrimitive(
 // that requires object unwinding.
 bool makePartitionsGuarded(
     NI::SkinPartition* skinPartition,
-    NI::TriBasedGeomData* geometryData,
+    NI::TriBasedGeometryData* geometryData,
     NI::SkinData* skinData,
     unsigned char bonesPerPartition,
     unsigned char bonesPerVertex,
@@ -734,7 +547,7 @@ bool makePartitionsGuarded(
 bool __fastcall PatchMakeSkinPartitions(
     NI::SkinPartition* skinPartition,
     DWORD /*edx*/,
-    NI::TriBasedGeomData* geometryData,
+    NI::TriBasedGeometryData* geometryData,
     NI::SkinData* skinData,
     unsigned char bonesPerPartition,
     unsigned char bonesPerVertex) {

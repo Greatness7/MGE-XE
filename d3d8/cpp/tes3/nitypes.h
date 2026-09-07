@@ -18,6 +18,7 @@
 #undef far
 
 struct IDirect3DDevice8;
+struct IDirect3DTexture8;
 
 namespace NI {
 
@@ -25,16 +26,93 @@ namespace NI {
 // Support types
 //-----------------------------------------------------------------------------
 
-// NiPointer<T>. A smart pointer in the engine; MGE only ever reads through it,
-// so refcounting is deliberately not modelled.
-template <typename T>
-struct Pointer {
-    T* ptr;
+struct Object;
 
-    operator T* () const { return ptr; }
-    T* operator->() const { return ptr; }
+// MWSE's Object_vTable carries 11 entries; only the destructor is called from
+// here, so the rest stay opaque slots. The size assertion is what keeps the
+// slot count honest.
+struct ObjectVTable {
+    void(__thiscall* destructor)(Object*, int);  // 0x00
+    void* entries[10];                           // 0x04
 };
-static_assert(sizeof(Pointer<int>) == 0x4, "NI::Pointer failed size validation");
+static_assert(sizeof(ObjectVTable) == 0x2C, "NI::ObjectVTable failed size validation");
+
+struct Object {
+    ObjectVTable* vTable;  // 0x00
+    int refCount;          // 0x04
+};
+static_assert(sizeof(Object) == 0x8, "NI::Object failed size validation");
+
+// NiPointer<T>, the engine's intrusive refcounted handle.
+//
+// The ownership is load-bearing, not decoration: assigning through the handle
+// is what releases an object back to the engine (see the partition rebuild in
+// morrowindskinning.cpp), and MGE holds strong references of its own in the
+// stock-geometry map. Reading an engine-owned field through operator-> or
+// operator T* touches no refcount, which is all the overlay structs below do.
+template <class T>
+class Pointer {
+public:
+    Pointer(T* pointer = nullptr) {
+        claim(pointer);
+    }
+
+    Pointer(const Pointer<T>& other) {
+        claim(other.m_pointer);
+    }
+
+    ~Pointer() {
+        release();
+    }
+
+    Pointer<T>& operator=(const Pointer<T>& other) {
+        if (m_pointer != other.m_pointer) {
+            claim(other.m_pointer);
+        }
+        return *this;
+    }
+
+    Pointer<T>& operator=(T* pointer) {
+        if (m_pointer != pointer) {
+            claim(pointer);
+        }
+        return *this;
+    }
+
+    operator T* () const {
+        return m_pointer;
+    }
+
+    T* operator->() const {
+        return m_pointer;
+    }
+
+    T* get() const {
+        return m_pointer;
+    }
+
+private:
+    T* m_pointer = nullptr;
+
+    void release() {
+        if (m_pointer) {
+            T* const released = m_pointer;
+            m_pointer = nullptr;
+            if (--released->refCount == 0) {
+                released->vTable->destructor(static_cast<Object*>(released), 1);
+            }
+        }
+    }
+
+    void claim(T* pointer) {
+        release();
+        m_pointer = pointer;
+        if (m_pointer) {
+            m_pointer->refCount++;
+        }
+    }
+};
+static_assert(sizeof(Pointer<Object>) == 0x4, "NI::Pointer failed size validation");
 
 template <typename T>
 struct LinkedList {
@@ -123,12 +201,7 @@ struct Property;
 using PropertyLinkedList = LinkedList<Property>;
 
 struct Node;
-
-struct Object {
-    void* vTable;    // 0x00
-    int refCount;    // 0x04
-};
-static_assert(sizeof(Object) == 0x8, "NI::Object failed size validation");
+struct SkinInstance;
 
 struct ObjectNET : Object {
     char* name;                 // 0x08
@@ -219,7 +292,7 @@ struct Geometry : AVObject {
     void* propertyState;                 // 0x90
     void* effectState;                   // 0x94
     Pointer<GeometryData> modelData;     // 0x98
-    Pointer<Object> skinInstance;        // 0x9C
+    Pointer<SkinInstance> skinInstance;  // 0x9C
     Point3* worldVertices;               // 0xA0
     Point3* worldNormals;                // 0xA4
     bool bWorldVerticesDirty;            // 0xA8
@@ -235,6 +308,80 @@ static_assert(sizeof(TriBasedGeometry) == 0xAC, "NI::TriBasedGeometry failed siz
 
 struct TriShape : TriBasedGeometry {};
 static_assert(sizeof(TriShape) == 0xAC, "NI::TriShape failed size validation");
+
+// NiTriBasedGeomData. MakePartitions reads the triangle count unconditionally,
+// so every geometry that reaches it is triangle-based.
+struct TriBasedGeometryData : GeometryData {
+    unsigned short triangleCount;      // 0x34
+    unsigned short patchRenderFlags;   // 0x36
+};
+static_assert(sizeof(TriBasedGeometryData) == 0x38, "NI::TriBasedGeometryData failed size validation");
+
+//-----------------------------------------------------------------------------
+// Skinning
+//-----------------------------------------------------------------------------
+
+struct Triangle {
+    unsigned short vertex[3];
+};
+static_assert(sizeof(Triangle) == 0x6, "NI::Triangle failed size validation");
+
+struct SkinPartition : Object {
+    struct Partition {
+        void* vtbl;                        // 0x00
+        unsigned short* bones;             // 0x04
+        float* weights;                    // 0x08
+        unsigned short* vertices;          // 0x0C
+        unsigned char* bonePalette;        // 0x10
+        Triangle* triangles;               // 0x14
+        unsigned short* stripLengths;      // 0x18
+        unsigned short numVertices;        // 0x1C
+        unsigned short numTriangles;       // 0x1E
+        unsigned short numBones;           // 0x20
+        unsigned short numStripLengths;    // 0x22
+        unsigned short numBonesPerVertex;  // 0x24
+        char pad_26[0x2];                  // 0x26
+        void* bufferData;                  // 0x28
+    };
+
+    unsigned int partitionCount;  // 0x08
+    Partition* partitions;        // 0x0C
+};
+static_assert(sizeof(SkinPartition) == 0x10, "NI::SkinPartition failed size validation");
+static_assert(sizeof(SkinPartition::Partition) == 0x2C, "NI::SkinPartition::Partition failed size validation");
+
+struct SkinData : Object {
+    struct BoneData {
+        struct VertexWeight {
+            unsigned short index;   // 0x00
+            char pad_02[0x2];       // 0x02
+            float weight;           // 0x04
+        };
+
+        Transform transform;         // 0x00
+        Bound bounds;                // 0x34
+        VertexWeight* weights;       // 0x44
+        unsigned short weightCount;  // 0x48
+        char pad_4A[0x2];            // 0x4A
+    };
+
+    // Assigning here releases the previous partition back to the engine.
+    Pointer<SkinPartition> partition;  // 0x08
+    Transform transform;               // 0x0C  passed through only
+    unsigned int numBones;             // 0x40
+    BoneData* boneData;                // 0x44
+};
+static_assert(sizeof(SkinData) == 0x48, "NI::SkinData failed size validation");
+static_assert(sizeof(SkinData::BoneData) == 0x4C, "NI::SkinData::BoneData failed size validation");
+static_assert(sizeof(SkinData::BoneData::VertexWeight) == 0x8, "NI::SkinData::BoneData::VertexWeight failed size validation");
+
+struct SkinInstance : Object {
+    Pointer<SkinData> skinData;  // 0x08
+    AVObject* rootParent;        // 0x0C
+    AVObject** bones;            // 0x10
+    int unknown_0x14;            // 0x14
+};
+static_assert(sizeof(SkinInstance) == 0x18, "NI::SkinInstance failed size validation");
 
 //-----------------------------------------------------------------------------
 // Camera
@@ -280,9 +427,20 @@ struct DX8RenderTarget {
 };
 static_assert(sizeof(DX8RenderTarget) == 0x24, "NI::DX8RenderTarget failed size validation");
 
-// NiDX8Renderer. `Renderer` is the abstract base MWSE declares separately; MGE
-// only ever holds the concrete DX8 one, so the base is folded in here.
-struct Renderer : Object {
+struct DX8VertexBufferManager {
+    void* vTable;                 // 0x00
+    int unknown_0x4;              // 0x04
+    IDirect3DDevice8* d3dDevice;  // 0x08
+};
+static_assert(sizeof(DX8VertexBufferManager) == 0xC, "NI::DX8VertexBufferManager failed size validation");
+
+// Guards NiDX8VertexBufferManager's buffer creation. Opaque; only ever passed
+// back to the engine's own lock and unlock.
+struct CriticalSection;
+
+// NiDX8Renderer. MWSE splits an abstract `Renderer` base out of this; MGE only
+// ever holds the concrete DX8 one, so the base is folded in.
+struct DX8Renderer : Object {
     char pad_08[0x14];                       // 0x08
     void* propertyStatePtr;                  // 0x1C
     void* effectStatePtr;                     // 0x20
@@ -293,10 +451,117 @@ struct Renderer : Object {
     DX8RenderTarget* currentRenderTarget;    // 0x544
     char pad_548[0x158];                     // 0x548
 };
-static_assert(sizeof(Renderer) == 0x6A0, "NI::Renderer failed size validation");
-static_assert(offsetof(Renderer, d3dDevice) == 0x24, "NI::Renderer::d3dDevice failed offset validation");
-static_assert(offsetof(Renderer, backbufferRenderTarget) == 0x520, "NI::Renderer::backbufferRenderTarget failed offset validation");
-static_assert(offsetof(Renderer, currentRenderTarget) == 0x544, "NI::Renderer::currentRenderTarget failed offset validation");
+static_assert(sizeof(DX8Renderer) == 0x6A0, "NI::DX8Renderer failed size validation");
+static_assert(offsetof(DX8Renderer, d3dDevice) == 0x24, "NI::DX8Renderer::d3dDevice failed offset validation");
+static_assert(offsetof(DX8Renderer, backbufferRenderTarget) == 0x520, "NI::DX8Renderer::backbufferRenderTarget failed offset validation");
+static_assert(offsetof(DX8Renderer, currentRenderTarget) == 0x544, "NI::DX8Renderer::currentRenderTarget failed offset validation");
+
+//-----------------------------------------------------------------------------
+// Textures and files
+//-----------------------------------------------------------------------------
+
+struct PixelFormat {
+    int format;                     // 0x00
+    unsigned int channelMasks[4];   // 0x04
+    unsigned int bitsPerPixel;      // 0x14
+    unsigned int compareBits[2];    // 0x18
+};
+static_assert(sizeof(PixelFormat) == 0x20, "NI::PixelFormat failed size validation");
+
+struct PixelData : Object {
+    PixelFormat pixelFormat;       // 0x08
+    void* palette;                 // 0x28
+    unsigned char* pixels;         // 0x2C
+    unsigned int* widths;          // 0x30
+    unsigned int* heights;         // 0x34
+    unsigned int* offsets;         // 0x38
+    unsigned int mipMapLevels;     // 0x3C
+    unsigned int bytesPerPixel;    // 0x40
+    unsigned int revisionID;       // 0x44
+};
+static_assert(sizeof(PixelData) == 0x48, "NI::PixelData failed size validation");
+static_assert(offsetof(PixelData, pixelFormat) == 0x08, "NI::PixelData::pixelFormat failed offset validation");
+static_assert(offsetof(PixelData, mipMapLevels) == 0x3C, "NI::PixelData::mipMapLevels failed offset validation");
+
+struct Texture : ObjectNET {
+    // NI::Texture::FormatPrefs
+    unsigned int pixelLayout;   // 0x14
+    unsigned int mipMapped;     // 0x18
+    unsigned int alphaFormat;   // 0x1C
+    void* rendererData;         // 0x20
+    Texture* previousTexture;   // 0x24
+    Texture* nextTexture;       // 0x28
+};
+static_assert(sizeof(Texture) == 0x2C, "NI::Texture failed size validation");
+
+struct SourceTexture : Texture {
+    const char* fileName;            // 0x2C
+    const char* platformFileName;    // 0x30
+    Pointer<PixelData> pixelData;    // 0x34
+    bool isStatic;                   // 0x38
+    char pad_39[0x3];                // 0x39
+};
+static_assert(sizeof(SourceTexture) == 0x3C, "NI::SourceTexture failed size validation");
+static_assert(offsetof(SourceTexture, pixelData) == 0x34, "NI::SourceTexture::pixelData failed offset validation");
+
+struct File;
+
+// MWSE declares NI::File but not its vtable; these five slots come from MGE's
+// own use of the DDS reader path.
+struct FileVtbl {
+    void* deletingDtor;                                     // 0x00
+    void* asBool;                                           // 0x04
+    unsigned int(__thiscall* read)(File*, void*, unsigned int);  // 0x08
+    void* write;                                            // 0x0C
+    void(__thiscall* seek)(File*, int, int);                // 0x10
+};
+
+struct File {
+    FileVtbl* vtbl;                   // 0x00
+    void* buffer;                     // 0x04
+    unsigned int bufferAllocSize;     // 0x08
+    unsigned int bufferReadSize;      // 0x0C
+    unsigned int position;            // 0x10
+    void* filePointer;                // 0x14
+    int accessMode;                   // 0x18
+    bool valid;                       // 0x1C
+    char pad_1D[0x3];                 // 0x1D
+};
+static_assert(sizeof(File) == 0x20, "NI::File failed size validation");
+static_assert(offsetof(File, position) == 0x10, "NI::File::position failed offset validation");
+
+// No MWSE equivalent; MWSE knows only the vtable address 0x751320.
+struct DDSReader {
+    void* vtbl;                    // 0x00
+    unsigned int width;            // 0x04
+    unsigned int height;           // 0x08
+    unsigned int mipMapLevels;     // 0x0C
+    PixelFormat pixelFormat;       // 0x10
+};
+static_assert(sizeof(DDSReader) == 0x30, "NI::DDSReader failed size validation");
+static_assert(offsetof(DDSReader, pixelFormat) == 0x10, "NI::DDSReader::pixelFormat failed offset validation");
+
+// No MWSE equivalent.
+struct DX8RendererTextureData {
+    void* vtbl;                        // 0x00
+    void* unknown_0x4;                 // 0x04
+    SourceTexture* sourceTexture;      // 0x08
+    void* unknown_0xC;                 // 0x0C
+    DX8Renderer* renderer;             // 0x10
+    int pixelFormat[10];               // 0x14
+    void* d3dPalette;                  // 0x3C
+    int d3dPaletteRevision;            // 0x40
+    unsigned int width, height;        // 0x44
+    unsigned int levels;               // 0x4C
+    bool bMipmap;                      // 0x50
+    char pad_51[0x3];                  // 0x51
+    int unknown_0x54;                  // 0x54
+    void* sourcePalette;               // 0x58
+    int sourcePaletteRevision;         // 0x5C
+    IDirect3DTexture8* d3dTexture;     // 0x60
+    int sourceRevision;                // 0x64
+};
+static_assert(sizeof(DX8RendererTextureData) == 0x68, "NI::DX8RendererTextureData failed size validation");
 
 //-----------------------------------------------------------------------------
 // Virtual table addresses
