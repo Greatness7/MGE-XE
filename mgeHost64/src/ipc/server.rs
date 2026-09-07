@@ -166,6 +166,10 @@ impl Server {
                     Self::log_nonfatal_rpc_error("FinishHorizonFrame", self.finish_horizon_frame());
                 }
                 Command::QueryOutputStatus => self.query_output_status(),
+                Command::UpdateResidency => {
+                    Self::log_nonfatal_rpc_error("UpdateResidency", self.update_residency());
+                }
+                Command::PlanResidency => Self::log_nonfatal_rpc_error("PlanResidency", self.plan_residency()),
             }
         }
     }
@@ -287,6 +291,46 @@ impl Server {
         params.success = result.is_ok() as u32;
         self.params_mut().params.distant_static_params = params;
         result
+    }
+
+    /// Applies client-acknowledged residency state transitions.
+    fn update_residency(&mut self) -> Result<(), HostError> {
+        let mut params = unsafe { self.params().params.update_residency_params };
+        let result = {
+            let vecs = &mut self.vecs;
+            let distant_land = &mut self.distant_land;
+            let commits = get_vec_mut_from::<crate::abi::ResidencyCommit>(vecs, params.commits)?;
+            // The client retains every buffer in a batch it is told failed, so a partly applied
+            // batch would leave the two sides disagreeing. Validate all of it before mutating
+            // anything, then apply all of it.
+            let mut result = Ok(());
+            for index in 0..commits.size() {
+                if result.is_ok() {
+                    result = distant_land.validate_residency_commit(commits.get(index));
+                }
+            }
+            if result.is_ok() {
+                for index in 0..commits.size() {
+                    let outcome = distant_land.apply_residency_commit(commits.get(index));
+                    if result.is_ok() {
+                        result = outcome;
+                    }
+                }
+            }
+            result
+        };
+        params.success = result.is_ok() as u32;
+        self.params_mut().params.update_residency_params = params;
+        result
+    }
+
+    /// Advances the bounded radial residency planner.
+    fn plan_residency(&mut self) -> Result<(), HostError> {
+        let params = unsafe { self.params().params.plan_residency_params };
+        let vecs = &mut self.vecs;
+        let distant_land = &mut self.distant_land;
+        let plan = get_vec_mut_from::<crate::abi::ResidencyPlan>(vecs, params.plan)?;
+        distant_land.plan_residency(plan, params)
     }
 
     /// Builds the landscape quadtree from `terrain.bin` and the shared buffer handles.

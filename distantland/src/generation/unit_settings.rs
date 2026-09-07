@@ -121,10 +121,12 @@ impl UnitSettingsPartitions {
             include_large_interiors: _,
             exclude_script_disable_targets: _,
             deep_water_static_cull_depth: _,
-            // Terrain-domain globals and control-map guards (not statics).
-            generate_terrain: _,
+            // Control-map limits clip terrain cells and exterior references before capture,
+            // so they affect statics membership, not just terrain globals.
             max_terrain_control_texture_size: _,
             max_terrain_control_texture_bytes: _,
+            // Terrain-domain globals (not statics).
+            generate_terrain: _,
             // Execution policy (excluded from `settings_identity`).
             force_rebuild: _,
         } = settings;

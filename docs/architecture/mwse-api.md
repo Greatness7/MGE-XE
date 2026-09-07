@@ -1,12 +1,10 @@
 # MWSE API contract
 
-Scope: the versioned C++ vtable and script opcodes MGE XE exposes to MWSE. Cross-repo,
-cross-binary; MWSE ships on its own schedule against a compiled copy of this interface.
-State: both sides at API version 3, vtables in sync.
-Next action: none. Treat `api.h` as frozen-by-slot; see "Append-only" below.
-Inspected 2026-08-18:
-  MGE-XE  `rust-rewrite`
-  MWSE    `MWSE/MWSE` @ 54c3041
+The versioned C++ vtable and script opcodes MGE XE exposes to MWSE. This is a cross-repo,
+cross-binary interface: MWSE ships on its own schedule against a compiled copy of it, so none of
+the hazards below are caught at MGE build time. Both sides are at API version 3; treat `api.h` as
+frozen-by-slot (see [Append-only](#append-only)). MWSE-side paths and line numbers refer to the
+`MWSE/MWSE` repository and drift with it.
 
 ## Direction
 
@@ -68,9 +66,8 @@ fails as a wrong-function call in a user's game.
 
 ## One live declaration
 
-`api.h` is the only interface declaration in the tree. A second, older `mge/MGEAPI.h`
-(namespace `mge`, `supported_api_version = 1`, a different v1 ABI) survived unreferenced
-until it was deleted in 2026-08. If a stale copy resurfaces, it is not the interface.
+`mge/api.h`, namespace `api`, is the only interface declaration in this tree. A declaration in
+namespace `mge` is MWSE's own copy or a stale duplicate of an older ABI, never the live interface.
 
 ## Opcodes
 

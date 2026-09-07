@@ -230,6 +230,34 @@ impl DistantLandState {
         }
 
         let mut file = self.begin_read_statics()?;
+        self.residency_resources.clear();
+        self.residency_resources.reserve(distant_subsets.size() as usize);
+        for subset_index in 0..distant_subsets.size() {
+            let subset = distant_subsets.get::<DistantSubset>(subset_index);
+            if subset.resource_id != subset_index {
+                return Err(HostError::init(format!(
+                    "Distant subset resource id {} does not match global subset index {subset_index}",
+                    subset.resource_id
+                )));
+            }
+            if subset.resource_flags & !crate::abi::DISTANT_SUBSET_STREAMABLE_MERGED != 0 {
+                return Err(HostError::init(format!(
+                    "Distant subset {subset_index} has unknown resource flags 0x{:08x}",
+                    subset.resource_flags
+                )));
+            }
+            if (subset.vbuffer == 0) != (subset.ibuffer == 0) {
+                return Err(HostError::init(format!(
+                    "Distant subset {subset_index} supplied only one GPU buffer pointer"
+                )));
+            }
+            self.residency_resources.push(crate::state::distant_land::ResidencyResource {
+                geometry_bytes: subset.geometry_bytes,
+                streamable: subset.resource_flags & crate::abi::DISTANT_SUBSET_STREAMABLE_MERGED != 0,
+                resident: subset.vbuffer != 0,
+                ..Default::default()
+            });
+        }
         let dynamic_vis_start = Instant::now();
         self.load_vis_groups_server(&mut file)?;
         log_timing("dynamic_vis.host64", elapsed_ms(dynamic_vis_start));
@@ -242,6 +270,18 @@ impl DistantLandState {
             far_static_min_size,
             very_far_static_min_size,
         )?;
+        let exterior = self.world_space_indices.get(CellName::EXTERIOR.as_bytes()).copied();
+        for (resource_id, resource) in self.residency_resources.iter().enumerate() {
+            if resource.streamable
+                && (resource.mesh_refs.len() != 1 || exterior != resource.mesh_refs.first().map(|reference| reference.world))
+            {
+                return Err(HostError::init(format!(
+                    "Streamable merged resource {resource_id} has {} placements or is not exterior-only",
+                    resource.mesh_refs.len()
+                )));
+            }
+        }
+        self.rebuild_residency_index();
         log_timing("usage.host64_read_and_build_qt", elapsed_ms(usage_start));
         log_timing("statics.host64_total", elapsed_ms(total_start));
         Ok(())
@@ -302,6 +342,7 @@ impl DistantLandState {
 
         self.current_world_space = None;
         let dynamic_vis_groups = &mut self.dynamic_vis_groups;
+        let residency_resources = &mut self.residency_resources;
         let world_spaces = &mut self.world_spaces;
         let world_space_indices = &mut self.world_space_indices;
         world_spaces.clear();
@@ -381,6 +422,7 @@ impl DistantLandState {
             let quadtree_start = Instant::now();
             let world_summary = init_distant_statics_qt(
                 dynamic_vis_groups,
+                residency_resources,
                 world_space_index,
                 world_space,
                 distant_statics,
@@ -388,7 +430,7 @@ impl DistantLandState {
                 &world_statics,
                 far_static_min_size,
                 very_far_static_min_size,
-            );
+            )?;
             quadtree_ms += elapsed_ms(quadtree_start);
             worldvis_memory_use += world_summary.memory_use;
             qt_summary.near_count += world_summary.near_count;
@@ -625,6 +667,7 @@ impl DistantLandState {
 /// Classifies expanded statics into quadtrees and records dynamic-visibility links.
 fn init_distant_statics_qt(
     dynamic_vis_groups: &mut [Vec<DynamicMeshRef>],
+    residency_resources: &mut [crate::state::distant_land::ResidencyResource],
     world_space_index: usize,
     world_space: &mut WorldSpace,
     distant_statics: &SharedVec,
@@ -632,7 +675,7 @@ fn init_distant_statics_qt(
     used_statics: &[UsedDistantStatic],
     far_static_min_size: f32,
     very_far_static_min_size: f32,
-) -> StaticsQtSummary {
+) -> Result<StaticsQtSummary, HostError> {
     let mut aabb_max = D3dxVector2 {
         x: -f32::MAX,
         y: -f32::MAX,
@@ -687,6 +730,9 @@ fn init_distant_statics_qt(
         let end_index = stat.first_subset_index + stat.num_subsets;
         for subset_index in stat.first_subset_index..end_index {
             let subset = distant_subsets.get::<DistantSubset>(subset_index);
+            let resource = residency_resources
+                .get_mut(subset.resource_id as usize)
+                .ok_or_else(|| HostError::init(format!("Distant subset resource {} is out of range", subset.resource_id)))?;
             let (bound_sphere, bound_box) = if stat.kind == STATIC_BUILDING {
                 (used.sphere, used.box_value)
             } else {
@@ -712,7 +758,7 @@ fn init_distant_statics_qt(
                     }
                 }
             };
-            let mesh = target.insert_mesh(QuadTreeMesh::with_lod(
+            let mut quadtree_mesh = QuadTreeMesh::with_lod(
                 RenderMesh {
                     enabled: 1,
                     has_alpha: (subset.has_alpha != 0) as u8,
@@ -730,7 +776,22 @@ fn init_distant_statics_qt(
                 horizon_bounds,
                 subset.far_faces,
                 subset.very_far_faces,
-            ));
+            );
+            quadtree_mesh.resident = resource.resident;
+            if !resource.resident {
+                quadtree_mesh.render_mesh.v_buffer = 0;
+                quadtree_mesh.render_mesh.i_buffer = 0;
+                quadtree_mesh.render_mesh.faces = 0;
+                quadtree_mesh.far_faces = 0;
+                quadtree_mesh.very_far_faces = 0;
+            }
+            let mesh = target.insert_mesh(quadtree_mesh);
+            resource.center = bound_sphere.center;
+            resource.mesh_refs.push(DynamicMeshRef {
+                world: world_space_index,
+                tree: target_kind,
+                mesh,
+            });
             match target_kind {
                 StaticTreeKind::Near => summary.near_count += 1,
                 StaticTreeKind::Far => summary.far_count += 1,
@@ -759,5 +820,5 @@ fn init_distant_statics_qt(
     world_space.very_far_statics.calc_volume();
     world_space.grass_statics.optimize();
     world_space.grass_statics.calc_volume();
-    summary
+    Ok(summary)
 }

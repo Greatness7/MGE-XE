@@ -75,6 +75,8 @@ fn grass_options() -> UsageFilterOptions {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     }
 }
 
@@ -111,6 +113,8 @@ fn main_load_order_collapses_groundcover_that_the_grass_list_keeps() {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     };
     let overrides = StaticOverrides::default();
 
@@ -311,6 +315,8 @@ fn disjoint_grass_plugins_resolve_identically_in_either_list_order() {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     };
     let overrides = StaticOverrides::default();
     let (forward, _, _, _, ()) =

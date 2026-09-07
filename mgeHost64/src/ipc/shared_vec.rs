@@ -283,6 +283,11 @@ impl SharedVec {
         self.shared().size()
     }
 
+    /// Clears the logical contents while retaining committed pages for reuse.
+    pub fn reset(&mut self) {
+        self.shared().set_size(0);
+    }
+
     /// Returns the number of elements currently backed by committed pages.
     pub fn capacity(&self) -> u32 {
         (self.shared().committed_bytes() / self.layout.window_bytes) * self.layout.window_size

@@ -15,22 +15,27 @@ fn pack_d3dcolor_vclr_matches_d3dcolor_little_endian_bytes() {
 }
 
 fn vertex(seed: u8) -> PackedVertex {
+    vertex_with_ordinal(seed, 0)
+}
+
+fn vertex_with_ordinal(seed: u8, ordinal: u16) -> PackedVertex {
     PackedVertex {
         position: [
             f16::from_f32(seed as f32),
             f16::from_f32(seed as f32 + 1.0),
             f16::from_f32(seed as f32 + 2.0),
-            f16::ONE,
+            f16::from_f32(f32::from(ordinal)),
         ],
         normal: [seed, seed + 1, seed + 2, 255],
         color: [seed + 3, seed + 4, seed + 5, 255],
         uv: [f16::from_f32(0.25), f16::from_f32(0.75)],
-        uv_bound: [
-            f16::from_f32(0.125),
-            f16::from_f32(0.875),
-            f16::from_f32(0.25),
-            f16::from_f32(0.75),
-        ],
+    }
+}
+
+fn palette_entry(seed: u8) -> UvBoundRecord {
+    let base = f32::from(seed) / 256.0;
+    UvBoundRecord {
+        bound: [base, base + 0.5, base + 0.125, base + 0.75],
     }
 }
 
@@ -58,6 +63,7 @@ fn subset(texture: &str, seed: u8, with_component: bool) -> PackedSubset {
         vertices: vec![vertex(seed), vertex(seed + 10), vertex(seed + 20)],
         triangles: vec![[0, 1, 2]],
         components,
+        palette: vec![palette_entry(seed)],
         has_alpha: 1,
         has_uv_controller: 0,
         horizon_footprint: HorizonFootprint {
@@ -86,15 +92,19 @@ fn distant_static(static_type: StaticType, subset: PackedSubset) -> PackedDistan
 }
 
 fn fixture() -> (PackedDistantStatics, Vec<u8>) {
+    // Grass carries no palette and keeps position.w at 1.0, matching what the packer emits.
+    let mut grass = subset("grass.dds", 31, false);
+    grass.palette.clear();
+    for (index, vertex) in grass.vertices.iter_mut().enumerate() {
+        *vertex = vertex_with_ordinal(31 + 10 * index as u8, 1);
+    }
+
     let statics: PackedDistantStatics = [
         (
             "regular.nif".to_string(),
             distant_static(StaticType::StaticTree, subset("opaque.dds", 1, true)),
         ),
-        (
-            "grass.nif".to_string(),
-            distant_static(StaticType::StaticGrass, subset("grass.dds", 31, false)),
-        ),
+        ("grass.nif".to_string(), distant_static(StaticType::StaticGrass, grass)),
     ]
     .into_iter()
     .collect();
@@ -144,6 +154,15 @@ fn rewrite_component(bytes: &mut [u8], index: usize, mutate: impl FnOnce(&mut Co
     );
 }
 
+fn rewrite_palette(bytes: &mut [u8], index: usize, mutate: impl FnOnce(&mut UvBoundRecord)) {
+    let header = header(bytes);
+    rewrite_pod(
+        bytes,
+        header.palette_table_offset as usize + index * PALETTE_RECORD_SIZE,
+        mutate,
+    );
+}
+
 fn assert_invalid(bytes: &[u8]) {
     let error = deserialize_static_meshes(bytes).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidData, "{error}");
@@ -153,18 +172,10 @@ fn assert_invalid(bytes: &[u8]) {
 fn serialize_deserialize_round_trip_preserves_stored_values() {
     let (statics, bytes) = fixture();
     let decoded = deserialize_static_meshes(&bytes).unwrap();
-    let mut expected = statics.values().cloned().collect_vec();
+    let expected = statics.values().cloned().collect_vec();
 
-    for distant_static in &mut expected {
-        if distant_static.static_type == StaticType::StaticGrass {
-            for subset in &mut distant_static.subsets {
-                for vertex in &mut subset.vertices {
-                    vertex.uv_bound = [f16::ZERO; 4];
-                }
-            }
-        }
-    }
-
+    // Nothing is dropped by the grass projection now: both layouts are identical, so the
+    // round trip is exact for grass and statics alike.
     assert_eq!(decoded, expected);
 }
 
@@ -215,6 +226,7 @@ fn header_identity_and_fixed_layout_fields_are_validated() {
         |header| header.static_record_size += 1,
         |header| header.subset_record_size += 1,
         |header| header.component_record_size += 1,
+        |header| header.palette_record_size += 1,
         |header| header.vertex_stride += 1,
         |header| header.grass_vertex_stride += 1,
         |header| header.index_element_size += 1,
@@ -235,13 +247,16 @@ fn header_table_counts_sizes_offsets_and_alignment_are_validated() {
         |header| header.static_count += 1,
         |header| header.subset_count += 1,
         |header| header.component_count += 1,
+        |header| header.palette_count += 1,
         |header| header.static_table_size += 1,
         |header| header.subset_table_size += 1,
         |header| header.component_table_size += 1,
+        |header| header.palette_table_size += 1,
         |header| header.static_table_offset += 8,
         |header| header.subset_table_offset += 1,
         |header| header.component_table_offset += 1,
-        |header| header.texture_blob_offset = header.component_table_offset,
+        |header| header.palette_table_offset += 1,
+        |header| header.texture_blob_offset = header.palette_table_offset,
         |header| header.geometry_blob_offset += 1,
         |header| header.geometry_blob_size += 1,
     ];
@@ -275,6 +290,14 @@ fn static_and_subset_ranges_are_validated() {
 
     let mut bytes = original.clone();
     rewrite_subset(&mut bytes, 0, |record| record.component_count = u32::MAX);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.first_palette_index = 1);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.palette_count = u32::MAX);
     assert_invalid(&bytes);
 }
 
@@ -370,4 +393,43 @@ fn flags_horizon_and_component_semantics_are_validated() {
         rewrite_component(&mut bytes, 0, mutation);
         assert_invalid(&bytes);
     }
+}
+
+#[test]
+fn palette_ranges_are_validated_and_entries_round_trip() {
+    let (statics, original) = fixture();
+
+    // The palette decodes back to exactly what was written, bit for bit.
+    let decoded = deserialize_static_meshes(&original).unwrap();
+    let expected = statics.values().next().unwrap().subsets[0].palette.clone();
+    assert_eq!(decoded[0].subsets[0].palette, expected);
+    assert!(!expected.is_empty());
+    // Grass carries no palette entries.
+    assert!(decoded[1].subsets[0].palette.is_empty());
+
+    // The palette table is real bytes: perturbing an entry changes the decode.
+    let mut bytes = original.clone();
+    rewrite_palette(&mut bytes, 0, |entry| entry.bound[0] = 0.375);
+    let perturbed = deserialize_static_meshes(&bytes).unwrap();
+    assert_ne!(perturbed[0].subsets[0].palette, expected);
+
+    // `first_palette_index` past the table would wrap the unsigned subtraction that the
+    // remaining-entries check performs, so it is validated on its own.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| {
+        record.first_palette_index = u32::MAX;
+        record.palette_count = 0;
+    });
+    assert_invalid(&bytes);
+
+    // Over-cap palettes are rejected even when the range is inside the table.
+    let mut bytes = original.clone();
+    rewrite_header(&mut bytes, |header| {
+        header.palette_count = UV_BOUND_PALETTE_CAP + 1;
+        header.palette_table_size = u64::from(UV_BOUND_PALETTE_CAP + 1) * PALETTE_RECORD_SIZE as u64;
+    });
+    rewrite_subset(&mut bytes, 0, |record| {
+        record.palette_count = UV_BOUND_PALETTE_CAP + 1;
+    });
+    assert_invalid(&bytes);
 }

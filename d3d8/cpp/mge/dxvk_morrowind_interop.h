@@ -149,9 +149,18 @@ IDxvkMorrowindPplInterop1 : public IUnknown {
         const DxvkMorrowindPplDrawV1* draw) = 0;
 };
 
+MIDL_INTERFACE("2866403d-8842-4bde-81f7-db4aa81f2d2d")
+IDxvkMorrowindMemoryInterop1 : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE GetDeviceLocalMemoryBudgetV1(
+        uint64_t* memoryBudget,
+        uint64_t* memoryUsed) = 0;
+};
+
 #ifndef _MSC_VER
 __CRT_UUID_DECL(IDxvkMorrowindInterop,
     0x2ff12bfc, 0x4622, 0x4d9d, 0xbc, 0xbf, 0x15, 0x01, 0xf3, 0x7e, 0x8a, 0xa3);
 __CRT_UUID_DECL(IDxvkMorrowindPplInterop1,
     0x275c3348, 0x5724, 0x4a7e, 0xaa, 0xc0, 0x46, 0xce, 0xda, 0x96, 0x57, 0x39);
+__CRT_UUID_DECL(IDxvkMorrowindMemoryInterop1,
+    0x2866403d, 0x8842, 0x4bde, 0x81, 0xf7, 0xdb, 0x4a, 0xa8, 0x1f, 0x2d, 0x2d);
 #endif

@@ -71,6 +71,8 @@ frames. See [distantland-lifecycle.md](distantland-lifecycle.md).
 | `SetHorizonConfig` | live terrain horizon-culling tuning parameters | Push live horizon-culling config (see [horizon-culling.md](horizon-culling.md)). |
 | `FinishHorizonFrame` | none | Close the current render frame for the adaptive horizon gate: ticks the gate once with this frame's accumulated precise-static stats. Sent once per rendered frame while horizon culling is enabled (after both the main distant-static pass and any water-reflection static pass), independent of `SortVisibleSet`, so a frame with only a reflection query still ticks and stats never bleed across frames. |
 | `QueryOutputStatus` | status out parameter | Poll the startup-generation worker's published output state (`Pending`, `Ready`, or `Failed`). |
+| `UpdateResidency` | commit-vector `VecId` → `success` | Apply acknowledged merged-static resident, unloaded, or unavailable transitions and buffer pointers to every quadtree placement. |
+| `PlanResidency` | plan-vector `VecId`, center, epoch, radial limits, work limits, and client byte headroom | Advance the bounded host planner and return admit/evict requests. |
 
 `Command::None = 0` is the default placeholder, not an operation; the host dispatches it as a
 no-op. RPC completion means only that dispatch finished — both init commands report their real
@@ -144,7 +146,7 @@ Keep them bit-identical:
   On the C++ side `bridge.h` carries `static_assert(sizeof(Parameters) == 136)` and
   `dlformat.h`/`distantland.h` carry the format and runtime-constant assertions. **Any change
   is a lockstep change to both halves plus an assertion covering it.**
-- `DistantSubset` is 128 bytes in the current ABI. The original 64-byte subset metadata
+- `DistantSubset` is 144 bytes in the current ABI. The original 64-byte subset metadata
   comes first, then a 56-byte generated `HorizonFootprint` at offset 64, `farFaces`
   at offset 120, and `veryFarFaces` at offset 124.
 - `DistantStaticParameters` is 20 bytes: the static/subset vector IDs, then

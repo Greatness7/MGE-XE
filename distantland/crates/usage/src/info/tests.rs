@@ -11,6 +11,8 @@ fn make_args() -> UsageFilterOptions {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     }
 }
 
@@ -317,45 +319,6 @@ fn unresolved_master_and_local_reference_keys_do_not_collide() {
     placements.sort_unstable();
     assert_eq!(placements, [10.0_f32.to_bits(), 20.0_f32.to_bits()]);
     assert_eq!(loaded.warnings[0].code, "grass_plugin_master_unselected");
-}
-
-#[test]
-fn active_content_master_warns_only_for_ignored_deletes() {
-    let temp = tempfile::tempdir().unwrap();
-    let data_dir = temp.path();
-    std::fs::create_dir_all(data_dir.join("Meshes/grass")).unwrap();
-    std::fs::write(data_dir.join("Meshes/grass/blade.nif"), b"").unwrap();
-
-    let content_path = data_dir.join("content.esm");
-    let grass_path = data_dir.join("dependent-grass.esp");
-    grass_plugin_file(&content_path, &[], None, &[]);
-    grass_plugin_file(
-        &grass_path,
-        &["content.esm"],
-        Some(("grass_blade", "grass\\blade.nif")),
-        &[(
-            (0, 0),
-            vec![(1, 1, "grass_blade", 10.0, false), (1, 2, "grass_blade", 20.0, true)],
-        )],
-    );
-
-    let vfs = grass_test_vfs(data_dir, vec![content_path.clone()]);
-    let grass_paths = vec![grass_path];
-    let sources = ReferenceSources::from_plugin_lists(&[content_path], &grass_paths);
-    let loaded = load_grass_plugins(
-        &vfs,
-        &grass_paths,
-        &HashMap::new(),
-        &make_args(),
-        &StaticOverrides::default(),
-        &sources,
-    )
-    .unwrap();
-
-    assert_eq!(loaded.warnings.len(), 1);
-    assert_eq!(loaded.warnings[0].code, "grass_plugin_content_master_delete_ignored");
-    assert!(loaded.warnings[0].message.contains("1 delete reference(s)"));
-    assert!(!loaded.warnings[0].message.contains("kept"));
 }
 
 type TestGrassInterior<'a> = (&'a str, Vec<TestGrassRef<'a>>);
@@ -1447,8 +1410,196 @@ fn buried_reference_filter_returns_its_aggregate_stats() {
             true
         },
     );
-
     assert_eq!(stats.refs_considered, 1);
     assert_eq!(stats.buried, 1);
     assert_eq!(usage.exterior_references_count(), 0);
+}
+
+fn make_dummy_terrain_cell(grid: (i32, i32)) -> crate::TerrainCell<'static> {
+    crate::TerrainCell {
+        grid,
+        heights: Box::new([[0.0; 65]; 65]),
+        normals: crate::TerrainNormals::Default,
+        colors: crate::TerrainColors::Default,
+        texture_indices: Box::new([[0; 16]; 16]),
+        texture_table: crate::TerrainTextureTable::default(),
+    }
+}
+
+#[test]
+fn shrink_retains_dense_cluster_and_drops_far_outlier() {
+    let mut usage = UsageInfo::default();
+    usage.use_test_reference_source();
+
+    for x in 0..5 {
+        for y in 0..5 {
+            usage.terrain_cells.insert((x, y), make_dummy_terrain_cell((x, y)));
+        }
+    }
+    usage.terrain_cells.insert((100, 2), make_dummy_terrain_cell((100, 2)));
+
+    let ref_cluster = make_reference("mesh.nif", Vec3::new(2.0 * 8192.0, 2.0 * 8192.0, 0.0));
+    let ref_outlier = make_reference("mesh.nif", Vec3::new(100.0 * 8192.0, 2.0 * 8192.0, 0.0));
+    usage.exterior_references_mut().insert(StableRefKey::test(1), ref_cluster);
+    usage.exterior_references_mut().insert(StableRefKey::test(2), ref_outlier);
+
+    let limits = TerrainControlClipLimits {
+        max_dimension_cells: 10,
+        max_bytes: u64::MAX,
+    };
+
+    usage.clip_terrain_control_region(&limits);
+    let clip = usage.terrain_control_clip().expect("clip must fire");
+
+    assert_eq!(clip.dropped_cells, vec![(100, 2)]);
+    assert_eq!(clip.retained_min, [0, 0]);
+    assert_eq!(clip.retained_max, [4, 4]);
+    assert_eq!(usage.terrain_cells.len(), 25);
+    assert!(!usage.terrain_cells.contains_key(&(100, 2)));
+
+    let exterior = usage.exterior_references().unwrap();
+    assert_eq!(exterior.len(), 1);
+    assert!(exterior.contains_key(&StableRefKey::test(1)));
+    assert!(!exterior.contains_key(&StableRefKey::test(2)));
+}
+
+#[test]
+fn shrink_tie_break_order_is_deterministic() {
+    let mut usage = UsageInfo::default();
+    for x in 0..10 {
+        for y in 0..10 {
+            usage.terrain_cells.insert((x, y), make_dummy_terrain_cell((x, y)));
+        }
+    }
+
+    let limits = TerrainControlClipLimits {
+        max_dimension_cells: 9,
+        max_bytes: u64::MAX,
+    };
+
+    usage.clip_terrain_control_region(&limits);
+    let clip = usage.terrain_control_clip().expect("clip must fire");
+
+    assert_eq!(clip.retained_min, [1, 1]);
+    assert_eq!(clip.retained_max, [9, 9]);
+    assert_eq!(clip.dropped_cells.len(), 19);
+}
+
+#[test]
+fn shrink_reapply_clips_grass_placements_in_dropped_region() {
+    let mut usage = UsageInfo::default();
+    usage.use_test_reference_source();
+
+    for x in 0..3 {
+        for y in 0..3 {
+            usage.terrain_cells.insert((x, y), make_dummy_terrain_cell((x, y)));
+        }
+    }
+    usage.terrain_cells.insert((50, 0), make_dummy_terrain_cell((50, 0)));
+
+    let limits = TerrainControlClipLimits {
+        max_dimension_cells: 5,
+        max_bytes: u64::MAX,
+    };
+
+    usage.clip_terrain_control_region(&limits);
+
+    let grass_ref = make_reference("grass.nif", Vec3::new(50.0 * 8192.0, 0.0, 0.0));
+    usage.exterior_references_mut().insert(StableRefKey::test(99), grass_ref);
+
+    usage.reapply_terrain_control_clip();
+
+    let exterior = usage.exterior_references().unwrap();
+    assert!(!exterior.contains_key(&StableRefKey::test(99)));
+}
+
+#[test]
+fn shrink_clips_by_memory_budget() {
+    let mut usage = UsageInfo::default();
+    for x in 0..20 {
+        for y in 0..20 {
+            usage.terrain_cells.insert((x, y), make_dummy_terrain_cell((x, y)));
+        }
+    }
+    let limits = TerrainControlClipLimits {
+        max_dimension_cells: 100,
+        max_bytes: 500_000,
+    };
+    usage.clip_terrain_control_region(&limits);
+    let clip = usage.terrain_control_clip().expect("clip must fire on bytes");
+    let ([min_x, min_y], [max_x, max_y]) = (clip.retained_min, clip.retained_max);
+    let width = (max_x - min_x + 1) as u64 * 16;
+    let height = (max_y - min_y + 1) as u64 * 16;
+    assert!(width * height * 8 <= 500_000);
+}
+
+#[test]
+fn shrink_leaves_the_map_untouched_when_no_region_survives() {
+    let mut usage = UsageInfo::default();
+    for x in 0..3 {
+        for y in 0..3 {
+            usage.terrain_cells.insert((x, y), make_dummy_terrain_cell((x, y)));
+        }
+    }
+
+    // A cap below one cell of material admits no region at all.
+    let limits = TerrainControlClipLimits {
+        max_dimension_cells: 0,
+        max_bytes: u64::MAX,
+    };
+
+    usage.clip_terrain_control_region(&limits);
+
+    // No clip is recorded and no cell is dropped, so the terrain guard still fails loudly
+    // with its full diagnostics instead of publishing a world with no terrain.
+    assert!(usage.terrain_control_clip().is_none());
+    assert_eq!(usage.terrain_cells.len(), 9);
+}
+
+#[test]
+fn shrink_pathological_distant_outlier_completes_and_retains_cluster() {
+    let mut usage = UsageInfo::default();
+    usage.use_test_reference_source();
+
+    // Dense 5x5 cluster around origin: (0, 0) to (4, 4)
+    for x in 0..5 {
+        for y in 0..5 {
+            usage.terrain_cells.insert((x, y), make_dummy_terrain_cell((x, y)));
+        }
+    }
+    // Pathological outliers parked at extreme coordinates
+    usage
+        .terrain_cells
+        .insert((-100_000, 2), make_dummy_terrain_cell((-100_000, 2)));
+    usage
+        .terrain_cells
+        .insert((2, 200_000), make_dummy_terrain_cell((2, 200_000)));
+
+    let ref_cluster = make_reference("mesh.nif", Vec3::new(2.0 * 8192.0, 2.0 * 8192.0, 0.0));
+    let ref_outlier_x = make_reference("mesh.nif", Vec3::new(-100_000.0 * 8192.0, 2.0 * 8192.0, 0.0));
+    let ref_outlier_y = make_reference("mesh.nif", Vec3::new(2.0 * 8192.0, 200_000.0 * 8192.0, 0.0));
+    usage.exterior_references_mut().insert(StableRefKey::test(1), ref_cluster);
+    usage.exterior_references_mut().insert(StableRefKey::test(2), ref_outlier_x);
+    usage.exterior_references_mut().insert(StableRefKey::test(3), ref_outlier_y);
+
+    let limits = TerrainControlClipLimits {
+        max_dimension_cells: 10,
+        max_bytes: u64::MAX,
+    };
+
+    usage.clip_terrain_control_region(&limits);
+    let clip = usage.terrain_control_clip().expect("clip must fire");
+
+    assert_eq!(clip.retained_min, [0, 0]);
+    assert_eq!(clip.retained_max, [4, 4]);
+    assert_eq!(clip.dropped_cells, vec![(-100_000, 2), (2, 200_000)]);
+    assert_eq!(usage.terrain_cells.len(), 25);
+    assert!(!usage.terrain_cells.contains_key(&(-100_000, 2)));
+    assert!(!usage.terrain_cells.contains_key(&(2, 200_000)));
+
+    let exterior = usage.exterior_references().unwrap();
+    assert_eq!(exterior.len(), 1);
+    assert!(exterior.contains_key(&StableRefKey::test(1)));
+    assert!(!exterior.contains_key(&StableRefKey::test(2)));
+    assert!(!exterior.contains_key(&StableRefKey::test(3)));
 }

@@ -1,4 +1,4 @@
-//! Typed identity of one packed static-mesh record in the sharded XESTAT05 output.
+//! Typed identity of one packed static-mesh record in the sharded XESTAT06 output.
 //!
 //! [`StaticRecordKey`](crate::record_key::StaticRecordKey) is the single source of truth for where a record lives (which
 //! shard, and its position inside that shard) and how it is named in the persisted

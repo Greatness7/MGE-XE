@@ -23,7 +23,7 @@ pub const VIS_STATIC: Dword = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 /// Bit in `mge_flags` that enables distant-land rendering.
 pub const USE_DISTANT_LAND: Dword = 1 << 17;
 /// On-disk distant-land asset version expected by this host build.
-pub const MGE_DL_VERSION: u8 = 17;
+pub const MGE_DL_VERSION: u8 = 18;
 /// Terrain file magic for `terrain.bin`.
 pub const TERRAIN_FILE_MAGIC: [u8; 8] = *b"XELAND02";
 /// Terrain file version.

@@ -4,7 +4,7 @@ use half::f16;
 use super::*;
 use crate::distant_statics::{
     BoundingBox, BoundingSphere, COMPONENT_RECORD_SIZE, HorizonFootprint, PackedDistantStatic, PackedGrassVertex,
-    PackedSubset, PackedVertex, SUBSET_RECORD_SIZE, StaticType,
+    PackedSubset, PackedVertex, SUBSET_RECORD_SIZE, StaticType, UvBoundRecord,
 };
 
 fn component(first_triangle: u32, triangle_count: u32) -> ComponentRecord {
@@ -75,6 +75,7 @@ fn make_test_subset(texture: &str, vertex_count: usize, triangle_count: usize) -
         vertices,
         triangles,
         components: Vec::new(),
+        palette: Vec::new(),
         has_alpha: 0,
         has_uv_controller: 1,
         horizon_footprint: HorizonFootprint::default(),
@@ -96,6 +97,7 @@ fn subset_with(texture: &str, vertices: Vec<PackedVertex>, triangles: Vec<[u16; 
         vertices,
         triangles,
         components: Vec::new(),
+        palette: Vec::new(),
         has_alpha: 0,
         has_uv_controller: 0,
         horizon_footprint: HorizonFootprint::default(),
@@ -103,15 +105,13 @@ fn subset_with(texture: &str, vertices: Vec<PackedVertex>, triangles: Vec<[u16; 
     }
 }
 
-/// A vertex with distinctive, non-identity values in every field (including `uv_bound`).
+/// A vertex with distinctive, non-identity values in every field.
 fn distinctive_vertex(seed: u8) -> PackedVertex {
     PackedVertex {
         position: [f16::from_f32(seed as f32); 4],
         normal: [seed, seed.wrapping_add(1), seed.wrapping_add(2), seed.wrapping_add(3)],
         color: [seed.wrapping_add(10), seed.wrapping_add(20), seed.wrapping_add(30), 255],
         uv: [f16::from_f32(0.25), f16::from_f32(0.75)],
-        // Non-identity so a regression that serialized it for grass would be caught.
-        uv_bound: [f16::from_f32(0.5); 4],
     }
 }
 
@@ -154,15 +154,16 @@ fn v4_empty_file() {
     let statics: PackedDistantStatics = PackedDistantStatics::default();
     let bytes = serialize_static_meshes(&statics).unwrap();
 
-    assert_eq!(&bytes[..8], b"XESTAT05");
+    assert_eq!(&bytes[..8], b"XESTAT06");
     let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
-    assert_eq!(header.version, 5);
+    assert_eq!(header.version, 6);
     assert_eq!(header.header_size, HEADER_SIZE as u32);
-    assert_eq!(HEADER_SIZE, 136);
-    assert_eq!(SUBSET_RECORD_SIZE, 144);
+    assert_eq!(HEADER_SIZE, 160);
+    assert_eq!(SUBSET_RECORD_SIZE, 152);
     assert_eq!(COMPONENT_RECORD_SIZE, 16);
+    assert_eq!(PALETTE_RECORD_SIZE, 16);
     assert_eq!(header.vertex_stride, STATIC_VERTEX_STRIDE as u32);
-    assert_eq!(header.vertex_stride, 28);
+    assert_eq!(header.vertex_stride, 20);
     assert_eq!(header.grass_vertex_stride, GRASS_VERTEX_STRIDE as u32);
     assert_eq!(header.grass_vertex_stride, 20);
     assert_eq!(header.reserved, 0);
@@ -175,6 +176,10 @@ fn v4_empty_file() {
     assert_eq!(header.component_table_size, 0);
     assert_eq!(header.component_record_size, COMPONENT_RECORD_SIZE as u32);
     assert_eq!(header.component_count, 0);
+    assert_eq!(header.palette_table_offset, HEADER_SIZE as u64);
+    assert_eq!(header.palette_table_size, 0);
+    assert_eq!(header.palette_record_size, PALETTE_RECORD_SIZE as u32);
+    assert_eq!(header.palette_count, 0);
     assert_eq!(header.texture_blob_offset, HEADER_SIZE as u64);
     assert_eq!(header.texture_blob_size, 0);
 }
@@ -284,7 +289,70 @@ fn v4_subset_table_aligned() {
     let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
 
     assert_eq!(header.subset_table_offset % 8, 0);
+    assert_eq!(header.component_table_offset % 8, 0);
+    assert_eq!(header.palette_table_offset % 8, 0);
     assert_eq!(header.geometry_blob_offset % 8, 0);
+}
+
+fn palette_entry(seed: u32) -> UvBoundRecord {
+    let base = seed as f32 / 1024.0;
+    UvBoundRecord {
+        bound: [base, base + 0.5, base + 0.125, base + 0.75],
+    }
+}
+
+#[test]
+fn v4_palette_table_ranges_are_contiguous_and_bytes_round_trip() {
+    let mut first = make_test_subset("a1.dds", 1, 1);
+    first.palette = vec![palette_entry(1), palette_entry(2)];
+    let mut second = make_test_subset("a2.dds", 1, 1);
+    second.palette = vec![palette_entry(3)];
+    let grass = make_test_subset("g.dds", 1, 1); // empty palette
+
+    let distant_statics: PackedDistantStatics = [
+        make_test_static("a.nif", vec![first.clone(), second.clone()]),
+        make_typed_static("g.nif", StaticType::StaticGrass, vec![grass]),
+    ]
+    .into_iter()
+    .collect();
+
+    let bytes = serialize_static_meshes(&distant_statics).unwrap();
+    let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+
+    assert_eq!(header.palette_count, 3);
+    assert_eq!(header.palette_table_size, 3 * PALETTE_RECORD_SIZE as u64);
+
+    let s0 = subset_record(&bytes, header, 0);
+    let s1 = subset_record(&bytes, header, 1);
+    let s2 = subset_record(&bytes, header, 2);
+    assert_eq!((s0.first_palette_index, s0.palette_count), (0, 2));
+    assert_eq!((s1.first_palette_index, s1.palette_count), (2, 1));
+    assert_eq!((s2.first_palette_index, s2.palette_count), (3, 0));
+
+    let table_start = header.palette_table_offset as usize;
+    let table_end = table_start + header.palette_table_size as usize;
+    let written: &[UvBoundRecord] = bytemuck::cast_slice(&bytes[table_start..table_end]);
+    assert_eq!(written, [first.palette[0], first.palette[1], second.palette[0]]);
+}
+
+#[test]
+fn v4_over_cap_palette_rejected() {
+    let mut subset = make_test_subset("a.dds", 1, 1);
+    subset.palette = (0..=UV_BOUND_PALETTE_CAP).map(palette_entry).collect();
+    let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+
+    assert!(serialize_static_meshes(&distant_statics).is_err());
+}
+
+#[test]
+fn v4_at_cap_palette_accepted() {
+    let mut subset = make_test_subset("a.dds", 1, 1);
+    subset.palette = (0..UV_BOUND_PALETTE_CAP).map(palette_entry).collect();
+    let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+
+    let bytes = serialize_static_meshes(&distant_statics).unwrap();
+    let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+    assert_eq!(header.palette_count, UV_BOUND_PALETTE_CAP);
 }
 
 #[test]
@@ -476,7 +544,7 @@ fn v4_packed_grass_vertex_layout_and_color() {
 }
 
 #[test]
-fn v4_regular_subset_writes_28_byte_vertices() {
+fn v4_regular_subset_writes_20_byte_vertices() {
     let distant_statics: PackedDistantStatics = [make_typed_static(
         "r.nif",
         StaticType::StaticTree,
@@ -488,7 +556,7 @@ fn v4_regular_subset_writes_28_byte_vertices() {
     let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
     let sub = subset_record(&bytes, header, 0);
 
-    assert_eq!(STATIC_VERTEX_STRIDE, 28);
+    assert_eq!(STATIC_VERTEX_STRIDE, 20);
     assert_eq!(sub.index_offset - sub.vertex_offset, 4 * STATIC_VERTEX_STRIDE as u64);
 }
 
@@ -510,7 +578,7 @@ fn v4_grass_subset_writes_20_byte_vertices() {
 }
 
 #[test]
-fn v4_grass_serialized_bytes_drop_uv_bound() {
+fn v4_grass_serialized_bytes_match_the_grass_projection() {
     let v0 = distinctive_vertex(1);
     let v1 = distinctive_vertex(2);
     let subset = subset_with("grass.dds", vec![v0, v1], vec![[0, 1, 2]]);
@@ -522,14 +590,13 @@ fn v4_grass_serialized_bytes_drop_uv_bound() {
     let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
     let sub = subset_record(&bytes, header, 0);
 
-    // Two grass vertices occupy exactly 2 * 20 bytes (no 8-byte uv_bound per vertex).
     assert_eq!(sub.index_offset - sub.vertex_offset, 2 * GRASS_VERTEX_STRIDE as u64);
 
     let vo = sub.vertex_offset as usize;
     let g0 = bytemuck::from_bytes::<PackedGrassVertex>(&bytes[vo..vo + 20]);
     let g1 = bytemuck::from_bytes::<PackedGrassVertex>(&bytes[vo + 20..vo + 40]);
 
-    // Bytes are exactly the projection: position, normal, color, uv present; uv_bound gone.
+    // Bytes are exactly the projection: position, normal, color, uv, in that order.
     assert_eq!(*g0, v0.to_grass());
     assert_eq!(*g1, v1.to_grass());
     assert_eq!(g0.color, v0.color);

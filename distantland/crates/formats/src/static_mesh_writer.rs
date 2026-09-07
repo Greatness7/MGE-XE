@@ -1,20 +1,20 @@
-//! Serialization of one MGE-XE `static_meshes` v5 POD container.
+//! Serialization of one MGE-XE `static_meshes` v6 POD container.
 
 use anyhow::{anyhow, bail};
 use hashbrown::HashMap;
 
 use crate::PackedDistantStatics;
 use crate::distant_statics::{
-    COMPONENT_RECORD_SIZE, ComponentRecord, GRASS_VERTEX_STRIDE, HEADER_SIZE, INDEX_ELEMENT_SIZE, STATIC_MESHES_MAGIC,
-    STATIC_MESHES_VERSION, STATIC_RECORD_SIZE, STATIC_VERTEX_STRIDE, SUBSET_RECORD_SIZE, StaticMeshesFileHeader,
-    StaticRecord, StaticType, SubsetRecord,
+    COMPONENT_RECORD_SIZE, ComponentRecord, GRASS_VERTEX_STRIDE, HEADER_SIZE, INDEX_ELEMENT_SIZE, PALETTE_RECORD_SIZE,
+    STATIC_MESHES_MAGIC, STATIC_MESHES_VERSION, STATIC_RECORD_SIZE, STATIC_VERTEX_STRIDE, SUBSET_RECORD_SIZE,
+    StaticMeshesFileHeader, StaticRecord, StaticType, SubsetRecord, UV_BOUND_PALETTE_CAP,
 };
 
 /// Returns the geometry vertex stride for a static's classification.
 ///
-/// Grass uses the 20-byte `PackedGrassVertex` layout; everything else uses the 28-byte
-/// `PackedVertex` layout. Used by every serializer pass so the size, offset, and final
-/// byte-write computations stay consistent.
+/// Both layouts are 20 bytes today, but the two constants stay separate because the C++ loader
+/// declares them separately and `position.w` means different things in each. Used by every
+/// serializer pass so the size, offset, and final byte-write computations stay consistent.
 fn vertex_stride_for(static_type: StaticType) -> u64 {
     match static_type {
         StaticType::StaticGrass => GRASS_VERTEX_STRIDE as u64,
@@ -89,14 +89,17 @@ fn validate_component_records(components: &[ComponentRecord], triangle_count: u3
     Ok(())
 }
 
-/// Serializes distant statics into the v5 `static_meshes` POD binary format.
+/// Serializes distant statics into the v6 `static_meshes` POD binary format.
 ///
 /// Uses a two-pass approach: first counts everything and validates sizes, then
-/// writes header, tables, component records, texture paths, and geometry blocks in order.
+/// writes header, tables, component records, palette records, texture paths, and geometry
+/// blocks in order.
 ///
 /// # Errors
 ///
-/// Returns an error if any count or size exceeds the serialized field widths.
+/// Returns an error if any count or size exceeds the serialized field widths, or if a subset's
+/// palette exceeds [`UV_BOUND_PALETTE_CAP`] — the shader's palette array is fixed at that size,
+/// so an over-cap subset would index past it.
 pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow::Result<Vec<u8>> {
     // --- PASS 1: count and validate ---
     let static_count: u32 = distant_statics
@@ -106,6 +109,7 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
     let mut texture_blob_size: u64 = 0;
     let mut geometry_blob_size: u64 = 0;
     let mut component_count: u32 = 0;
+    let mut palette_count: u32 = 0;
     let mut texture_paths: HashMap<&str, (u64, u32)> = HashMap::new();
     let mut texture_path_order: Vec<&str> = Vec::new();
 
@@ -154,6 +158,20 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
 
             validate_component_records(&subset.components, triangle_count)?;
 
+            let subset_palette_count: u32 = subset
+                .palette
+                .len()
+                .try_into()
+                .map_err(|_| anyhow!("subset palette count exceeds u32"))?;
+            if subset_palette_count > UV_BOUND_PALETTE_CAP {
+                bail!(
+                    "subset UV-bound palette has {subset_palette_count} entries, exceeding the cap of {UV_BOUND_PALETTE_CAP}"
+                );
+            }
+            palette_count = palette_count
+                .checked_add(subset_palette_count)
+                .ok_or_else(|| anyhow!("palette count exceeds u32"))?;
+
             let vertex_bytes = u64::from(vertex_count) * vertex_stride_for(ds.static_type);
             let index_bytes = u64::from(triangle_count) * 3 * INDEX_ELEMENT_SIZE as u64;
 
@@ -193,8 +211,17 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
     let component_table_size = u64::from(component_count)
         .checked_mul(COMPONENT_RECORD_SIZE as u64)
         .ok_or_else(|| anyhow!("component table size overflow"))?;
-    let texture_blob_offset = component_table_offset
-        .checked_add(component_table_size)
+    let palette_table_offset = align_up(
+        component_table_offset
+            .checked_add(component_table_size)
+            .ok_or_else(|| anyhow!("palette table offset overflow"))?,
+        8,
+    )?;
+    let palette_table_size = u64::from(palette_count)
+        .checked_mul(PALETTE_RECORD_SIZE as u64)
+        .ok_or_else(|| anyhow!("palette table size overflow"))?;
+    let texture_blob_offset = palette_table_offset
+        .checked_add(palette_table_size)
         .ok_or_else(|| anyhow!("texture blob offset overflow"))?;
     let geometry_blob_offset = align_up(
         texture_blob_offset
@@ -211,6 +238,9 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
     let component_table_offset_usize: usize = component_table_offset
         .try_into()
         .map_err(|_| anyhow!("component table offset exceeds usize"))?;
+    let palette_table_offset_usize: usize = palette_table_offset
+        .try_into()
+        .map_err(|_| anyhow!("palette table offset exceeds usize"))?;
     let texture_blob_offset_usize: usize = texture_blob_offset
         .try_into()
         .map_err(|_| anyhow!("texture blob offset exceeds usize"))?;
@@ -247,6 +277,10 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
         component_table_size,
         component_record_size: COMPONENT_RECORD_SIZE as u32,
         component_count,
+        palette_table_offset,
+        palette_table_size,
+        palette_record_size: PALETTE_RECORD_SIZE as u32,
+        palette_count,
     };
     buf.extend_from_slice(bytemuck::bytes_of(&header));
 
@@ -273,6 +307,7 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
     // Subset table (with pre-computed offsets)
     let mut geom_cursor: u64 = 0;
     let mut first_component: u32 = 0;
+    let mut first_palette: u32 = 0;
     for ds in distant_statics.values() {
         for subset in &ds.subsets {
             let (texture_relative_offset, texture_path_length) = *texture_paths
@@ -304,6 +339,11 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                 .len()
                 .try_into()
                 .map_err(|_| anyhow!("subset component count exceeds u32"))?;
+            let subset_palette_count: u32 = subset
+                .palette
+                .len()
+                .try_into()
+                .map_err(|_| anyhow!("subset palette count exceeds u32"))?;
 
             let rec = SubsetRecord {
                 sphere: subset.bounding_sphere,
@@ -318,11 +358,16 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
                 horizon_footprint: subset.horizon_footprint,
                 first_component_index: first_component,
                 component_count: subset_component_count,
+                first_palette_index: first_palette,
+                palette_count: subset_palette_count,
             };
             buf.extend_from_slice(bytemuck::bytes_of(&rec));
             first_component = first_component
                 .checked_add(subset_component_count)
                 .ok_or_else(|| anyhow!("component range overflow"))?;
+            first_palette = first_palette
+                .checked_add(subset_palette_count)
+                .ok_or_else(|| anyhow!("palette range overflow"))?;
 
             geom_cursor = geom_cursor
                 .checked_add(vertex_bytes)
@@ -347,6 +392,22 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
         "component table size mismatch"
     );
 
+    // Padding to palette table.
+    pad_to(&mut buf, palette_table_offset_usize);
+
+    // Palette table.
+    let palette_table_start = buf.len();
+    for ds in distant_statics.values() {
+        for subset in &ds.subsets {
+            buf.extend_from_slice(bytemuck::cast_slice(&subset.palette));
+        }
+    }
+    debug_assert_eq!(
+        (buf.len() - palette_table_start) as u64,
+        palette_table_size,
+        "palette table size mismatch"
+    );
+
     // Padding to texture blob.
     pad_to(&mut buf, texture_blob_offset_usize);
 
@@ -365,8 +426,8 @@ pub fn serialize_static_meshes(distant_statics: &PackedDistantStatics) -> anyhow
     // Padding to geometry blob
     pad_to(&mut buf, geometry_blob_offset_usize);
 
-    // Geometry: vertices then indices per subset. Regular statics serialize as a bulk
-    // 28-byte cast; grass projects each vertex onto the 20-byte `PackedGrassVertex` layout.
+    // Geometry: vertices then indices per subset. Regular statics serialize as a bulk cast;
+    // grass projects each vertex onto the `PackedGrassVertex` layout.
     for ds in distant_statics.values() {
         let is_grass = ds.static_type == StaticType::StaticGrass;
         for subset in &ds.subsets {

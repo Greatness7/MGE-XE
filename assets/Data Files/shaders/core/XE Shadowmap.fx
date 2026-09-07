@@ -54,7 +54,8 @@ struct StaticShadowVertOut {
 StaticShadowVertOut StaticShadowVS(StatVertIn IN) {
     StaticShadowVertOut OUT;
 
-    OUT.pos = mul(IN.pos, world);
+    // pos.w carries the palette ordinal, so it must not scale the world translation.
+    OUT.pos = mul(float4(IN.pos.xyz, 1), world);
     OUT.pos = mul(OUT.pos, shadowViewProj[0]);
 
     // Clamp vertices to front plane to avoid clipping and shadow loss
@@ -64,7 +65,7 @@ StaticShadowVertOut StaticShadowVS(StatVertIn IN) {
     OUT.depth = OUT.pos.z / OUT.pos.w;
 
     OUT.texcoords = IN.texcoords;
-    OUT.uvBounds = IN.uvBounds;
+    OUT.uvBounds = uvBoundPalette[(int)IN.pos.w];
     return OUT;
 }
 

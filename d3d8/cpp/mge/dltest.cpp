@@ -121,7 +121,7 @@ namespace TerrainBin {
 
 namespace StaticMeshesBin {
     namespace Test {
-        // A v3 header describing a valid two-static (one regular, one grass) file.
+        // A v6 header describing a valid two-static (one regular, one grass) file.
         // ValidateHeader only inspects header fields against fileSize, so the section
         // bytes themselves are not materialized here.
         StaticMeshesFileHeader build_valid_header() {
@@ -131,24 +131,32 @@ namespace StaticMeshesBin {
             header.header_size = SerializedHeaderSize;
             header.static_record_size = SerializedStaticRecordSize;
             header.subset_record_size = SerializedSubsetRecordSize;
+            header.component_record_size = SerializedComponentRecordSize;
+            header.palette_record_size = SerializedPaletteRecordSize;
             header.vertex_stride = VertexStride;
             header.index_element_size = IndexElementSize;
             header.static_count = 2;
             header.subset_count = 2;
-            header.static_table_offset = SerializedHeaderSize;                 // 112
+            header.static_table_offset = SerializedHeaderSize;                 // 160
             header.static_table_size = 2ull * SerializedStaticRecordSize;      // 104
-            header.subset_table_offset = 216;                                  // 112 + 104
-            header.subset_table_size = 2ull * SerializedSubsetRecordSize;      // 160
-            header.texture_blob_offset = 376;                                  // 216 + 160
+            header.subset_table_offset = 264;                                  // 160 + 104
+            header.subset_table_size = 2ull * SerializedSubsetRecordSize;      // 304
+            header.component_table_offset = 568;                               // 264 + 304, 8-aligned
+            header.component_table_size = 0;
+            header.component_count = 0;
+            header.palette_count = 1;                                          // the regular subset
+            header.palette_table_offset = 568;                                 // empty component table
+            header.palette_table_size = 1ull * SerializedPaletteRecordSize;    // 16
+            header.texture_blob_offset = 584;                                  // 568 + 16
             header.texture_blob_size = 4;                                      // "a\0b\0"
-            header.geometry_blob_offset = 384;                                 // 8-aligned, after texture blob
-            header.geometry_blob_size = 156;                                   // (3*28 + 6) + (3*20 + 6)
+            header.geometry_blob_offset = 592;                                 // 8-aligned, after texture blob
+            header.geometry_blob_size = 132;                                   // (3*20 + 6) * 2
             header.grass_vertex_stride = GrassVertexStride;
             header.reserved = 0;
             return header;
         }
 
-        const std::uint64_t kFileSize = 540;   // geometry_blob_offset + geometry_blob_size
+        const std::uint64_t kFileSize = 724;   // geometry_blob_offset + geometry_blob_size
 
         void run_header_validation_test() {
             auto header = build_valid_header();
@@ -161,7 +169,10 @@ namespace StaticMeshesBin {
             { auto h = header; h.magic[7] = '2'; assert(ValidateHeader(h, kFileSize) == HeaderValidation::InvalidMagic); }
             { auto h = header; h.version = 2; assert(ValidateHeader(h, kFileSize) == HeaderValidation::UnsupportedVersion); }
             { auto h = header; h.header_size = 104; assert(ValidateHeader(h, kFileSize) == HeaderValidation::InvalidHeaderSize); }
-            { auto h = header; h.vertex_stride = 20; assert(ValidateHeader(h, kFileSize) == HeaderValidation::UnsupportedVertexStride); }
+            { auto h = header; h.palette_record_size = 8; assert(ValidateHeader(h, kFileSize) == HeaderValidation::InvalidPaletteRecordSize); }
+            { auto h = header; h.palette_table_size += 16; assert(ValidateHeader(h, kFileSize) == HeaderValidation::InvalidPaletteTable); }
+            { auto h = header; h.palette_table_offset += 1; assert(ValidateHeader(h, kFileSize) == HeaderValidation::InvalidSectionLayout); }
+            { auto h = header; h.vertex_stride = 28; assert(ValidateHeader(h, kFileSize) == HeaderValidation::UnsupportedVertexStride); }
             { auto h = header; h.grass_vertex_stride = 28; assert(ValidateHeader(h, kFileSize) == HeaderValidation::UnsupportedGrassVertexStride); }
             { auto h = header; h.reserved = 1; assert(ValidateHeader(h, kFileSize) == HeaderValidation::InvalidReservedField); }
 
@@ -180,7 +191,7 @@ namespace StaticMeshesBin {
             assert(VertexStrideForStaticType(header, STATIC_GRASS) == GrassVertexStride);
 
             std::uint64_t bytes = 0;
-            assert(TryGetVertexDataBytes(3, VertexStride, bytes) && bytes == 3ull * 28);
+            assert(TryGetVertexDataBytes(3, VertexStride, bytes) && bytes == 3ull * 20);
             assert(TryGetVertexDataBytes(3, GrassVertexStride, bytes) && bytes == 3ull * 20);
 
             assert(IsKnownStaticType(STATIC_GRASS));

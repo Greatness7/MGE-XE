@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
 use super::*;
-use crate::mge_xe::distant_statics::{BoundingBox, StaticType};
+use crate::mge_xe::distant_statics::{BoundingBox, StaticType, UV_BOUND_PALETTE_CAP};
+use crate::model::{SubsetTexture, UvBound, Vertex};
 use glam::{Vec2, Vec4};
 use tes3::nif::NiBound;
 
@@ -821,4 +822,132 @@ fn subterrain_cull_margin_protects_geometry_near_the_ground() {
 
     assert_eq!(metrics.subterrain_culled_triangle_count, 0);
     assert_eq!(total_triangles(&culled), total_triangles(&uncut));
+}
+
+/// A merge contribution can itself carry several bounds, because post-atlas
+/// `DistantStatic::merge_subsets` already combined subsets that shared an atlas page. The
+/// eligibility test and the append must therefore both work on the full set union; a
+/// single-bound insert would let this destination exceed the palette cap.
+#[test]
+fn merge_subsets_tests_and_appends_the_full_bound_union() {
+    let bound = |seed: u32| UvBound {
+        min_y: 0.0,
+        max_x: 1.0,
+        min_x: seed as f32 / 1024.0,
+        max_y: 1.0,
+    };
+    let subset_with_bounds = |bounds: Vec<UvBound>| Subset {
+        vertices: vec![Vertex::default(); 3],
+        triangles: vec![[0, 1, 2]],
+        texture: SubsetTexture::AtlasPage(0),
+        uv_bounds: bounds,
+        ..Subset::default()
+    };
+
+    let source = subset_with_bounds((0..4).map(bound).collect());
+    // Three short of the cap, sharing none of the incoming bounds: a single-bound insert would
+    // fit (126 <= 128), the true four-bound union does not (129 > 128).
+    let destination = subset_with_bounds((100..100 + UV_BOUND_PALETTE_CAP - 3).map(bound).collect());
+
+    let mut merged = vec![destination];
+    merge_subsets(
+        &mut merged,
+        std::slice::from_ref(&source),
+        Affine3A::IDENTITY,
+        Vec3::ZERO,
+        true,
+        Vec3::ZERO,
+        1.0,
+        StaticType::StaticTree,
+        None,
+    );
+
+    assert_eq!(merged.len(), 2, "the full union must force a new subset");
+    assert_eq!(merged[1].uv_bounds.len(), 4, "the append must union every incoming bound");
+    assert_eq!(merged[1].triangles.len(), 1);
+}
+
+#[test]
+fn merge_subsets_reuses_earlier_compatible_subset_when_tail_cannot_accept() {
+    let bound = |seed: u32| UvBound {
+        min_y: 0.0,
+        max_x: 1.0,
+        min_x: seed as f32 / 1024.0,
+        max_y: 1.0,
+    };
+    let subset_with_bounds = |bounds: Vec<UvBound>| Subset {
+        vertices: vec![Vertex::default(); 3],
+        triangles: vec![[0, 1, 2]],
+        texture: SubsetTexture::AtlasPage(0),
+        uv_bounds: bounds,
+        ..Subset::default()
+    };
+
+    let mut merged = Vec::new();
+
+    // source_0 has 120 bounds (room for 8 more before cap).
+    let source_0 = subset_with_bounds((0..120).map(bound).collect());
+    merge_subsets(
+        &mut merged,
+        std::slice::from_ref(&source_0),
+        Affine3A::IDENTITY,
+        Vec3::ZERO,
+        true,
+        Vec3::ZERO,
+        1.0,
+        StaticType::StaticTree,
+        None,
+    );
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].uv_bounds.len(), 120);
+
+    // source_1 has 128 disjoint bounds. It cannot fit in bin 0 (120 + 128 = 248 > 128).
+    // It must open bin 1 and become the tail.
+    let source_1 = subset_with_bounds((200..200 + UV_BOUND_PALETTE_CAP).map(bound).collect());
+    merge_subsets(
+        &mut merged,
+        std::slice::from_ref(&source_1),
+        Affine3A::IDENTITY,
+        Vec3::ZERO,
+        true,
+        Vec3::ZERO,
+        1.0,
+        StaticType::StaticTree,
+        None,
+    );
+    assert_eq!(merged.len(), 2, "source_1 must open bin 1");
+    assert_eq!(merged[1].uv_bounds.len(), UV_BOUND_PALETTE_CAP as usize);
+
+    // source_2 has 4 bounds that overlap with bin 0 (0..4).
+    // Tail (bin 1) has 128 bounds, so it cannot accept source_2.
+    // Earlier bin 0 has 120 bounds and contains 0..4, so union is 120 <= 128.
+    // Under tail-only packing, source_2 would open bin 2 (length 3).
+    // With first-fit reuse, source_2 is merged into bin 0 (length stays 2).
+    let source_2 = subset_with_bounds((0..4).map(bound).collect());
+    merge_subsets(
+        &mut merged,
+        std::slice::from_ref(&source_2),
+        Affine3A::IDENTITY,
+        Vec3::ZERO,
+        true,
+        Vec3::ZERO,
+        1.0,
+        StaticType::StaticTree,
+        None,
+    );
+
+    assert_eq!(
+        merged.len(),
+        2,
+        "source_2 must reuse earlier bin 0 instead of opening a third subset"
+    );
+    // Explicit stable ordering expectations:
+    // merged[0] is bin 0, containing source_0 + source_2 geometry.
+    // merged[1] is bin 1, containing source_1 geometry.
+    assert_eq!(merged[0].triangles.len(), 2);
+    assert_eq!(merged[0].uv_bounds.len(), 120);
+    assert!(merged[0].components_tile_triangles());
+    assert_eq!(merged[1].triangles.len(), 1);
+    assert_eq!(merged[1].uv_bounds.len(), UV_BOUND_PALETTE_CAP as usize);
+    assert!(merged[1].components_tile_triangles());
 }

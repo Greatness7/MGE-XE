@@ -8,7 +8,7 @@ use mge_config::{
 };
 use rust_i18n::t;
 
-use crate::{app::GuiApp, config, distant::DistantLandStatus, style};
+use crate::{app::GuiApp, config, distant::DistantLandStatus, morrowind_profile::IniSettings, style};
 
 use crate::ui::{
     SPIN_W, caption_row, check_row, combo_index_localized_sized, combo_value_localized_sized, labeled_row, range_header,
@@ -183,9 +183,17 @@ fn water_card(ui: &mut Ui, settings: &mut WaterSettings, enablement: DistantEnab
     });
 }
 
+fn apply_per_pixel_light_attenuation(settings: &mut IniSettings, enabled: bool) {
+    let (constant, linear, quadratic) = if enabled { (0.36, 0.0, 3.25) } else { (0.0, 3.0, 0.0) };
+    settings.light_constant = constant;
+    settings.light_linear = linear;
+    settings.light_quadratic = quadratic;
+}
+
 fn lighting_and_shadows_card(
     ui: &mut Ui,
     settings: &mut DistantLandSettings,
+    ini_settings: &mut IniSettings,
     enablement: DistantEnablement,
     open_lighting: &mut bool,
 ) {
@@ -225,6 +233,9 @@ fn lighting_and_shadows_card(
                 .inner
             },
         );
+        if per_pixel_checkbox.changed() {
+            apply_per_pixel_light_attenuation(ini_settings, settings.per_pixel_lighting);
+        }
         tooltip(per_pixel_checkbox, t!("distant.lighting.per_pixel_tip"));
         if let Some(response) = mode_combo {
             tooltip(response, t!("distant.lighting.mode_tip"));
@@ -486,6 +497,7 @@ impl GuiApp {
             lighting_and_shadows_card(
                 &mut columns[0],
                 &mut self.settings.mge.distant_land,
+                &mut self.settings.ini,
                 enablement,
                 &mut open_lighting,
             );
@@ -520,5 +532,27 @@ impl GuiApp {
             self.settings.mge.distant_land.fog.atmosphere_scattering = false;
         }
         config::update_auto_distances(&mut self.settings.mge, self.ui.distant.status.min_static_size);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_pixel_lighting_toggle_applies_matching_attenuation() {
+        let mut settings = IniSettings::default();
+
+        apply_per_pixel_light_attenuation(&mut settings, true);
+        assert_eq!(
+            (settings.light_constant, settings.light_linear, settings.light_quadratic),
+            (0.36, 0.0, 3.25)
+        );
+
+        apply_per_pixel_light_attenuation(&mut settings, false);
+        assert_eq!(
+            (settings.light_constant, settings.light_linear, settings.light_quadratic),
+            (0.0, 3.0, 0.0)
+        );
     }
 }

@@ -126,8 +126,8 @@ fn fingerprint_static_mesh_input(key: &str, static_mesh: &crate::mge_xe::distant
         hash_pod(&mut hasher, &subset.horizon_footprint);
         hash_pod(&mut hasher, &(subset.vertices.len() as u64));
         hash_pod(&mut hasher, &(subset.triangles.len() as u64));
-        // Hash the bytes that are actually serialized: the 20-byte grass projection for grass,
-        // the full 28-byte vertex (including `uv_bound`) for everything else.
+        // Hash the bytes that are actually serialized: the grass projection for grass, the full
+        // vertex for everything else.
         if is_grass {
             for v in &subset.vertices {
                 hash_pod(&mut hasher, v.as_grass());
@@ -138,6 +138,11 @@ fn fingerprint_static_mesh_input(key: &str, static_mesh: &crate::mge_xe::distant
         hasher.update(cast_slice(&subset.triangles));
         hash_pod(&mut hasher, &(subset.components.len() as u64));
         hasher.update(cast_slice(&subset.components));
+        // The atlas rect lives here rather than in the vertex, so the palette must be hashed
+        // explicitly: without it, repacking the atlas would move a subset's UVs without changing
+        // its shard fingerprint, and incremental generation would carry the stale shard.
+        hash_pod(&mut hasher, &(subset.palette.len() as u64));
+        hasher.update(cast_slice(&subset.palette));
         hasher.update(&[subset.has_alpha]);
         hasher.update(&[subset.has_uv_controller]);
         hash_bytes(&mut hasher, subset.texture.as_ref().as_bytes());

@@ -4,7 +4,7 @@ use crate::generation::metrics::summarize_distant_statics;
 use crate::generation::output::static_mesh_shard_relative_path;
 use crate::generation::record_key::StaticRecordKey;
 use crate::generation::storage::state::ArtifactKind;
-use crate::mge_xe::distant_statics::{PackedDistantStatic, PackedSubset, PackedVertex, StaticType};
+use crate::mge_xe::distant_statics::{PackedDistantStatic, PackedSubset, PackedVertex, StaticType, UvBoundRecord};
 use tempfile::tempdir;
 
 /// Two distinct fixture keys that hash into the same shard, so one file exercises both the
@@ -25,17 +25,34 @@ fn same_shard_keys() -> (usize, String, String) {
 
 fn decoded_fixture() -> (usize, crate::PackedDistantStatics) {
     let (shard, ordinary_key, grass_key) = same_shard_keys();
+    // The ordinary record selects palette entry 1 so the ordinal, and not just the palette
+    // table, has to survive the round trip.
+    let mut ordinary_vertices = vec![PackedVertex::default(); 3];
+    for vertex in &mut ordinary_vertices {
+        vertex.position[3] = half::f16::ONE;
+    }
     let ordinary = PackedDistantStatic {
         subsets: vec![PackedSubset {
-            vertices: vec![PackedVertex::default(); 3],
+            vertices: ordinary_vertices,
             triangles: vec![[0, 1, 2]],
+            palette: vec![
+                UvBoundRecord {
+                    bound: [0.0, 1.0, 0.0, 1.0],
+                },
+                UvBoundRecord {
+                    bound: [0.25, 0.75, 0.125, 0.5],
+                },
+            ],
             texture: "ordinary.dds".into(),
             ..PackedSubset::default()
         }],
         ..PackedDistantStatic::default()
     };
+    // Grass carries no palette and keeps position.w at 1.0.
     let mut grass_vertices = vec![PackedVertex::default(); 3];
-    grass_vertices[0].uv_bound = [half::f16::ONE; 4];
+    for vertex in &mut grass_vertices {
+        vertex.position[3] = half::f16::ONE;
+    }
     let grass = PackedDistantStatic {
         static_type: StaticType::StaticGrass,
         subsets: vec![PackedSubset {
@@ -81,6 +98,9 @@ fn decode_inputs(
         subset_count: counts.0 as u64,
         vertex_count: counts.1 as u64,
         triangle_count: counts.2 as u64,
+        merged_record_count: 0,
+        merged_vertex_count: 0,
+        merged_triangle_count: 0,
         records: packed.keys().map(|key| StaticRecordKey::parse(key)).collect(),
     };
     (directory, paths, artifacts, states)
@@ -101,11 +121,18 @@ fn decoded_ordinary_and_grass_records_refingerprint_identically() {
         .values()
         .find(|record| record.static_type == StaticType::StaticGrass)
         .unwrap();
+    assert!(grass.subsets[0].palette.is_empty());
+
+    let ordinary = restored
+        .values()
+        .find(|record| record.static_type != StaticType::StaticGrass)
+        .unwrap();
+    assert_eq!(ordinary.subsets[0].palette.len(), 2);
     assert!(
-        grass.subsets[0]
+        ordinary.subsets[0]
             .vertices
             .iter()
-            .all(|vertex| vertex.uv_bound == [half::f16::ZERO; 4])
+            .all(|vertex| vertex.position[3] == half::f16::ONE)
     );
 }
 

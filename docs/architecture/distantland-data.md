@@ -11,7 +11,7 @@ the formats involved. Companion to [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §
 | `generation_state.bin` | complete-or-absent state and required-artifact inventory | generator | Rust host (`open_output_snapshot`) |
 | `generation_report.toml` | advisory metrics, warnings, contract results, and bounded stage timings | generator | users and profiling tools only |
 | `terrain.bin` | `XELAND02`, see [`terrain-bin.md`](terrain-bin.md) | generator | d3d8.dll (geometry upload), host (quadtree metadata) |
-| `statics\static_meshes_000..127` | 128 fixed `XESTAT05` v5 shards | generator | d3d8.dll (geometry upload + static LOD tier construction), host via IPC metadata |
+| `statics\static_meshes_000..127` | 128 fixed `XESTAT06` v6 shards | generator | d3d8.dll (geometry upload + static LOD tier construction), host via IPC metadata |
 | `.writer.lock` | writer/session lock | generator, host | generator (exclusive), host (shared session pin) |
 | `terrain_occlusion.bin` | `XEOCCL02` v2, see [`horizon-occlusion-asset.md`](horizon-occlusion-asset.md) | generator | host (horizon occluder) |
 | `terrain_atlas.dds` | DXT1 mip chain (atlas of baked terrain tiles) | generator | d3d8.dll |
@@ -70,11 +70,12 @@ the fixed `Data Files\distantland\terrain.bin`:
 [static-lod.md](static-lod.md) describes the component-provenance and cumulative
 face-count mechanism end-to-end.
 
-`XESTAT05` v5 has a 136-byte header, `static_count` 52-byte static records (type, bounds,
-subset range), `subset_count` 144-byte subset records, a component table, a texture-path
-string table, then the geometry blob (16-bit indices). Regular statics use 28-byte
-vertices; grass (`STATIC_GRASS`) uses 20-byte vertices that omit the `uv_bound` field,
-selected per static via `grass_vertex_stride`.
+`XESTAT06` v6 has a 160-byte header, `static_count` 52-byte static records (type, bounds,
+subset range), `subset_count` 152-byte subset records, a component table, a 16-byte-per-entry
+UV-bound palette table, a texture-path string table, then the geometry blob (16-bit indices).
+Both vertex layouts are 20 bytes and the stride is still selected per static via
+`grass_vertex_stride`: for regular statics `position.w` is an ordinal into the subset's palette,
+for grass (`STATIC_GRASS`) it is a constant `1.0` and no palette is stored.
 
 Every file is an independent complete container; empty shards are valid. The producer assigns a
 normalized static key with the ratified BLAKE3 recipe. Global ordinal order is shard id first,

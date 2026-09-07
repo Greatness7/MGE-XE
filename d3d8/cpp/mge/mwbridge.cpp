@@ -824,6 +824,38 @@ float MWBridge::PlayerPositionZ() {
 
 //-----------------------------------------------------------------------------
 
+bool MWBridge::tryGetPlayerPosition(float outPosition[3]) {
+    if (!m_loaded) {
+        return false;
+    }
+
+    // getPlayerCell() dereferences the environment pointer unchecked; validate it here
+    // instead, so a menu-frame caller never faults before the world exists.
+    const DWORD enviro = read_dword(eEnviro);
+    if (enviro == 0 || read_dword(enviro + 0xB540) == 0) {
+        return false;
+    }
+
+    const DWORD addr = PlayerPositionPointer();
+    if (addr == 0) {
+        return false;
+    }
+
+    const float x = read_float(addr + 0);
+    const float y = read_float(addr + 4);
+    const float z = read_float(addr + 8);
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        return false;
+    }
+
+    outPosition[0] = x;
+    outPosition[1] = y;
+    outPosition[2] = z;
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+
 float MWBridge::PlayerHeight() { // player eyes height, in CS
     float height = read_float(0x7D39F0); // like "Master", only read, in game PlayerHeight*125.0f
     return (height == 0 ? 1.0f : height);

@@ -275,7 +275,7 @@ void DistantLand::renderDistantStatics() {
 
     device->SetVertexDeclaration(StaticDecl);
 
-    visDistantShared.Render(device, effect, effect, &ehTex0, nullptr, &ehHasVCol, &ehWorld, SIZEOFSTATICVERT);
+    visDistantShared.Render(device, effect, effect, &ehTex0, nullptr, &ehHasVCol, &ehWorld, &ehUvBoundPalette, SIZEOFSTATICVERT);
 
     device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
 }

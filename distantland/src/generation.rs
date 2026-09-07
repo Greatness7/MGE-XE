@@ -524,6 +524,23 @@ fn run_generation(
     identities.set_plugins(plugin_identities);
     identities.set_grass_plugins(grass_plugin_identities);
     warnings.extend(grass_warnings.into_iter().map(GenerationWarning::from));
+    // Surface the terrain control clip as a generation warning.
+    if let Some(clip) = usage_info.terrain_control_clip() {
+        let dropped_ranges = summarize_dropped_cells(&clip.dropped_cells);
+        warnings.push(GenerationWarning {
+            code: "terrain_control_region_clipped".to_string(),
+            message: format!(
+                "Terrain control region clipped to fit limits: retained ({}, {})..({}, {}), \
+                 dropped {} cell(s): {}",
+                clip.retained_min[0],
+                clip.retained_min[1],
+                clip.retained_max[0],
+                clip.retained_max[1],
+                clip.dropped_cells.len(),
+                dropped_ranges,
+            ),
+        });
+    }
     metrics.usage.object_count = usage_info.objects.len();
     metrics.usage.mesh_scale_count = usage_info.mesh_scale_maximums.len();
     metrics.usage.landscape_cell_count = usage_info.terrain_cells.len();
@@ -1141,6 +1158,28 @@ fn atlas_covered_cell_count(layout: &crate::TerrainAtlasLayout) -> usize {
 /// Returns the size of a file in bytes, or `0` if the file is missing or inaccessible.
 fn file_size_or_zero(path: &Path) -> u64 {
     fs::metadata(path).map_or(0, |metadata| metadata.len())
+}
+
+/// Formats dropped cell coordinates into a compact summary, eliding the middle of a long list.
+///
+/// Any listed coordinate is enough to identify the responsible plugin in-game: travel there with
+/// `coe` and read the source with the `ori` console command.
+fn summarize_dropped_cells(cells: &[(i32, i32)]) -> String {
+    let format_cells = |cells: &[(i32, i32)]| {
+        cells
+            .iter()
+            .map(|(x, y)| format!("({x}, {y})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if cells.len() <= 8 {
+        return format_cells(cells);
+    }
+    format!(
+        "{}, ..., {}",
+        format_cells(&cells[..3]),
+        format_cells(&cells[cells.len() - 3..])
+    )
 }
 
 #[cfg(test)]

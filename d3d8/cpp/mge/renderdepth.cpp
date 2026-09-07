@@ -200,7 +200,7 @@ void DistantLand::renderDepth() {
                 effectDepth->BeginPass(PASS_RENDERSTATICSDEPTH);
                 device->SetVertexDeclaration(StaticDecl);
                 depthReplayDips += visDistantShared.Size();
-                visDistantShared.Render(device, effectDepth, effect, &ehTex0, &ehHasAlpha, &ehHasVCol, &ehWorld, SIZEOFSTATICVERT);
+                visDistantShared.Render(device, effectDepth, effect, &ehTex0, &ehHasAlpha, &ehHasVCol, &ehWorld, &ehUvBoundPalette, SIZEOFSTATICVERT);
                 effectDepth->EndPass();
             }
         }

@@ -93,7 +93,7 @@ extern "C" int mge_dl_contract_main(int argc, char** argv, std::uint8_t generato
         if (!readExact(staticPath, staticBytes) || staticBytes.size() < 36) {
             return fail("static shard missing or truncated");
         }
-        if (!startsWith(staticBytes, "XESTAT05", 8) || readU32Le(staticBytes, 8) != 5) {
+        if (!startsWith(staticBytes, "XESTAT06", 8) || readU32Le(staticBytes, 8) != 6) {
             return fail("static shard header mismatch");
         }
         const std::uint32_t shardStaticCount = readU32Le(staticBytes, 32);

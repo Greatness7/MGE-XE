@@ -100,7 +100,7 @@ Do not recover a partially written tree. Invalid state is the recovery decision.
 ## Validation modes
 
 - Routine serving validation checks existence, exact length, and fixed current headers
-  (`version` byte, `XESTAT05`/v5, `XELAND02`/v2, `XEOCCL02`/v2, DDS signature/header). It binds
+  (`version` byte, `XESTAT06`/v6, `XELAND02`/v2, `XEOCCL02`/v2, DDS signature/header). It binds
   every static-shard header count to generation state and the checked sum of all 128 counts to the
   leading `usage.data` static count, without hashing shard bodies.
 - Full explicit verification also hashes every listed artifact and compares `content_blake3`.

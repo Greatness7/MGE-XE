@@ -4,7 +4,8 @@ This document describes the landed startup, upload, readiness, and failure
 lifecycle for distant land. Rendering details are in
 [render-pipeline.md](render-pipeline.md); generated payloads are in
 [distantland-data.md](distantland-data.md); host transport is in
-[ipc.md](ipc.md).
+[ipc.md](ipc.md); merged-static streaming after upload is in
+[distant-static-residency.md](distant-static-residency.md).
 
 ## State and readiness
 
@@ -55,9 +56,9 @@ depth, shadow, water, BSA access, and resolution of the partial-view mapping
 APIs. It also installs the world-resolution callback, leaving host connection and
 geometry upload to the pump.
 
-If no player cell exists, the startup path arms the pump. If a player cell is
-already active, the call came from an in-world renderer restart and the
-complete host connection and geometry upload run synchronously instead.
+If no player cell exists, the startup path arms the pump and returns. If a player
+cell is already active, the call came from an in-world renderer restart, which
+arms the same pump and then drains it before returning.
 
 ## Upload pump
 
@@ -72,6 +73,7 @@ HostWait
   -> Statics
   -> Grass
   -> StaticsHostWait
+  -> ResidencyFullDrain | ResidencyBootstrap
   -> Done
 ```
 
@@ -85,7 +87,9 @@ The phases have the following contracts:
 | `Landscape` | Validate and upload terrain resources, then leave `InitLandscape` in flight while the host builds its land quadtree. |
 | `Statics` | Preflight all 128 static shards and advance the resumable `StaticsLoader` in budgeted slices. Before sending static metadata, collect the landscape RPC result. |
 | `Grass` | Create grass instance resources while the host handles the asynchronous `InitDistantStatics` request. |
-| `StaticsHostWait` | Poll the static/grass quadtree build, then free its temporary shared vectors. |
+| `StaticsHostWait` | Poll the static/grass quadtree build, then free its temporary shared vectors. Select the merged-static streaming cap, which decides which of the two residency phases follows. |
+| `ResidencyFullDrain` | The cap clears the merged dataset: upload every merged subset in shard-file order in budgeted slices, leaving the planner disabled. |
+| `ResidencyBootstrap` | The cap binds: drain the nearest ring around the player before rendering. Capped at 5 s, after which the session enters with pop-in rather than stalling the load screen. |
 | `Done` | Set `uploadComplete`, stop the pump, and attempt the readiness transition. |
 
 The host starts its IPC server before the startup-generation worker finishes.
@@ -116,14 +120,21 @@ phases sleep briefly between polls so the drain does not busy-spin.
 When the pump was already complete, the callback only supplies the second gate
 and the render path enables immediately. When a later save is loaded while the
 renderer is already `RenderReady`, the callback re-resolves dynamic-visibility
-groups for the new world.
+groups for the new world, and arms a merged-static residency transition toward the resolved player
+position. Arming only: the next load-screen `Present` starts the epoch and does bounded work.
 
 ## Renderer restart and teardown
 
-An in-world renderer restart has an active player cell, so `init()` uses
-`initIpcBlocking()` and `uploadDistantLand()` rather than the menu pump. It
-starts a fresh host, waits for output readiness, allocates vectors, uploads
-terrain/statics/grass, and resolves dynamic-visibility groups before returning.
+An in-world renderer restart has an active player cell, so `init()` arms the pump
+and calls `drainUploadPump()` immediately rather than leaving it to `Present`.
+The engine is blocked inside `restartRenderer` (patched at `0x41AA31`), so there
+are no frames to spread the work across, and `initOnLoad`'s loading bar is
+already on screen for the drain to borrow.
+
+`worldResolved` is set only after the drain returns. The pump's `Done` phase
+calls `finalizeUploadIfReady()` itself, so setting it first would reach
+`RenderReady` mid-drain and let the drain's closing loading frame render through
+the distant path.
 
 `release()` aborts any partial pump state, releases client-side D3D resources
 and shared vectors, and stops the host. A subsequent initialization starts from

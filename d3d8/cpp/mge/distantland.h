@@ -18,6 +18,7 @@
 
 struct MGEShader;
 struct IDxvkMorrowindInterop;
+struct IDxvkMorrowindMemoryInterop1;
 
 class DistantLand {
 public:
@@ -114,16 +115,48 @@ public:
         Statics,          // resumable distant-statics upload (the dominant phase)
         Grass,            // single-slice grass setup, overlapping the host's statics build
         StaticsHostWait,  // collect InitDistantStatics and free its staging vectors
+        ResidencyFullDrain,  // fitting/fallback session: ordered merged upload before rendering
+        ResidencyBootstrap,  // capped session only: drain the nearest merged ring before rendering
         Done,             // all phases uploaded
     };
     static constexpr int kUploadPumpBudgetMs = 8;
     static constexpr int kDrainBudgetMs = 40;
+
+    // Provisional residency budgets. The byte and record limits are mandatory because a
+    // wall-clock check cannot interrupt one D3D allocation; an oversize resource is processed
+    // alone and logged. Revisit from measured p99/max crossings, not average inflow.
+    static constexpr double kResidencyAdmitBudgetMs = 2.0;
+    static constexpr std::uint64_t kResidencyAdmitBudgetBytes = 2ull * 1024 * 1024;
+    static constexpr std::uint32_t kResidencyAdmitBudgetResources = 16;
+    static constexpr double kResidencyEvictBudgetMs = 1.0;
+    static constexpr std::uint32_t kResidencyEvictBudgetResources = 2;
+    static constexpr std::uint64_t kResidencyDrainBudgetBytes = 10ull * 1024 * 1024;
+    static constexpr std::uint32_t kResidencyDrainBudgetResources = 14;
+    // Once a valid bootstrap centre exists, bound the synchronous nearest-ring drain rather
+    // than holding the load screen indefinitely. Waiting in menu frames does not start it.
+    static constexpr int kResidencyBootstrapTimeoutMs = 5000;
+    static constexpr int kMergedBudgetSampleIntervalMs = 500;
+    static constexpr std::uint32_t kMergedBudgetRatchetSamples = 4;
+    static constexpr std::uint64_t kMergedBudgetMinHeadroomBytes = 256ull * 1024 * 1024;
+    static constexpr std::uint64_t kMergedBudgetMaxHeadroomBytes = 1024ull * 1024 * 1024;
     static UploadPhase uploadPhase;
     static bool pumpActive;        // pump armed and ticking from Present
     static bool pumpDraining;      // pump is being drained synchronously during load
     static bool worldResolved;     // save/new-game world data has resolved
     static bool uploadComplete;    // all upload phases finished
+    // Active merged-static cap. DXVK supplies an allocator-policy-adjusted budget
+    // after fixed resources have been created.
+    static bool automaticStreamingCapActive;
+    static std::uint64_t mergedStreamingCapBytes;
+    static int nextMergedBudgetSampleMs;
+    static std::uint32_t lowerMergedBudgetSampleCount;
+    static std::uint32_t mergedBudgetSampleCount;
+    static std::uint32_t mergedBudgetRatchetCount;
+    static std::uint64_t pendingMergedCandidateCapBytes;
+    static std::uint64_t pendingMergedPeakMemoryUsedBytes;
+    static std::uint64_t peakMergedMemoryUsedBytes;
     static bool staticsPhaseStarted;  // beginStaticsPhase() has run for the current pump
+    static int residencyBootstrapStartedMs;
     static bool outputStatusQueryPending;
     static int outputWaitStartedMs;
     static int outputWaitNextLogMs;
@@ -155,6 +188,10 @@ public:
     static IPC::Client ipcClient;
     static std::vector<DynamicVisGroup> dynamicVisGroups;
     static void* lastDistantVisCell;
+    // Cached SetWorldSpace result; invalidated on every host (re)start.
+    static std::string lastWorldSpaceKey;
+    static bool lastWorldSpaceFound;
+    static bool worldSpaceCacheValid;
     static bool isDistantLandLoaded;
     static bool staticsUploaded;
 
@@ -163,12 +200,16 @@ public:
     static VisibleSet visGrassShared;
     static VisibleSet visExtraShared;
     static IPC::VecView<IPC::DynVisFlag> dynVisFlagsShared;
+    static IPC::VecView<IPC::ResidencyPlan> residencyPlanShared;
+    static IPC::VecView<IPC::ResidencyCommit> residencyCommitShared;
 
     static IPC::VecId visLandSharedId;
     static IPC::VecId visDistantSharedId;
     static IPC::VecId visGrassSharedId;
     static IPC::VecId visExtraSharedId;
     static IPC::VecId dynVisFlagsSharedId;
+    static IPC::VecId residencyPlanSharedId;
+    static IPC::VecId residencyCommitSharedId;
 
     static std::vector<RecordedState> recordMW;
     static std::vector<RecordedState> recordSky;
@@ -228,6 +269,7 @@ public:
     static D3DXHANDLE ehVertexBlendState, ehVertexBlendPalette;
     static D3DXHANDLE ehAlphaRef, ehMaterialAlpha;
     static D3DXHANDLE ehHasAlpha, ehHasBones, ehHasVCol;
+    static D3DXHANDLE ehUvBoundPalette;
     static D3DXHANDLE ehTex0, ehTex1, ehTex2, ehTex3, ehTex4, ehTex5;
     static D3DXHANDLE ehDepthSrc, ehSourceM33, ehSourceM43;
     static D3DXHANDLE ehEyePos, ehFootPos;
@@ -263,6 +305,7 @@ public:
     };
     static NativeDepthBackend nativeDepthBackend;
     static IDxvkMorrowindInterop* dxvkMorrowindInterop;
+    static IDxvkMorrowindMemoryInterop1* dxvkMorrowindMemoryInterop;
     static bool stage1UsedNativeDepth;
     static bool nativeStage2Eligible;
     static bool dsvMayBeNoncanonical;
@@ -274,10 +317,9 @@ public:
 
     static bool init();
     static bool initDeviceResources();
-    static bool uploadDistantLand();
     static bool initIpc();
-    static bool initIpcBlocking();
     static bool initIpcVectors();
+    static bool verifyResidencyProtocol();
     static bool finishLandscapeUpload();
     static bool initShader();
     static bool initDepth();
@@ -285,7 +327,6 @@ public:
     static bool initDynamicWaves();
     static bool initLandscapeClient();
     static bool initLandscape();
-    static bool initDistantStaticsClient();
     static bool initShadow();
     static bool initGrass();
     static bool loadVisGroupsClient(HANDLE h);
@@ -300,6 +341,14 @@ public:
     static void abortUploadPump();
     static void failUpload();
     static void finalizeUploadIfReady();
+    static bool selectInitialMergedStreamingCap();
+    static void sampleMergedStreamingCap();
+    static void logMergedStreamingBudgetSummary();
+    // End-of-frame residency tick. `stage0RanThisFrame` selects the eviction boundary:
+    // renderStage0 already evicted, so this only admits; otherwise both run here.
+    static void tickResidency(bool stage0RanThisFrame);
+    // Eviction boundary at the entry of renderStage0, before this frame's cull queries.
+    static void evictResidencyAtStage0();
     static bool beginStaticsPhase();
     static bool stepStaticsPhase(int budgetMs, bool& phaseDone);
     static bool finishStaticsPhase();
@@ -307,6 +356,7 @@ public:
 
     static void editProjectionZ(D3DMATRIX* m, float zn, float zf);
     static bool selectDistantCell();
+    static void invalidateWorldSpaceCache();
     static bool isDistantCell();
     static void onResolveDuringInit();
     static void resolveDynamicVisGroups();

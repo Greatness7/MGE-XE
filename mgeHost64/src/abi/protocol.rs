@@ -62,6 +62,10 @@ pub enum Command {
     FinishHorizonFrame = 12,
     /// Query startup-generation/output readiness.
     QueryOutputStatus = 13,
+    /// Apply completed residency transitions and GPU buffer handles.
+    UpdateResidency = 14,
+    /// Advance the bounded merged-static residency planner.
+    PlanResidency = 15,
 }
 
 impl Command {
@@ -82,9 +86,77 @@ impl Command {
             11 => Some(Self::SetHorizonConfig),
             12 => Some(Self::FinishHorizonFrame),
             13 => Some(Self::QueryOutputStatus),
+            14 => Some(Self::UpdateResidency),
+            15 => Some(Self::PlanResidency),
             _ => None,
         }
     }
+}
+
+/// Host-to-client residency request action.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResidencyPlanAction {
+    #[default]
+    Admit = 1,
+    Evict = 2,
+}
+
+/// Client-to-host committed resource state.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResidencyCommitState {
+    #[default]
+    Unloaded = 0,
+    Resident = 1,
+    Unavailable = 2,
+}
+
+/// One bounded host-to-client residency request.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
+pub struct ResidencyPlan {
+    pub resource_id: u32,
+    pub action: u32,
+    pub plan_epoch: u32,
+    pub reserved: u32,
+}
+
+/// One completed client-to-host residency transition.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
+pub struct ResidencyCommit {
+    pub resource_id: u32,
+    pub state: u32,
+    pub vbuffer: u32,
+    pub ibuffer: u32,
+}
+
+/// Parameters for `Command::UpdateResidency`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
+pub struct UpdateResidencyParameters {
+    pub commits: VecId,
+    pub success: u32,
+}
+
+/// Parameters for `Command::PlanResidency`.
+#[repr(C, packed(4))]
+#[derive(Clone, Copy, Debug, Default, Zeroable, Pod)]
+pub struct PlanResidencyParameters {
+    pub plan: VecId,
+    pub plan_epoch: u32,
+    pub center_x: f32,
+    pub center_y: f32,
+    pub center_z: f32,
+    pub admission_radius: f32,
+    pub retain_radius: f32,
+    pub max_cells: u32,
+    pub max_resources: u32,
+    pub view_heading_bin: u32,
+    pub cap_bytes: u64,
+    pub available_bytes: u64,
+    pub cap_debt_bytes: u64,
 }
 
 /// Parameters for `Command::AllocVec`.
@@ -262,6 +334,10 @@ pub union ParameterUnion {
     pub horizon_config_params: SetHorizonConfigParameters,
     /// `Command::QueryOutputStatus` payload.
     pub output_status_params: QueryOutputStatusParameters,
+    /// `Command::UpdateResidency` payload.
+    pub update_residency_params: UpdateResidencyParameters,
+    /// `Command::PlanResidency` payload.
+    pub plan_residency_params: PlanResidencyParameters,
 }
 
 impl Default for ParameterUnion {
@@ -294,7 +370,9 @@ mod tests {
         assert_eq!(Command::from_raw(11), Some(Command::SetHorizonConfig));
         assert_eq!(Command::from_raw(12), Some(Command::FinishHorizonFrame));
         assert_eq!(Command::from_raw(13), Some(Command::QueryOutputStatus));
-        assert_eq!(Command::from_raw(14), None);
+        assert_eq!(Command::from_raw(14), Some(Command::UpdateResidency));
+        assert_eq!(Command::from_raw(15), Some(Command::PlanResidency));
+        assert_eq!(Command::from_raw(16), None);
         assert_eq!(Command::from_raw(u32::MAX), None);
     }
 

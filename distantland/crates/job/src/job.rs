@@ -247,6 +247,8 @@ impl From<&GenerationSettings> for UsageFilterOptions {
             include_large_interiors: settings.include_large_interiors,
             exclude_script_disable_targets: settings.exclude_script_disable_targets,
             grass_density: settings.grass_density,
+            max_terrain_control_texture_size: settings.max_terrain_control_texture_size,
+            max_terrain_control_texture_bytes: settings.max_terrain_control_texture_bytes,
         }
     }
 }

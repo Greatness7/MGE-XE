@@ -1,13 +1,9 @@
-# DXVK native per-pixel-lighting interop
+# DXVK Morrowind interop
 
-Scope: the ABI MGE XE uses to hand fixed-function draws straight to our DXVK fork,
-bypassing D3DX. Cross-repo contract: both sides must move together.
-State: shipping and in sync. `dxvk_morrowind_interop.h` and `dxvk_morrowind_limits.h`
-are byte-identical in both repos (verified by hash, not by eye).
-Next action: none. Re-verify the header hashes whenever either side changes.
-Inspected 2026-08-18:
-  MGE-XE  `rust-rewrite`
-  DXVK    `Greatness7/dxvk` branch `mge-xe`, tag `v3.0.2-mge1`
+The private COM ABI between MGE XE and its DXVK fork (`Greatness7/dxvk`, branch `mge-xe`):
+native per-pixel lighting, MSAA depth resolve, and the device-local memory budget used by
+merged-static streaming. Compatibility rule for the whole surface: a new service gets its own
+versioned IID, never a method appended to an existing interface.
 
 ## The contract
 
@@ -18,8 +14,8 @@ d3d8/cpp/mge/dxvk_morrowind_interop.h   <->  dxvk/src/d3d9/dxvk_morrowind_intero
 d3d8/cpp/mge/dxvk_morrowind_limits.h    <->  dxvk/src/d3d9/dxvk_morrowind_limits.h
 ```
 
-They must stay byte-identical. Nothing in either build checks this. The check is
-`md5sum` on both paths, and it is the first thing to run when native PPL misbehaves.
+They must stay byte-identical. Nothing in either build checks this. Compare SHA-256 hashes after
+every edit; a mismatch is an ABI deployment error even when both repositories compile.
 
 ## File map
 
@@ -29,8 +25,10 @@ They must stay byte-identical. Nothing in either build checks this. The check is
 - `ffeshader.cpp:730`: branch between native and legacy
 - `ffeshader.cpp:1193`: release on teardown
 - `mged3d8device.cpp:88-106`: separate `CAP_EXPANDED_LIGHT_LIMIT` probe
+- `distantinit.cpp`: memory-budget query, cap selection, and cap resampling
 - DXVK `src/d3d9/d3d9_interop.cpp`: `DrawPplV1` entry, size/version rejection
 - DXVK `src/d3d9/d3d9_device.cpp`: `ValidateMorrowindPpl`, `DrawMorrowindPpl`
+- DXVK `src/dxvk/dxvk_memory.cpp`: locked global-buffer-heap budget snapshot
 - DXVK `src/d3d9/shaders/d3d9_morrowind_ppl_common.glsl`: the UBO the packet becomes
 
 ## Naming trap
@@ -45,6 +43,20 @@ frozen history, not the current version. `CAP_PPL_DRAW_V1` still exists as a bit
 `QueryInterface` on the D3D9 device for `IDxvkMorrowindPplInterop1`
 (`275c3348-5724-4a7e-aac0-46ceda965739`). Distant land separately queries
 `IDxvkMorrowindInterop` (`2ff12bfc-4622-4d9d-bcbf-1501f37e8aa3`) for MSAA depth resolve.
+
+Merged-static streaming queries the independent `IDxvkMorrowindMemoryInterop1`
+(`2866403d-8842-4bde-81f7-db4aa81f2d2d`). `GetDeviceLocalMemoryBudgetV1` returns two byte counts:
+the allocator-policy-adjusted `memoryBudget` and live allocator `memoryUsed` for the heap selected
+by DXVK's global-buffer memory-type mask with `VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT`. The allocator
+takes its memory mutex for one coherent snapshot. These are DXVK policy values, not raw Vulkan heap
+numbers for MGE to reinterpret.
+
+The memory interface is separate because adding a method to either older interface would change
+its vtable for existing clients. It has no capability bit and does not change
+`DXVK_MORROWIND_INTEROP_VERSION`: successful `QueryInterface` plus a successful method call is the
+negotiation. Stock/native D3D9, an older fork, a missing device-local buffer heap, or a zero budget
+falls back to infinite-cap ordered full residency. How that budget becomes a streaming cap is in
+[distant-static-residency.md](distant-static-residency.md).
 
 Capability bits (`dxvk_morrowind_interop.h:16-24`):
 

@@ -577,6 +577,10 @@ pub(crate) struct UsageSettingsProjection {
     pub(crate) exclude_script_disable_targets: bool,
     /// Non-grass static cull depth below the applicable water level, as raw bits.
     pub(crate) deep_water_static_cull_depth: u32,
+    /// Maximum allowed width or height of the rectangular terrain control maps.
+    pub(crate) max_terrain_control_texture_size: u32,
+    /// Maximum allowed estimated byte footprint of the rectangular terrain control maps.
+    pub(crate) max_terrain_control_texture_bytes: u64,
 }
 
 impl From<&GenerationSettings> for UsageSettingsProjection {
@@ -600,6 +604,10 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             include_large_interiors,
             exclude_script_disable_targets,
             deep_water_static_cull_depth,
+            // Control-map limits clip terrain cells and exterior references before capture,
+            // deciding statics membership.
+            max_terrain_control_texture_size,
+            max_terrain_control_texture_bytes,
             // --- Materialized by a sibling projection ---
             // These only select which override sources are parsed; their entire effect is already
             // present in the resolved `StaticOverrides` captured by `OverrideStateProjection`,
@@ -625,10 +633,8 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             terrain_detail: _,
             terrain_mesh_smoothed_normal_weight: _,
             terrain_mesh_color_weight: _,
-            // --- Terrain-domain globals and control-map guards (not statics) ---
+            // --- Terrain-domain globals (not statics) ---
             generate_terrain: _,
-            max_terrain_control_texture_size: _,
-            max_terrain_control_texture_bytes: _,
             // --- Execution policy (excluded from `settings_identity`) ---
             force_rebuild: _,
         } = value;
@@ -642,6 +648,8 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             include_large_interiors: *include_large_interiors,
             exclude_script_disable_targets: *exclude_script_disable_targets,
             deep_water_static_cull_depth: deep_water_static_cull_depth.to_bits(),
+            max_terrain_control_texture_size: *max_terrain_control_texture_size,
+            max_terrain_control_texture_bytes: *max_terrain_control_texture_bytes,
         }
     }
 }
@@ -656,6 +664,8 @@ impl CanonicalWrite for UsageSettingsProjection {
         writer.write_bool(self.include_large_interiors);
         writer.write_bool(self.exclude_script_disable_targets);
         writer.write_u32(self.deep_water_static_cull_depth);
+        writer.write_u32(self.max_terrain_control_texture_size);
+        writer.write_u64(self.max_terrain_control_texture_bytes);
     }
 }
 
