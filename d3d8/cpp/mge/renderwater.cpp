@@ -411,7 +411,7 @@ void DistantLand::simulateDynamicWaves() {
 
     float rippleOrigin[2];
     float dz = playerPos->z - mwBridge->WaterLevel();
-    if (dz < 0 && dz > -128.0f * mwBridge->PlayerHeight()) {
+    if (dz < 0 && dz > -mwBridge->PlayerHeight()) {
         // Create waves around the player
         effect->BeginPass(PASS_PLAYERWAVE);
         for (int i = 0; i != numWaveSteps; ++i) {

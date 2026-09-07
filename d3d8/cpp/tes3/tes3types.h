@@ -309,9 +309,12 @@ struct MobileObject {
     void* vTable;         // 0x00
     char pad_04[0x10];    // 0x04
     Reference* reference; // 0x14
-    char pad_18[0x68];    // 0x18
+    char pad_18[0x14];    // 0x18
+    float height;         // 0x2C -- collision capsule height above the ground
+    char pad_30[0x50];    // 0x30
 };
 static_assert(sizeof(MobileObject) == 0x80, "TES3::MobileObject failed size validation");
+static_assert(offsetof(MobileObject, height) == 0x2C, "TES3::MobileObject::height failed offset validation");
 static_assert(offsetof(MobileObject, reference) == 0x14, "TES3::MobileObject::reference failed offset validation");
 
 struct MobileActor : MobileObject {

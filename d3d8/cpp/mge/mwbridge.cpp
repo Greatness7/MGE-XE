@@ -691,10 +691,10 @@ bool MWBridge::tryGetPlayerPosition(float outPosition[3]) {
 
 //-----------------------------------------------------------------------------
 
-float MWBridge::PlayerHeight() { // player eyes height, in CS
-    // Read only; in game this is PlayerHeight * 125.0f
-    float height = globalAt<float>(TES3::Address::playerHeight);
-    return (height == 0 ? 1.0f : height);
+// PlayerHeight - The player's collision height above the ground, in world units.
+float MWBridge::PlayerHeight() {
+    auto player = getPlayerMobile();
+    return (player != nullptr) ? player->height : 0.0f;
 }
 
 //-----------------------------------------------------------------------------

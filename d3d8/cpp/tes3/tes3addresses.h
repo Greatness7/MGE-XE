@@ -17,8 +17,6 @@ namespace Address {
 // Total real time elapsed this session; does not advance in menus.
 inline constexpr uintptr_t simulationTimestamp = 0x7C6708;
 
-// Player eye height, pre-multiplied by 125.0f. Read-only from MGE's side.
-inline constexpr uintptr_t playerHeight = 0x7D39F0;
 
 // Set once both intro movies are done and the main menu is about to display.
 inline constexpr uintptr_t isIntroDone = 0x7D5005;
