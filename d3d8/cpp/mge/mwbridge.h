@@ -35,7 +35,6 @@ public:
     void ToggleCrosshair();
     bool IsExterior();
     bool IsMenu();
-    bool IsLoadScreen();
     bool IsCombat();
     bool IsCrosshair();
 

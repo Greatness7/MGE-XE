@@ -232,7 +232,7 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
             }
         }
 
-        if ((Configuration.MGEFlags & CROSSHAIR_AUTOHIDE) && !mwBridge->IsLoadScreen()) {
+        if ((Configuration.MGEFlags & CROSSHAIR_AUTOHIDE) && !mwBridge->isLoadingBar()) {
             // Update crosshair visibility
             float t = mwBridge->simulationTime();
 

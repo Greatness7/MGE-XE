@@ -32,11 +32,6 @@ inline constexpr uintptr_t ui_id_MenuLoading_label = 0x7D4204;
 
 inline constexpr uintptr_t ui_MenuBarter_haggleAmount = 0x7D287C;
 
-// NOT a load-screen flag despite MGE having used it as one: every xref is
-// VFXManager::*, which sets it on any VFX add/remove and clears it in
-// VFXManager::update.
-inline constexpr uintptr_t global_VFXManager_updateRequired = 0x7C85B8;
-
 //-----------------------------------------------------------------------------
 // Statics and virtual tables
 //-----------------------------------------------------------------------------

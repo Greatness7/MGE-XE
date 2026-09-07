@@ -161,16 +161,6 @@ bool MWBridge::IsMenu() {
 
 //-----------------------------------------------------------------------------
 
-bool MWBridge::IsLoadScreen() {
-    // FIXME(plan section 6.1): this reads the VFX manager's dirty flag, not a
-    // load-screen flag. It reads 1 across a load only because VFXManager::update
-    // is not ticking, and also reads 1 during normal play between a VFX spawning
-    // and the next update. Preserved verbatim; fixed in a later commit.
-    return globalAt<BYTE>(TES3::Address::global_VFXManager_updateRequired) != 0;
-}
-
-//-----------------------------------------------------------------------------
-
 bool MWBridge::IsCombat() {
     assert(m_loaded);
     // Kept as the original bit test rather than a comparison against
@@ -715,9 +705,26 @@ float MWBridge::PlayerHeight() { // player eyes height, in CS
 
 //-----------------------------------------------------------------------------
 
-// getPlayerMobile - Gets main game object holding the player state
+// getPlayerMobile - Gets main game object holding the player state, or null if
+// the world is not up yet. Every hop is checked: the whole chain is unresolvable
+// during load screens and the main menu, and callers reach here from Present.
 TES3::MobilePlayer* MWBridge::getPlayerMobile() {
-    return worldController()->mobManager->processManager->mobilePlayer;
+    auto wc = worldController();
+    if (wc == nullptr) {
+        return nullptr;
+    }
+
+    auto mobManager = wc->mobManager;
+    if (mobManager == nullptr) {
+        return nullptr;
+    }
+
+    auto processManager = mobManager->processManager;
+    if (processManager == nullptr) {
+        return nullptr;
+    }
+
+    return processManager->mobilePlayer;
 }
 
 //-----------------------------------------------------------------------------
@@ -729,13 +736,8 @@ DWORD MWBridge::getPlayerMACP() {
 //-----------------------------------------------------------------------------
 
 D3DXVECTOR3* MWBridge::PCam3Offset() {
-    // Pointer resolve will fail during load screens
-    if (IsLoadScreen()) {
-        return nullptr;
-    }
-
     auto player = getPlayerMobile();
-    if (player == nullptr) {
+    if (player == nullptr || player->animationController == nullptr) {
         return nullptr;
     }
 
@@ -746,13 +748,8 @@ D3DXVECTOR3* MWBridge::PCam3Offset() {
 //-----------------------------------------------------------------------------
 
 bool MWBridge::is3rdPerson() {
-    // Pointer resolve will fail during load screens
-    if (IsLoadScreen()) {
-        return false;
-    }
-
     auto player = getPlayerMobile();
-    if (player == nullptr) {
+    if (player == nullptr || player->animationController == nullptr) {
         return false;
     }
 
