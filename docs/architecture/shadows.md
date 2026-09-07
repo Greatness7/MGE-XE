@@ -50,15 +50,16 @@ in `setView`, then runs `renderShadowMap` under this gate:
 
 ```cpp
 !isRenderCached && isDistantCell() && (Configuration.MGEFlags & USE_SHADOWS)
-    && mwBridge->CellHasWeather() && !mwBridge->IsMenu()
+    && mwBridge->IntLikeExterior(true) && !mwBridge->IsMenu()
 ```
 
-`CellHasWeather()` restricts the whole feature to exterior weather cells. Interiors get no
-MGE shadows at all.
+`IntLikeExterior()` restricts the whole feature to cells with weather: exteriors, and the
+interiors flagged "Behaves like exterior". Ordinary interiors get no MGE shadows at all. The
+`true` argument keeps a frame with no resolvable cell on the exterior path.
 
 Stage 1 (end of scene 0) and Stage 2 (end of scenes 1+) each call `renderShadow` to
 project the finished map onto recorded geometry, under a gate that keeps the
-`!isRenderCached`, `isDistantCell()`, `USE_SHADOWS`, and `CellHasWeather()` checks. These
+`!isRenderCached`, `isDistantCell()`, `USE_SHADOWS`, and `IntLikeExterior(true)` checks. These
 stages do not repeat Stage 0's `!mwBridge->IsMenu()` check.
 
 `RenderTargetSwitcher` restores the render-target and depth-stencil bindings. The broader
@@ -439,7 +440,7 @@ Uncomment to use it. There is no config flag.
 
 ## Gotchas
 
-- No shadows in interiors. `CellHasWeather()` gates the whole feature.
+- No shadows in ordinary interiors. `IntLikeExterior()` gates the whole feature.
 - Nothing Morrowind draws casts a shadow. Only distant terrain and distant statics do.
 - Cascade radii are compile-time constants, `shadowNearRadius = 1000` and
   `shadowFarRadius = 4000`, both in `rendershadow.cpp`.

@@ -48,7 +48,6 @@ public:
     DWORD getScenegraphFogCol();
     void setScenegraphFogCol(DWORD c);
     float getScenegraphFogDensity();
-    bool CellHasWeather();
     float* GetWindVector();
     DWORD GetWthrStruct(int wthr);
     int GetWthrString(int wthr, int offset, char str[]);
@@ -72,7 +71,11 @@ public:
     void setSunriseSunset(float rise_time, float rise_dur, float set_time, float set_dur);
 
     DWORD IntCurCellAddr();
-    bool IntLikeExterior();
+    // The editor's "Behaves like exterior" flag, which exteriors also carry. It is what decides
+    // whether the current cell has weather, sky and outdoor lighting. `whenCellUnknown` is
+    // returned when no cell resolves - between cells, or before the environment exists - so
+    // render paths can keep their exterior setup on such a frame while interior queries do not.
+    bool IntLikeExterior(bool whenCellUnknown = false);
     bool IntIllegSleep();
     bool IntHasWater();
     float WaterLevel();

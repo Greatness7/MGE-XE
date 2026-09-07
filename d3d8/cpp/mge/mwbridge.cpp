@@ -419,21 +419,6 @@ float MWBridge::getScenegraphFogDensity() {
 
 //-----------------------------------------------------------------------------
 
-bool MWBridge::CellHasWeather() {
-    assert(m_loaded);
-    DWORD addr = read_dword(eEnviro);
-    if (addr == 0) {
-        return true;
-    }
-    addr = read_dword(addr + 0xAC);
-    if (addr != 0) {
-        return ((read_byte(addr + 0x18) & 0xF3) == 0x93);
-    }
-    return true;
-}
-
-//-----------------------------------------------------------------------------
-
 float* MWBridge::GetWindVector() {
     assert(m_loaded);
     return (float*)eWindVector;
@@ -655,13 +640,13 @@ const char* MWBridge::getInteriorName() {
 
 //-----------------------------------------------------------------------------
 
-bool MWBridge::IntLikeExterior() {
+bool MWBridge::IntLikeExterior(bool whenCellUnknown) {
     assert(m_loaded);
     DWORD addr = IntCurCellAddr();
-    if (addr != 0) {
-        return ((read_byte(addr + 0x18) & 0xF3) == 0x93);
+    if (addr == 0) {
+        return whenCellUnknown;
     }
-    return false;
+    return ((read_byte(addr + 0x18) & 0xF3) == 0x93);
 }
 
 //-----------------------------------------------------------------------------

@@ -311,7 +311,7 @@ void DistantLand::renderStage0() {
 
             // Shadow map early render
             if (Configuration.MGEFlags & USE_SHADOWS) {
-                if (mwBridge->CellHasWeather() && !mwBridge->IsMenu()) {
+                if (mwBridge->IntLikeExterior(true) && !mwBridge->IsMenu()) {
                     effectShadow->Begin(&passes, D3DXFX_DONOTSAVESTATE);
                     renderShadowMap();
                     effectShadow->End();
@@ -336,7 +336,7 @@ void DistantLand::renderStage0() {
 
                 // Draw distant statics, with alpha dissolve as they pass the near view boundary
                 if (staticsUploaded && (Configuration.MGEFlags & USE_DISTANT_STATICS)) {
-                    DWORD p = mwBridge->CellHasWeather() ? PASS_RENDERSTATICSEXTERIOR : PASS_RENDERSTATICSINTERIOR;
+                    DWORD p = mwBridge->IntLikeExterior(true) ? PASS_RENDERSTATICSEXTERIOR : PASS_RENDERSTATICSINTERIOR;
                     effect->BeginPass(p);
                     vsr.beginAlphaToCoverage(device);
 
@@ -352,7 +352,7 @@ void DistantLand::renderStage0() {
             }
 
             // Sky scattering and sky objects (should be drawn late as possible)
-            if ((Configuration.MGEFlags & USE_ATM_SCATTER) && mwBridge->CellHasWeather()) {
+            if ((Configuration.MGEFlags & USE_ATM_SCATTER) && mwBridge->IntLikeExterior(true)) {
                 renderSky();
             }
 
@@ -447,7 +447,7 @@ void DistantLand::renderStage1() {
             }
 
             // Overlay shadow onto Morrowind objects
-            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->CellHasWeather()) {
+            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->IntLikeExterior(true)) {
                 renderShadow();
             }
 
@@ -500,7 +500,7 @@ void DistantLand::renderStage2() {
 
         if (isDistantCell()) {
             // Shadowing onto recorded renders
-            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->CellHasWeather()) {
+            if ((Configuration.MGEFlags & USE_SHADOWS) && mwBridge->IntLikeExterior(true)) {
                 effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
                 renderShadow();
                 effect->End();
@@ -656,7 +656,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
 
     // Sky/fog
     bool isExpFog = (Configuration.MGEFlags & EXP_FOG) != 0;
-    const RGBVECTOR* skyCol = mwBridge->CellHasWeather() ?  mwBridge->getCurrentWeatherSkyCol() : &horizonCol;
+    const RGBVECTOR* skyCol = mwBridge->IntLikeExterior(true) ?  mwBridge->getCurrentWeatherSkyCol() : &horizonCol;
     effect->SetFloat(ehFogStart, isExpFog ? fogExpStart : fogStart);
     effect->SetFloat(ehFogRange, isExpFog ? fogExpDivisor : fogEnd);
     effect->SetFloat(ehFogNearStart, fogNearStart);
@@ -680,7 +680,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     if (!mwBridge->IsMenu()) {
         const float f = 0.02;
         float targetWind[2];
-        if (mwBridge->CellHasWeather()) {
+        if (mwBridge->IntLikeExterior(true)) {
             const float* wind = mwBridge->GetWindVector();
             targetWind[0] = windScaling * wind[0];
             targetWind[1] = windScaling * wind[1];
@@ -734,7 +734,7 @@ void DistantLand::adjustFog() {
     if (mwBridge->IsUnderwater(eyePos.z)) {
         fogStart = Configuration.DL.BelowWaterFogStart;
         fogEnd = Configuration.DL.BelowWaterFogEnd;
-    } else if (mwBridge->CellHasWeather()) {
+    } else if (mwBridge->IntLikeExterior(true)) {
         int wthr1 = mwBridge->GetCurrentWeather(), wthr2 = mwBridge->GetNextWeather();
         float ratio = mwBridge->GetWeatherRatio(), ff = 1.0, fo = 0.0, ws = 0.0;
 
@@ -791,7 +791,7 @@ void DistantLand::adjustFog() {
             fogExpStart = fogStart / expFogDistScale;
             fogExpDivisor = (fogEnd - fogExpStart) / expFogDistScale;
 
-            if (mwBridge->IsUnderwater(eyePos.z) || !mwBridge->CellHasWeather()) {
+            if (mwBridge->IsUnderwater(eyePos.z) || !mwBridge->IntLikeExterior(true)) {
                 // Leave fog ranges as set, shaders use all linear fogging in this case
                 fogNearStart = fogStart;
                 fogNearEnd = fogEnd;
@@ -830,7 +830,7 @@ void DistantLand::adjustFog() {
     }
 
     // Adjust Morrowind fog colour towards scatter colour if necessary
-    if ((Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && mwBridge->CellHasWeather() && !mwBridge->IsUnderwater(eyePos.z)) {
+    if ((Configuration.MGEFlags & USE_DISTANT_LAND) && (Configuration.MGEFlags & USE_ATM_SCATTER) && mwBridge->IntLikeExterior(true) && !mwBridge->IsUnderwater(eyePos.z)) {
         // Read unadjusted colour, as the scenegraph fog colour may not be updated during menu transitions
         RGBVECTOR c0 = *mwBridge->getCurrentWeatherFogCol();
         RGBVECTOR c1 = c0;
@@ -911,7 +911,7 @@ void DistantLand::postProcess() {
             // Set flags to reflect cell environment
             int envFlags = 0;
 
-            if (!mwBridge->CellHasWeather()) {
+            if (!mwBridge->IntLikeExterior(true)) {
                 envFlags |= 1;
             }
             if (mwBridge->IsExterior()) {
@@ -1015,7 +1015,7 @@ void DistantLand::updatePostShader(MGEShader* shader) {
     float water = mwBridge->CellHasWater() ? mwBridge->WaterLevel() : -1e9f;
     shader->SetFloat(EV_time, mwBridge->simulationTime());
     shader->SetFloat(EV_waterlevel, water);
-    shader->SetBool(EV_isinterior, !mwBridge->CellHasWeather());
+    shader->SetBool(EV_isinterior, !mwBridge->IntLikeExterior(true));
     shader->SetBool(EV_isunderwater, mwBridge->IsUnderwater(eyePos.z));
 }
 
@@ -1181,7 +1181,7 @@ void DistantLand::setView(const D3DMATRIX* m) {
     eyeVec.z = m->_33;
 
     // Set sun disc position
-    if (mwBridge->IsLoaded() && mwBridge->CellHasWeather()) {
+    if (mwBridge->IsLoaded() && mwBridge->IntLikeExterior(true)) {
         mwBridge->GetSunDir(sunPos.x, sunPos.y, sunPos.z);
         sunPos.w = 1;
         sunPos /= sqrt(sunPos.x * sunPos.x + sunPos.y * sunPos.y + sunPos.z * sunPos.z);
@@ -1276,7 +1276,7 @@ bool DistantLand::inspectIndexedPrimitive(int sceneCount, const RenderedState* r
     }
 
     // Special case, capture sky
-    if (recordMW.empty() && rs->blendEnable && sceneCount == 0 && mwBridge->CellHasWeather()) {
+    if (recordMW.empty() && rs->blendEnable && sceneCount == 0 && mwBridge->IntLikeExterior(true)) {
         recordSky.emplace_back(*rs);
 
         // Check for moon geometry, and mark those records by setting lighting off
