@@ -161,6 +161,14 @@ struct ConfigurationStruct {
         bool HierarchicalMarch;
     } Horizon;
 
+    // Grass settings with no weather to key off. Kept outside DL for the same layout reason as
+    // Horizon: DL must stay identical to the MWSE-shared DistantLandRenderConfig.
+    struct {
+        // Constant wind vector magnitude applied to grass in interiors, which have no weather to
+        // drive the per-weather wind factors. Same units as the smoothed exterior wind vector.
+        float InteriorWind;
+    } Grass;
+
     struct {
         float SunMult[10];
         float AmbMult[10];
