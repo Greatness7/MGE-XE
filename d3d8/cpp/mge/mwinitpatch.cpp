@@ -5,25 +5,14 @@
 #include "mge/mwpatches.h"
 #include "mge/mwtextureloader.h"
 #include "support/timing.h"
+#include "tes3/tes3types.h"
 #include <algorithm>
-
-struct TES3GameOptions {
-    void *vtbl;
-    const char *registryKey;
-    int windowWidth;
-    int windowHeight;
-    int screenDepth;
-    int backBuffers;
-    int multiSamples;
-    char fullscreen;
-    // ...
-};
 
 // Override UI scaling callback: set new UI scaling and mouse bounds, setup borderless window
 static void _stdcall onUIScaleInit() {
     auto mwBridge = MWBridge::get();
     auto hMainWnd = mwBridge->getWindowHandle();
-    auto gameOptions = (TES3GameOptions*)mwBridge->getGameOptionsStruct();
+    auto gameOptions = static_cast<TES3::Game*>(mwBridge->getGameOptionsStruct());
 
     // Setup borderless window, if selected
     if (!gameOptions->fullscreen && Configuration.Borderless) {

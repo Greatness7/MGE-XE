@@ -5,10 +5,6 @@
 // Naming authority is MWSE's `MWSE/TES3*.h`; see docs/architecture/mwbridge.md.
 // Only the members MGE actually touches are named. Everything else is explicit
 // padding, sized so the `static_assert(sizeof(...))` below stays honest.
-//
-// Not to be confused with `d3d8/cpp/mwse/tes3types.h`, which is the older and
-// unrelated MWSE-interop header. Quoted includes resolve relative to the
-// including file first, so the two never collide in practice.
 
 #include "tes3/nitypes.h"
 
@@ -38,7 +34,8 @@ namespace ObjectFlag {
 }
 
 struct BaseObject {
-    void* vTable;              // 0x00
+    // Indexable by slot: funcentity.cpp calls getScript and setName through it.
+    void** vTable;             // 0x00
     unsigned int objectType;   // 0x04  four-character record tag
     unsigned int objectFlags;  // 0x08
     void* sourceMod;           // 0x0C
@@ -56,8 +53,16 @@ struct Object : BaseObject {
 };
 static_assert(sizeof(Object) == 0x28, "TES3::Object failed size validation");
 
+struct PhysicalObject : Object {
+    NI::BoundingBox* boundingBox;  // 0x28
+    char* objectID;                // 0x2C
+};
+static_assert(sizeof(PhysicalObject) == 0x30, "TES3::PhysicalObject failed size validation");
+static_assert(offsetof(PhysicalObject, boundingBox) == 0x28, "TES3::PhysicalObject::boundingBox failed offset validation");
+static_assert(offsetof(PhysicalObject, objectID) == 0x2C, "TES3::PhysicalObject::objectID failed offset validation");
+
 struct Reference : Object {
-    BaseObject* baseObject;    // 0x28
+    PhysicalObject* baseObject;  // 0x28
     NI::Point3 orientation;    // 0x2C
     NI::Point3 position;       // 0x38
     void* attachments;         // 0x44
@@ -119,8 +124,11 @@ struct Weapon {
 static_assert(sizeof(Weapon) == 0x78, "TES3::Weapon failed size validation");
 static_assert(offsetof(Weapon, weaponType) == 0x5C, "TES3::Weapon::weaponType failed offset validation");
 
-struct NPC {
-    char pad_00[0x70];   // 0x00
+// MWSE interposes Actor between PhysicalObject and NPC; MGE touches nothing in
+// it, so it stays folded into the padding. The base is modelled rather than
+// padded because funcentity.cpp assigns an NPC* to a BaseObject*.
+struct NPC : PhysicalObject {
+    char pad_30[0x40];   // 0x30
     char* name;          // 0x70
     char pad_74[0x7C];   // 0x74
 };
@@ -600,7 +608,12 @@ struct Game {
     float gamma;                 // 0x3C
     char pad_40[0xC];            // 0x40
     float renderDistance;        // 0x4C
-    char pad_50[0x98];           // 0x50
+    char pad_50[0x4C];           // 0x50
+    // MWSE types this `NI::Pointer<NI::Node>`. Raw here for the same reason as
+    // NI::PickRecord's members: MGE only ever points the picker at the scene, it
+    // never owns it, and an owning handle would take a reference per raycast.
+    NI::Node* worldRoot;         // 0x9C
+    char pad_A0[0x48];           // 0xA0
     Reference* playerTarget;     // 0xE8
     char pad_EC[0x24];           // 0xEC
 
@@ -612,6 +625,7 @@ static_assert(sizeof(Game) == 0x110, "TES3::Game failed size validation");
 static_assert(offsetof(Game, fullscreen) == 0x1C, "TES3::Game::fullscreen failed offset validation");
 static_assert(offsetof(Game, gamma) == 0x3C, "TES3::Game::gamma failed offset validation");
 static_assert(offsetof(Game, renderDistance) == 0x4C, "TES3::Game::renderDistance failed offset validation");
+static_assert(offsetof(Game, worldRoot) == 0x9C, "TES3::Game::worldRoot failed offset validation");
 static_assert(offsetof(Game, playerTarget) == 0xE8, "TES3::Game::playerTarget failed offset validation");
 
 }  // namespace TES3

@@ -1,5 +1,8 @@
 #include "mge/mwpatches.h"
 #include "support/log.h"
+#include "tes3/nitypes.h"
+#include "tes3/tes3addresses.h"
+#include "tes3/tes3types.h"
 
 #include <cstring>
 
@@ -9,7 +12,7 @@
 namespace MWPatches {
 
 void disableScreenshotFunc() {
-    DWORD addr = 0x41b08a;
+    DWORD addr = TES3::Address::patch_screenshotKey;
 
     // Replace jz short with jmp (74 -> eb)
     VirtualMemWriteAccessor vw((void*)addr, 4);
@@ -19,7 +22,7 @@ void disableScreenshotFunc() {
 //-----------------------------------------------------------------------------
 
 void disableSunglare() {
-    DWORD addr = 0x4404fb;
+    DWORD addr = TES3::Address::patch_sunglare;
 
     // Replace jz short with nop (74 xx -> 90 90)
     VirtualMemWriteAccessor vw((void*)addr, 4);
@@ -30,13 +33,13 @@ void disableSunglare() {
 //-----------------------------------------------------------------------------
 
 void disableIntroMovies() {
-    DWORD addr = 0x418ef0;
+    DWORD addr = TES3::Address::patch_bethesdaLogoMovie;
     BYTE patch[] = { 0xeb, 0x16 };
 
     VirtualMemWriteAccessor vw0((void*)addr, 2);
     memcpy((void*)addr, patch, sizeof(patch));
 
-    addr = 0x5fc8f7;
+    addr = TES3::Address::patch_introMovieCheck;
     VirtualMemWriteAccessor vw1((void*)addr, 2);
     memcpy((void*)addr, patch, sizeof(patch));
 }
@@ -46,8 +49,8 @@ void disableIntroMovies() {
 void patchGameLoading(void (__cdecl* newfunc)()) {
     // addr1 - At end of game loading and init function
     // addr2 - After renderer restart
-    DWORD addr1 = 0x41A052;
-    DWORD addr2 = 0x41AA31;
+    DWORD addr1 = TES3::Address::patch_gameLoadingEnd;
+    DWORD addr2 = TES3::Address::patch_afterRendererRestart;
 
     // Insert call before function epilogue
     VirtualMemWriteAccessor vw1((void*)addr1, 0x1E);
@@ -63,10 +66,10 @@ void patchGameLoading(void (__cdecl* newfunc)()) {
 //-----------------------------------------------------------------------------
 
 void redirectMenuBackground(void (_stdcall* func)(int)) {
-    DWORD addr = 0x04589fb;
+    DWORD addr = TES3::Address::patch_menuBackgroundCameraClick;
 
     // Reset to original if null is passed
-    DWORD calladdr = func ? (DWORD)func : 0x6cc7b0;
+    DWORD calladdr = func ? (DWORD)func : TES3::Address::NI_Camera_click;
 
     // Replace jump address
     VirtualMemWriteAccessor vw((void*)addr, 4);
@@ -76,7 +79,7 @@ void redirectMenuBackground(void (_stdcall* func)(int)) {
 //-----------------------------------------------------------------------------
 
 void patchUIConfigure(void (_stdcall* newfunc)()) {
-    DWORD addr = 0x40e554;
+    DWORD addr = TES3::Address::patch_uiConfigure;
     BYTE patch[] = {
         0xb8, 0xff, 0xff, 0xff, 0xff,       // mov eax, newfunc
         0xff, 0xd0,                         // call eax
@@ -94,19 +97,21 @@ void patchSplashScreen(unsigned int width, unsigned int height) {
     const float dx = -0.5 / width, dy = 0.5 / height;
 
     // Patch screen quad vertex coordinates with half pixel offset
-    DWORD addr = 0x458E89;
+    // The first two sites take the immediate at instruction offset 6, the rest at 3.
+    const auto& quad = TES3::Address::patch_splashQuad;
+    DWORD addr = quad[0];
     VirtualMemWriteAccessor vw((void*)addr, 0x5A);
-    write_float(0x458E89 + 6, dx);
-    write_float(0x458E93 + 6, dy);
-    write_float(0x458EA4 + 3, 1.0 + dx);
-    write_float(0x458EAB + 3, dy);
-    write_float(0x458EB9 + 3, 1.0 + dx);
-    write_float(0x458EC0 + 3, 1.0 + dy);
-    write_float(0x458ECE + 3, dx);
-    write_float(0x458ED5 + 3, 1.0 + dy);
+    write_float(quad[0] + 6, dx);
+    write_float(quad[1] + 6, dy);
+    write_float(quad[2] + 3, 1.0 + dx);
+    write_float(quad[3] + 3, dy);
+    write_float(quad[4] + 3, 1.0 + dx);
+    write_float(quad[5] + 3, 1.0 + dy);
+    write_float(quad[6] + 3, dx);
+    write_float(quad[7] + 3, 1.0 + dy);
 
     // Patch texture wrap mode to clamp
-    DWORD addr2 = 0x4595E1;
+    DWORD addr2 = TES3::Address::patch_splashTextureWrapMode;
     VirtualMemWriteAccessor vw2((void*)addr2, 4);
     write_dword(addr2, 0);
 }
@@ -116,7 +121,7 @@ void patchSplashScreen(unsigned int width, unsigned int height) {
 static int (__cdecl* patchFrameTimerTarget)();
 
 void patchFrameTimer(int (__cdecl* newfunc)()) {
-    DWORD addrs[] = { 0x403b52, 0x4535fd, 0x453615, 0x453638 };
+    const auto& addrs = TES3::Address::patch_frameTimer;
 
     patchFrameTimerTarget = newfunc;
 
@@ -132,7 +137,7 @@ static void (__cdecl* patchResolveDuringInitFunc)();
 
 static void __fastcall patchResolveDuringInitShim(void* worldController) {
     // Call original function.
-    const auto resolveScriptInternalIDs = reinterpret_cast<void (__thiscall*)(void*)>(0x40FC40);
+    const auto resolveScriptInternalIDs = reinterpret_cast<void (__thiscall*)(void*)>(TES3::Address::WorldController_resolveScriptInternalIDs);
     resolveScriptInternalIDs(worldController);
 
     if (patchResolveDuringInitFunc) {
@@ -141,7 +146,7 @@ static void __fastcall patchResolveDuringInitShim(void* worldController) {
 }
 
 void patchResolveDuringInit(void (__cdecl* newfunc)()) {
-    DWORD addrs[] = { 0x419AC4, 0x4C601D, 0x5FB11A, 0x5FE929 };
+    const auto& addrs = TES3::Address::patch_resolveDuringInit;
 
     patchResolveDuringInitFunc = newfunc;
 
@@ -154,7 +159,7 @@ void patchResolveDuringInit(void (__cdecl* newfunc)()) {
 //-----------------------------------------------------------------------------
 
 void patchLightParticleMaterialModifier() {
-    DWORD addr = 0x4D2789;
+    DWORD addr = TES3::Address::patch_particleEmissiveMaterial;
 
     // Jump over code that affects the particle emissive material
     VirtualMemWriteAccessor vw((void*)addr, 1);
@@ -163,30 +168,31 @@ void patchLightParticleMaterialModifier() {
 
 //-----------------------------------------------------------------------------
 
-static void __fastcall patchCameraClick(void* camera, int edx, bool dontFinishAccumulating) {
-    const auto NiCamera_Click = reinterpret_cast<void (__thiscall*)(void*, bool)>(0x6CC7B0);
+static void __fastcall patchCameraClick(NI::Camera* camera, int edx, bool dontFinishAccumulating) {
+    const auto NiCamera_Click = reinterpret_cast<void (__thiscall*)(NI::Camera*, bool)>(
+        TES3::Address::NI_Camera_click);
 
     if (dontFinishAccumulating) {
         // Call original code.
         NiCamera_Click(camera, true);
     }
     else {
-        auto scenePtr = *reinterpret_cast<char**>(reinterpret_cast<char*>(camera) + 0x128);
-        WORD *flagsPtr = reinterpret_cast<WORD*>(scenePtr + 0x14);
+        // Captured before the first click, which may replace the camera's scene.
+        NI::Node* const scene = camera->scene;
 
         // Render, but split accumulation to a new scene.
         NiCamera_Click(camera, true);
 
         // Hide scene and only render accumulator contents.
-        auto previousFlags = *flagsPtr;
-        *flagsPtr = 0x9; // AppCulled + IsVisual
+        auto previousFlags = scene->flags;
+        scene->flags = 0x9; // AppCulled + IsVisual
         NiCamera_Click(camera, false);
-        *flagsPtr = previousFlags;
+        scene->flags = previousFlags;
     }
 }
 
 void patchWorldRenderingAccumulation() {
-    DWORD addr = 0x41C654;
+    DWORD addr = TES3::Address::patch_mainSceneRenderLoop;
 
     // Patch main scene rendering function.
     VirtualMemWriteAccessor vw((void*)addr, 4);
@@ -201,7 +207,7 @@ void patchWorldRenderingAccumulation() {
 // rewritten; the cmp/ja structure is untouched, which caps this patch form at 127.
 // The caller decides whether the active render path can consume the extra lights.
 void patchExpandedLightLimit() {
-    const DWORD addr = 0x6c8ff0;
+    const DWORD addr = TES3::Address::patch_localEffectsLimit;
     const BYTE expected[] = { 0x83, 0xfd, 0x07, 0x77, 0x0a };    // cmp ebp, 7; ja 0x6c8fff
     const BYTE patched[] = { 0x83, 0xfd, 0x20, 0x77, 0x0a };     // cmp ebp, 32; ja 0x6c8fff
 

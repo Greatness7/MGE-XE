@@ -5,6 +5,7 @@
 
 #include "mwbridge.h"
 #include "mwpatches.h"
+#include "tes3/nitypes.h"
 #include "tes3/tes3addresses.h"
 #include "tes3/tes3types.h"
 #include "assert.h"
@@ -424,8 +425,8 @@ void MWBridge::SetViewDistance(float dist) {
 
     wc->worldCamera.cameraData.farPlaneDistance = dist;
     wc->shadowCamera.cameraData.farPlaneDistance = dist;
-    wc->worldCamera.cameraData.camera->viewFrustum.far = dist;
-    wc->shadowCamera.cameraData.camera->viewFrustum.far = dist;
+    wc->worldCamera.cameraData.camera->viewFrustum.farPlane = dist;
+    wc->shadowCamera.cameraData.camera->viewFrustum.farPlane = dist;
     TES3::Game::get()->renderDistance = dist;
 }
 

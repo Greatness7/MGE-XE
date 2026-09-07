@@ -11,12 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 
-// `minwindef.h` defines `near` and `far` as empty macros for 16-bit source
-// compatibility, which would silently delete the `Frustum` members of the same
-// name. Both expand to nothing, so dropping them costs nothing.
-#undef near
-#undef far
-
 struct IDirect3DDevice8;
 struct IDirect3DTexture8;
 
@@ -392,11 +386,15 @@ struct Frustum {
     float right;   // 0x04
     float top;     // 0x08
     float bottom;  // 0x0C
-    float near;    // 0x10
-    float far;     // 0x14
+    // MWSE names these `near` and `far`. Renamed here because `minwindef.h`
+    // defines both as empty macros for 16-bit source compatibility, and it
+    // defines `FAR` as `far` -- so undefining them to recover MWSE's spelling
+    // breaks DEFINE_GUID throughout the DirectX headers.
+    float nearPlane;  // 0x10
+    float farPlane;   // 0x14
 };
 static_assert(sizeof(Frustum) == 0x18, "NI::Frustum failed size validation");
-static_assert(offsetof(Frustum, far) == 0x14, "NI::Frustum::far failed offset validation");
+static_assert(offsetof(Frustum, farPlane) == 0x14, "NI::Frustum::farPlane failed offset validation");
 
 struct Camera : AVObject {
     Matrix44 worldToCamera;    // 0x90
@@ -455,6 +453,50 @@ static_assert(sizeof(DX8Renderer) == 0x6A0, "NI::DX8Renderer failed size validat
 static_assert(offsetof(DX8Renderer, d3dDevice) == 0x24, "NI::DX8Renderer::d3dDevice failed offset validation");
 static_assert(offsetof(DX8Renderer, backbufferRenderTarget) == 0x520, "NI::DX8Renderer::backbufferRenderTarget failed offset validation");
 static_assert(offsetof(DX8Renderer, currentRenderTarget) == 0x544, "NI::DX8Renderer::currentRenderTarget failed offset validation");
+
+//-----------------------------------------------------------------------------
+// Picking
+//-----------------------------------------------------------------------------
+
+// SharedSE types the two object members as Pointer<T>. They are raw here on
+// purpose: MGE never owns pick results, and funcphysics.cpp copies a whole
+// PickRecord by value into a static, which through an owning handle would take
+// a strong reference on every raycast and never release it.
+struct PickRecord {
+    Geometry* object;                // 0x00
+    AVObject* proxyParent;           // 0x04
+    Point3 intersection;             // 0x08
+    float distance;                  // 0x14
+    unsigned short triangleIndex;    // 0x18
+    unsigned short vertexIndex[3];   // 0x1A
+    Point2 texture;                  // 0x20
+    Point3 normal;                   // 0x28
+    PackedColor color;               // 0x34
+};
+static_assert(sizeof(PickRecord) == 0x38, "NI::PickRecord failed size validation");
+static_assert(offsetof(PickRecord, distance) == 0x14, "NI::PickRecord::distance failed offset validation");
+static_assert(offsetof(PickRecord, normal) == 0x28, "NI::PickRecord::normal failed offset validation");
+
+struct Pick {
+    int pickType;                   // 0x00
+    int sortType;                   // 0x04
+    int intersectType;              // 0x08
+    int coordinateType;             // 0x0C
+    bool frontOnly;                 // 0x10
+    bool observeAppCullFlag;        // 0x11
+    bool unknown_0x12;              // 0x12
+    char pad_13;                    // 0x13
+    Node* root;                     // 0x14
+    TArray<PickRecord*> results;    // 0x18
+    PickRecord* lastAddedRecord;    // 0x30
+    bool returnTexture;             // 0x34
+    bool returnNormal;              // 0x35
+    bool returnSmoothNormal;        // 0x36
+    bool returnColor;               // 0x37
+};
+static_assert(sizeof(Pick) == 0x38, "NI::Pick failed size validation");
+static_assert(offsetof(Pick, root) == 0x14, "NI::Pick::root failed offset validation");
+static_assert(offsetof(Pick, results) == 0x18, "NI::Pick::results failed offset validation");
 
 //-----------------------------------------------------------------------------
 // Textures and files
@@ -569,6 +611,8 @@ static_assert(sizeof(DX8RendererTextureData) == 0x68, "NI::DX8RendererTextureDat
 
 namespace VirtualTable {
     inline constexpr uintptr_t MaterialProperty = 0x75036C;
+    inline constexpr uintptr_t TriShape = 0x7508B0;
+    inline constexpr uintptr_t SwitchNode = 0x750080;
 }
 
 }  // namespace NI

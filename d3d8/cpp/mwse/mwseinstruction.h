@@ -1,6 +1,8 @@
 #pragma once
 
 #include "VMTYPES.h"
+#include "tes3/tes3addresses.h"
+#include "tes3/tes3types.h"
 
 #define MWSEINSTRUCTION_DECLARE_VTABLE(classname) \
 mwseInstruction::vtable_t classname::vtable = { &classname::deleting_destructor, &classname::getOperands, &classname::execute };
@@ -40,7 +42,7 @@ struct mwseInstruction {
     inline const char* vmGetString(void* str);
     const char* vmPopString();
 
-    inline static MWReference* vmGetTargetRef();
+    inline static TES3::Reference* vmGetTargetRef();
     inline static void* vmGetTargetActor();
 
     vtable_t* vptr;
@@ -93,16 +95,17 @@ inline const char* mwseInstruction::vmGetString(void* str) {
 }
 
 // vmGetTargetRef - Returns the reference that the script is targetted to
-inline MWReference* mwseInstruction::vmGetTargetRef() {
-    return *reinterpret_cast<MWReference**>(0x7CEBEC);
+inline TES3::Reference* mwseInstruction::vmGetTargetRef() {
+    return *reinterpret_cast<TES3::Reference**>(TES3::Address::scriptTargetRef);
 }
 
 // vmGetTargetActor - Returns the actor linked to the target reference
 inline void* mwseInstruction::vmGetTargetActor() {
-    MWReference* refr = vmGetTargetRef();
+    TES3::Reference* refr = vmGetTargetRef();
     if (refr) {
         typedef void* (__thiscall *resolveActor_t)(void*);
-        const resolveActor_t resolveActor = reinterpret_cast<resolveActor_t>(0x4E5750);
+        const resolveActor_t resolveActor = reinterpret_cast<resolveActor_t>(
+            TES3::Address::Reference_getMobile);
         return resolveActor(refr);
     }
     return nullptr;
