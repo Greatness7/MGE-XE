@@ -540,15 +540,20 @@ HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
         // No scene can become active, so nothing would ever read the record.
         return ProxyDevice::SetLight(a, absolute);
     }
-    CameraRelative::recordLightUpload(a, absolute);
-
+    HRESULT hr;
     if (CameraRelative::active() && absolute->Type != D3DLIGHT_DIRECTIONAL) {
         // Keep the fixed-function path's lights in the same space as its geometry.
         D3DLIGHT8 light = *absolute;
         CameraRelative::relativePosition(&absolute->Position, &light.Position);
-        return ProxyDevice::SetLight(a, &light);
+        hr = ProxyDevice::SetLight(a, &light);
+    } else {
+        hr = ProxyDevice::SetLight(a, absolute);
     }
-    return ProxyDevice::SetLight(a, absolute);
+
+    // Recorded after the device call, so a rejected positional light stays
+    // stale and the next view or LightEnable tries it again.
+    CameraRelative::recordLightUpload(a, absolute, SUCCEEDED(hr));
+    return hr;
 }
 
 void MGEProxyDevice::refreshLight(DWORD a) {

@@ -45,8 +45,10 @@ namespace CameraRelative {
 // per-bone positions), and the PlayerAnimController camera update call sites
 // (exact first-person eye). One-shot for the process lifetime, so turning the
 // option on takes a restart; turning it off applies from the next scene. Every
-// site verifies what it replaces, and each hook group installs all of its
-// sites or none.
+// site verifies what it replaces, and a group that cannot claim all of its
+// sites restores the ones it took and reports itself uninstalled. That
+// rollback is best-effort: it does not re-check its own writes, which can
+// only fail if VirtualProtect refuses a page this module already wrote.
 void installHooks();
 
 // Whether those hooks are in place. False for the lifetime of the process
@@ -110,7 +112,15 @@ void relativePosition(const D3DVECTOR* position, D3DVECTOR* out);
 // at each view and each LightEnable whether that still matches; when it does
 // not, it uploads the recorded light again. Only worth calling while
 // installed(); the records are read by nothing else.
-void recordLightUpload(DWORD index, const D3DLIGHT8* absolute);
+//
+// `accepted` is whether the device took the upload, so record after the call:
+// the absolute light is kept either way and a retry carries the engine's
+// latest parameters, while only an accepted upload advances the space and
+// origin the device is believed to hold. A rejected positional light stays
+// stale and is retried at the next view or LightEnable; a rejected directional
+// one is not, since it is never rebased and the device copy is then left
+// exactly as it would be with the feature off.
+void recordLightUpload(DWORD index, const D3DLIGHT8* absolute, bool accepted);
 bool lightUploadStale(DWORD index, D3DLIGHT8* absolute);
 
 // Frame boundary: retires the per-scene position cache.

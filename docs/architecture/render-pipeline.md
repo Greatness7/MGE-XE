@@ -280,8 +280,10 @@ pipeline relies on.
 
 - **Installation.** The engine hooks install at device creation only when the option is on.
   Turning it on at runtime takes effect after a restart; turning it off applies from the next
-  scene. Each hook group (camera pose, rigid draws, skinned draws, first-person eye) installs
-  all of its sites or none, so a conflict with another patcher never leaves a group half-owned.
+  scene. A hook group (camera pose, rigid draws, skinned draws, first-person eye) that cannot
+  claim all of its sites restores the ones it took and reports itself uninstalled, so a conflict
+  with another patcher does not leave a group half-owned. The rollback writes are themselves
+  unchecked, which matters only if `VirtualProtect` refuses a page the module already wrote.
 - **Which scenes.** The `SetCameraData` hook recovers the `NiCamera` being clicked and
   activates only when it is `WorldController::worldCamera` or `armCamera` (the pointers at
   +0x134 and +0x160) and the render target is the back buffer. The menu, splash, shadow,

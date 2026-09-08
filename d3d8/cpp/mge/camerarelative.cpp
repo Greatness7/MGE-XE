@@ -788,7 +788,8 @@ void activate(const D3DMATRIX* engineView) {
 constexpr std::size_t LIGHT_RECORD_LIMIT = 1024;
 
 struct LightUpload {
-    D3DLIGHT8 absolute;
+    D3DLIGHT8 absolute;       // what the light should be, whatever the device took
+    bool uploaded;            // the device accepted the copy described below
     bool relative;            // space the device holds it in
     double origin[3];         // origin subtracted, when relative
     std::uint64_t lastTouch;  // upload or enable order
@@ -1154,13 +1155,18 @@ void relativePosition(const D3DVECTOR* position, D3DVECTOR* out) {
     *out = result;
 }
 
-void recordLightUpload(DWORD index, const D3DLIGHT8* absolute) {
+void recordLightUpload(DWORD index, const D3DLIGHT8* absolute, bool accepted) {
     LightUpload& upload = lightRecord(index);
+    // The wanted light is recorded either way, so a retry carries the engine's
+    // latest parameters rather than the ones from the last upload that stuck.
     upload.absolute = *absolute;
-    upload.relative = isActive;
-    upload.origin[0] = origin[0];
-    upload.origin[1] = origin[1];
-    upload.origin[2] = origin[2];
+    upload.uploaded = accepted;
+    if (accepted) {
+        upload.relative = isActive;
+        upload.origin[0] = origin[0];
+        upload.origin[1] = origin[1];
+        upload.origin[2] = origin[2];
+    }
 }
 
 bool lightUploadStale(DWORD index, D3DLIGHT8* absolute) {
@@ -1173,7 +1179,8 @@ bool lightUploadStale(DWORD index, D3DLIGHT8* absolute) {
     if (upload.absolute.Type == D3DLIGHT_DIRECTIONAL) {
         return false;
     }
-    const bool stale = upload.relative != isActive
+    const bool stale = !upload.uploaded
+        || upload.relative != isActive
         || (isActive && (upload.origin[0] != origin[0] || upload.origin[1] != origin[1] || upload.origin[2] != origin[2]));
     if (stale) {
         *absolute = upload.absolute;
