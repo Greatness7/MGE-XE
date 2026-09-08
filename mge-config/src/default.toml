@@ -1,5 +1,6 @@
 # MGE XE configuration
 # Values omitted from a user file use these schema defaults.
+# Saving an existing file inserts entries missing from it, comments included.
 # Increment only for an intentionally incompatible schema revision.
 schema_version = 3
 

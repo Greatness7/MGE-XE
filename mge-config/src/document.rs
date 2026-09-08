@@ -14,7 +14,7 @@ use toml_edit::{DocumentMut, Formatted, Item, RawString, Table, value};
 
 use crate::schema::{SCHEMA_VERSION, Settings};
 use crate::validation::{Warning, validate, validate_bounds};
-use merge::{current_value_at_path, force_value_into_table, merge_changed_tables};
+use merge::{complete_missing_entries, current_value_at_path, force_value_into_table, merge_changed_tables};
 use tolerant::{PathSegment, display_path, dotted_segments, error_segments, remove_bad_value, remove_path};
 
 pub const FILE_NAME: &str = "mgeXE.toml";
@@ -318,6 +318,16 @@ impl ConfigDocument {
 
         let baseline = settings_document(&self.baseline).map_err(|error| ConfigError::Schema(error.to_string()))?;
         let current = settings_document(&self.settings).map_err(|error| ConfigError::Schema(error.to_string()))?;
+        // Entries the file omitted are restored from the embedded template before the merge,
+        // so they gain their template comments and the merge then applies this save's edits
+        // on top. Entries already present are untouched by this pass. The template's line
+        // endings are normalized first so inserted decoration is separated consistently
+        // regardless of how the working tree checked the template out.
+        let template: DocumentMut = DEFAULT_DOCUMENT
+            .replace("\r\n", "\n")
+            .parse()
+            .expect("embedded defaults are valid TOML");
+        complete_missing_entries(self.document.as_table_mut(), template.as_table(), baseline.as_table());
         merge_changed_tables(self.document.as_table_mut(), baseline.as_table(), current.as_table());
         for path in &self.forced_paths {
             let segments = path.split('.').collect::<Vec<_>>();

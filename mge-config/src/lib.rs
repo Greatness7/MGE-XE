@@ -18,6 +18,81 @@ mod tests {
     use std::ptr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    const EMPTY_MAP_LEAF: &str = "{}";
+
+    #[test]
+    fn template_covers_every_typed_default_entry() {
+        let template: toml_edit::DocumentMut = DEFAULT_DOCUMENT.parse().unwrap();
+        let defaults = toml_edit::ser::to_document(&Settings::default()).unwrap();
+
+        let mut template_entries = Vec::new();
+        let mut default_entries = Vec::new();
+        collect_leaf_paths(template.as_table(), String::new(), &mut template_entries);
+        collect_leaf_paths(defaults.as_table(), String::new(), &mut default_entries);
+        template_entries.sort();
+        default_entries.sort();
+
+        // Compared without deserializing the template into default-filling `Settings`, so a
+        // template entry the schema drops, or a schema entry the template omits, fails here.
+        assert_eq!(template_entries, default_entries);
+
+        // Empty maps are leaves too: dropping `input.remap = {}` from the template must
+        // produce a mismatch, not vanish against the schema's equally empty default.
+        let without_remap: toml_edit::DocumentMut = DEFAULT_DOCUMENT.replace("remap = {}", "").parse().unwrap();
+        let mut without_remap_entries = Vec::new();
+        collect_leaf_paths(without_remap.as_table(), String::new(), &mut without_remap_entries);
+        without_remap_entries.sort();
+        assert_ne!(without_remap_entries, default_entries);
+    }
+
+    /// Collects `path -> normalized value` pairs, recursing through tables and inline tables
+    /// alike, treating collections as leaves, and comparing floats at f32 precision.
+    fn collect_leaf_paths(table: &toml_edit::Table, prefix: String, entries: &mut Vec<(String, String)>) {
+        for (key, item) in table.iter() {
+            let path = format!("{prefix}{key}");
+            match item {
+                toml_edit::Item::Table(child) => {
+                    if child.is_empty() {
+                        // An empty regular table must compare against an empty inline map.
+                        entries.push((path, EMPTY_MAP_LEAF.to_owned()));
+                    } else {
+                        collect_leaf_paths(child, format!("{path}."), entries);
+                    }
+                }
+                toml_edit::Item::Value(value) => collect_value_leaves(value, path, entries),
+                other => entries.push((path, other.to_string())),
+            }
+        }
+    }
+
+    fn collect_value_leaves(value: &toml_edit::Value, path: String, entries: &mut Vec<(String, String)>) {
+        match value.as_inline_table() {
+            Some(inline) if inline.is_empty() => {
+                // An empty map contributes no members; keep it visible as a leaf so its
+                // removal from the template or the schema is detected.
+                entries.push((path, EMPTY_MAP_LEAF.to_owned()));
+            }
+            Some(inline) => {
+                for (name, inner) in inline.iter() {
+                    collect_value_leaves(inner, format!("{path}.{name}"), entries);
+                }
+            }
+            None => entries.push((path, normalize_leaf(value))),
+        }
+    }
+
+    fn normalize_leaf(value: &toml_edit::Value) -> String {
+        match value.as_float() {
+            Some(float) => {
+                // f32 widening loses float spelling differences between the hand-written
+                // template and the schema's serialized f32 values.
+                format!("{:e}", float as f32)
+            }
+            // Trimming ignores decoration around the rendered value.
+            None => value.to_string().trim().to_owned(),
+        }
+    }
+
     #[test]
     fn embedded_document_matches_typed_defaults() {
         let root = test_root("embedded-defaults");
@@ -27,6 +102,243 @@ mod tests {
         assert!(document.warnings().is_empty());
         assert_eq!(document.settings(), &Settings::default());
         assert_eq!(document.settings().gui.language, "auto");
+    }
+
+    #[test]
+    fn save_completes_missing_entries_with_template_comments() {
+        let root = test_root("completion-sparse");
+        let path = root.join(FILE_NAME);
+        fs::create_dir_all(&root).unwrap();
+        let source = "# user header\nschema_version = 1\n\n# keep gui comment\n[gui]\nlanguage = \"fr\"\n\n# keep generator comment\n[generation]\nversion = 3\nplugins = [\"Morrowind.esm\"]\n";
+        fs::write(&path, source).unwrap();
+
+        // Opening alone never writes.
+        let mut document = ConfigDocument::open(&path);
+        assert_eq!(fs::read(&path).unwrap(), source.as_bytes());
+
+        document.save().unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+
+        // Existing content keeps its comments, values, and tables.
+        assert!(written.contains("# user header"));
+        assert!(written.contains("# keep gui comment"));
+        assert!(written.contains("language = \"fr\""));
+        assert!(written.contains("# keep generator comment"));
+        assert!(written.contains("[generation]"));
+        assert!(written.contains("plugins = [\"Morrowind.esm\"]"));
+        // Missing owned settings arrive with their template comments and defaults.
+        assert!(written.contains("# Multisample level: none, x2, x4, or x8."));
+        assert!(written.contains("anti_aliasing = \"none\""));
+        assert!(written.contains("# Renderer-wide settings. Time values are milliseconds unless stated."));
+        assert!(written.contains("# Water reflection, simulation, and effect strengths."));
+        assert!(written.contains("[distant_land.water]"));
+        assert!(written.contains("[lighting.weather.blizzard]"));
+        assert!(written.contains("chain = []"));
+        assert!(written.contains("remap = {}"));
+        assert!(written.contains(&format!("schema_version = {SCHEMA_VERSION}")));
+
+        let reopened = ConfigDocument::open(&path);
+        assert_eq!(reopened.settings().gui.language, "fr");
+        assert_eq!(reopened.settings().render.fov, Settings::default().render.fov);
+        assert_eq!(reopened.settings().distant_land.water, Settings::default().distant_land.water);
+        assert!(reopened.warnings().is_empty());
+
+        // A second save/reopen/save cycle changes nothing.
+        let once = fs::read_to_string(&path).unwrap();
+        let mut again = ConfigDocument::open(&path);
+        again.save().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), once);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn save_restores_a_missing_nested_table_with_comments() {
+        let root = test_root("completion-nested");
+        let path = root.join(FILE_NAME);
+        fs::create_dir_all(&root).unwrap();
+        let start = DEFAULT_DOCUMENT.find("# Water reflection").unwrap();
+        let end = DEFAULT_DOCUMENT.find("# Fog modes").unwrap();
+        let source = format!(
+            "{}{}\n\n# user extension, not owned by the schema\n[user_extension]\nvalue = \"keep\"\n",
+            &DEFAULT_DOCUMENT[..start],
+            &DEFAULT_DOCUMENT[end..]
+        )
+        .replace("chain = []", "chain = [\"Bloom\"]");
+        fs::write(&path, &source).unwrap();
+
+        let mut document = ConfigDocument::open(&path);
+        // Typed defaults already cover the gap; the file just lacks the entries.
+        assert_eq!(document.settings().distant_land.water, Settings::default().distant_land.water);
+        document.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("# Water reflection, simulation, and effect strengths."));
+        assert!(written.contains("[distant_land.water]"));
+        assert!(written.contains("caustics_intensity = 50"));
+        // Surrounding content, including fog's group comment, is untouched.
+        assert!(written.contains("per_pixel_mode = \"always\""));
+        assert!(written.contains("# Fog modes and start/end distances in exterior cells."));
+        assert!(written.contains("[distant_land.fog]"));
+        // A whole untouched section survives byte-for-byte, comments included. The writer
+        // normalizes line endings, so compare independently of how the working tree checked
+        // the template out.
+        let grass_start = source.find("[distant_land.grass]").unwrap();
+        let grass_end = source.find("# Sun-shadow controls.").unwrap();
+        assert!(
+            written.contains(&source[grass_start..grass_end].replace("\r\n", "\n")),
+            "{written}"
+        );
+        // Populated collections and unknown root tables are preserved.
+        assert!(written.contains("chain = [\"Bloom\"]"));
+        assert!(written.contains("# user extension, not owned by the schema"));
+        assert!(written.contains("value = \"keep\""));
+        // Existing headers keep their relative order, and the restored section is appended
+        // after every table that was already present.
+        let mut previous = 0;
+        for header in [
+            "[graphics]",
+            "[render]",
+            "[runtime]",
+            "[distant_land.fog]",
+            "[distant_land.grass]",
+            "[distant_land.horizon]",
+            "[distant_land.weather.blizzard]",
+            "[lighting.weather.clear]",
+            "[lighting.weather.blizzard]",
+            "[shaders]",
+            "[input]",
+            "[gui]",
+            "[user_extension]",
+        ] {
+            let at = written
+                .find(header)
+                .unwrap_or_else(|| panic!("{header} missing from {written}"));
+            assert!(at > previous, "{header} is out of order in {written}");
+            previous = at;
+        }
+        assert!(
+            written.rfind("[distant_land.water]").unwrap() > written.find("[user_extension]").unwrap(),
+            "{written}"
+        );
+
+        let once = fs::read_to_string(&path).unwrap();
+        let mut again = ConfigDocument::open(&path);
+        again.save().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), once);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn save_gives_a_changed_missing_key_its_template_comment() {
+        let root = test_root("completion-changed-missing");
+        let path = root.join(FILE_NAME);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, "schema_version = 1\n\n[gui]\nlanguage = \"auto\"\n").unwrap();
+
+        let mut document = ConfigDocument::open(&path);
+        document.set_number("render.fov", 90.0).unwrap();
+        document.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("# Horizontal field of view in degrees, clamped to 5..150.\nfov = 90.0"),
+            "{written}"
+        );
+        assert_eq!(ConfigDocument::open(&path).get_number("render.fov"), Some(90.0));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn save_expands_partial_inline_tables_and_keeps_dotted_keys() {
+        let root = test_root("completion-inline-dotted");
+        let path = root.join(FILE_NAME);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &path,
+            "schema_version = 1\n\nrender = { fov = 80.0 } # keep my rendering note\n\n# keep aa\nruntime.skip_intro = true\n\ngraphics = { \"anti_aliasing\" = \"x4\" }\n\nlighting = { weather = { clear = { sun = 1.0 } } } # keep my lighting note\n\n[distant_land.fog]\nabove_water_start = 3.0\n",
+        )
+        .unwrap();
+
+        let mut document = ConfigDocument::open(&path);
+        document.save().unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+
+        // The partial inline table was expanded into a regular table, keeping the existing
+        // value, the trailing comment on the new header, and the template comments on the
+        // inserted keys.
+        assert!(written.contains("[render]"), "{written}");
+        assert!(written.contains("[render] # keep my rendering note"), "{written}");
+        assert!(written.contains("fov = 80.0"));
+        assert!(written.contains("# Presentation interval: immediate, one, two, three, or four."));
+        // The quoted member key keeps its original spelling after expansion.
+        assert!(written.contains("\"anti_aliasing\" = \"x4\""), "{written}");
+        assert!(written.contains("# Depth/stencil format requested from Direct3D."));
+        // The dotted representation survives, and inserted keys render as dotted lines too.
+        assert!(written.contains("# keep aa"));
+        assert!(written.contains("runtime.skip_intro = true"));
+        assert!(written.contains("runtime.menu_caching = false"));
+        // A nested partial inline expands along the whole chain, keeping the existing value
+        // and the outer trailing comment.
+        assert!(written.contains("[lighting] # keep my lighting note"), "{written}");
+        assert!(written.contains("[lighting.weather.clear]"), "{written}");
+        assert!(written.contains("sun = 1.0"));
+        assert!(written.contains("ambient = 1.0"));
+        assert!(written.contains("[lighting.weather.blizzard]"));
+        // The existing fog value keeps its table; missing fog keys and distant-land
+        // siblings are restored around it.
+        assert!(written.contains("above_water_start = 3.0"));
+        assert!(written.contains("[distant_land.water]"));
+        assert!(written.contains("exponential = true"));
+        assert!(!written.contains("\n\n\n"), "{written}");
+
+        let reopened = ConfigDocument::open(&path);
+        assert_eq!(reopened.settings().render.fov, 80.0);
+        assert_eq!(reopened.settings().graphics.anti_aliasing, AntiAliasing::X4);
+        assert!(reopened.settings().runtime.skip_intro);
+        assert_eq!(reopened.settings().distant_land.fog.above_water_start, 3.0);
+        assert_eq!(reopened.settings().lighting.weather.clear.sun, 1.0);
+        assert_eq!(
+            reopened.settings().lighting.weather.clear.ambient,
+            Settings::default().lighting.weather.clear.ambient
+        );
+        assert_eq!(
+            reopened.settings().graphics.borderless,
+            Settings::default().graphics.borderless
+        );
+        assert!(reopened.warnings().is_empty());
+
+        let once = fs::read_to_string(&path).unwrap();
+        let mut again = ConfigDocument::open(&path);
+        again.save().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), once);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn complete_inline_tables_are_left_alone() {
+        let root = test_root("completion-complete-inline");
+        let path = root.join(FILE_NAME);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            &path,
+            "schema_version = 1\n\ngraphics = { anti_aliasing = \"x4\", z_buffer_format = \"d24s8\", vsync = \"one\", refresh_rate = 0, borderless = false, anisotropy = \"x2\", transparency_antialiasing = false }\n\n[gui]\nlanguage = \"auto\"\n",
+        )
+        .unwrap();
+
+        let mut document = ConfigDocument::open(&path);
+        document.save().unwrap();
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("graphics = {"), "{written}");
+        assert!(!written.contains("[graphics]"), "{written}");
+        assert_eq!(
+            ConfigDocument::open(&path).settings().graphics.anti_aliasing,
+            AntiAliasing::X4
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
