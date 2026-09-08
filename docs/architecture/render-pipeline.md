@@ -274,7 +274,7 @@ Patterns to preserve when touching this code:
 
 ## 10. Camera-relative rendering
 
-`render.camera_relative`, off by default. Owned by `d3d8/cpp/mge/camerarelative.{h,cpp}`,
+`render.camera_relative`, on by default. Owned by `d3d8/cpp/mge/camerarelative.{h,cpp}`,
 whose header comment describes the mechanism; this section records what the rest of the
 pipeline relies on.
 

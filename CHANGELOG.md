@@ -6,14 +6,14 @@
 
 - Distant statics now stream in and out as you travel instead of all loading at startup.
   This means VRAM usage no longer scales with the size of your mod list.
-- Camera-relative rendering, opt-in (`render.camera_relative`). Far from the map origin,
+- Camera-relative rendering, on by default (`render.camera_relative`). Far from the map origin,
   objects, terrain edges and the whole scene shimmer as the camera moves because the game's
   float32 world coordinates round by a visible amount. The near scene is now combined with the
   camera in double precision, relative to the exact camera position, so that rounding never
   reaches the screen. Actors, creatures and the first-person arms are placed from the exact
   positions their skeletons imply rather than the engine's rounded ones, which stops their
-  trembling far out. The engine hooks install at startup when the option is on, so turning it
-  on takes a restart.
+  trembling far out. The engine hooks install at startup, so turning it off applies from the
+  next scene and turning it back on takes a restart.
 - Grass in interiors. Interior placements in the generator's grass plugin list are now baked into
   distant land and rendered like exterior grass, and a groundcover plugin that only places grass in
   interiors is detected for the Grass tab. Interior grass sways with a small constant wind that no

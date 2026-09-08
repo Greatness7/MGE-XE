@@ -400,7 +400,7 @@ impl Default for RenderSettings {
             fog_mode: FogMode::RangeVertex,
             enable_shaders: false,
             indexed_skinning: false,
-            camera_relative: false,
+            camera_relative: true,
             hdr_reaction_time: 2.0,
             fps_counter: false,
             messages: true,

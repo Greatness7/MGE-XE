@@ -367,13 +367,13 @@ mod tests {
         fs::write(&path, DEFAULT_DOCUMENT).unwrap();
 
         let mut document = ConfigDocument::open(&path);
-        assert!(!document.settings().render.camera_relative);
-        assert_eq!(document.get_number("render.camera_relative"), Some(0.0));
+        assert!(document.settings().render.camera_relative);
+        assert_eq!(document.get_number("render.camera_relative"), Some(1.0));
 
-        document.set_number("render.camera_relative", 1.0).unwrap();
+        document.set_number("render.camera_relative", 0.0).unwrap();
         document.save().unwrap();
         let reloaded = ConfigDocument::open(&path);
-        assert!(reloaded.settings().render.camera_relative);
+        assert!(!reloaded.settings().render.camera_relative);
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -40,7 +40,7 @@ indexed_skinning = false
 # round by a visible amount. Read once at process start, so turning it on
 # takes effect after a full game restart; turning it off applies from the
 # next scene.
-camera_relative = false
+camera_relative = true
 # HDR adaptation time in seconds, clamped to 0.01..30.
 hdr_reaction_time = 2.0
 # Draw MGE XE's FPS counter.
