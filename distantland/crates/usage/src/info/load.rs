@@ -35,8 +35,23 @@ impl<'a> UsageInfo<'a> {
                 &reference_sources,
                 capture,
             );
-        let grass = load_grass_plugins(vfs, grass_plugins, &usage_info.objects, args, overrides, &reference_sources)?;
+        // Snapshot taken after `filter_interiors`: grass may only place into an interior distant
+        // land already keeps, and must spell the cell the way the load order does.
+        let included_interiors = usage_info.included_interiors();
+        let grass = load_grass_plugins(
+            vfs,
+            grass_plugins,
+            &usage_info.objects,
+            &included_interiors,
+            args,
+            overrides,
+            &reference_sources,
+        )?;
         usage_info.merge(grass.usage_info);
+        // Step 2: re-apply clip to exterior references after grass merge. Grass references
+        // may have been placed in the clipped region; the retained-bounds from step 1 are
+        // stored on `usage_info.terrain_control_clip`.
+        usage_info.reapply_terrain_control_clip();
         usage_info.finalize();
         Ok((usage_info, plugin_identities, grass.identities, grass.warnings, capture))
     }
@@ -117,6 +132,15 @@ impl<'a> UsageInfo<'a> {
             // complete once every plugin has been merged. This must stay ahead of `capture`, which
             // projects `ObjectDefinition` into the statics domain digest.
             this.classify_script_disables();
+
+            // Clip terrain cells and exterior references to fit within the control-texture
+            // limits. Must run before `capture`, which projects `terrain_cells` into the
+            // `landscapes` unit table. The result is reported as a generation warning by the
+            // caller, which reads it back through `UsageInfo::terrain_control_clip`.
+            this.clip_terrain_control_region(&TerrainControlClipLimits::from_settings(
+                args.max_terrain_control_texture_size,
+                args.max_terrain_control_texture_bytes,
+            ));
 
             span.record("object_count", this.objects.len() as u64);
             span.record("reference_count", this.total_references_count() as u64);

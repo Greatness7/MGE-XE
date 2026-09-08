@@ -133,6 +133,9 @@ impl Projections {
     }
 
     /// Adds the already-classified dedicated grass placements from the final usage view.
+    ///
+    /// Interior placements are captured here too, carrying their cell name: the interior projections
+    /// above were taken before the grass list merged, so this is the only place they are seen.
     pub(crate) fn capture_dedicated_grass(
         &mut self,
         usage: &UsageInfo<'_>,
@@ -141,16 +144,21 @@ impl Projections {
         overrides: &StaticOverrides,
     ) {
         let sources: BTreeSet<_> = grass_plugins.iter().filter_map(|path| normalized_filename(path)).collect();
-        let Some(references) = usage.exterior_references() else {
-            return;
-        };
-        self.grass_placements = references
+        self.grass_placements = usage
+            .cells
             .iter()
-            .filter_map(|(&key, reference)| {
+            .flat_map(|(cell_name, references)| {
+                let interior_cell = (cell_name != "\0").then(|| cell_name.clone());
+                references
+                    .iter()
+                    .map(move |(&key, reference)| (interior_cell.clone(), key, reference))
+            })
+            .filter_map(|(interior_cell, key, reference)| {
                 let source = usage.reference_source_name(key.source())?;
                 sources.contains(source).then(|| GrassPlacementProjection {
                     source: source.to_owned(),
                     index: key.index(),
+                    interior_cell,
                     mesh_key: normalize(reference.id.as_ref()).into_owned(),
                     translation: vec3_bits(reference.translation),
                     rotation: vec3_bits(reference.rotation),
@@ -569,6 +577,10 @@ pub(crate) struct UsageSettingsProjection {
     pub(crate) exclude_script_disable_targets: bool,
     /// Non-grass static cull depth below the applicable water level, as raw bits.
     pub(crate) deep_water_static_cull_depth: u32,
+    /// Maximum allowed width or height of the rectangular terrain control maps.
+    pub(crate) max_terrain_control_texture_size: u32,
+    /// Maximum allowed estimated byte footprint of the rectangular terrain control maps.
+    pub(crate) max_terrain_control_texture_bytes: u64,
 }
 
 impl From<&GenerationSettings> for UsageSettingsProjection {
@@ -592,6 +604,10 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             include_large_interiors,
             exclude_script_disable_targets,
             deep_water_static_cull_depth,
+            // Control-map limits clip terrain cells and exterior references before capture,
+            // deciding statics membership.
+            max_terrain_control_texture_size,
+            max_terrain_control_texture_bytes,
             // --- Materialized by a sibling projection ---
             // These only select which override sources are parsed; their entire effect is already
             // present in the resolved `StaticOverrides` captured by `OverrideStateProjection`,
@@ -617,10 +633,8 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             terrain_detail: _,
             terrain_mesh_smoothed_normal_weight: _,
             terrain_mesh_color_weight: _,
-            // --- Terrain-domain globals and control-map guards (not statics) ---
+            // --- Terrain-domain globals (not statics) ---
             generate_terrain: _,
-            max_terrain_control_texture_size: _,
-            max_terrain_control_texture_bytes: _,
             // --- Execution policy (excluded from `settings_identity`) ---
             force_rebuild: _,
         } = value;
@@ -634,6 +648,8 @@ impl From<&GenerationSettings> for UsageSettingsProjection {
             include_large_interiors: *include_large_interiors,
             exclude_script_disable_targets: *exclude_script_disable_targets,
             deep_water_static_cull_depth: deep_water_static_cull_depth.to_bits(),
+            max_terrain_control_texture_size: *max_terrain_control_texture_size,
+            max_terrain_control_texture_bytes: *max_terrain_control_texture_bytes,
         }
     }
 }
@@ -648,6 +664,8 @@ impl CanonicalWrite for UsageSettingsProjection {
         writer.write_bool(self.include_large_interiors);
         writer.write_bool(self.exclude_script_disable_targets);
         writer.write_u32(self.deep_water_static_cull_depth);
+        writer.write_u32(self.max_terrain_control_texture_size);
+        writer.write_u64(self.max_terrain_control_texture_bytes);
     }
 }
 
@@ -658,6 +676,8 @@ pub(crate) struct GrassPlacementProjection {
     pub(crate) source: String,
     /// Occurrence-stable source-local index.
     pub(crate) index: u32,
+    /// Exact name of the interior cell the placement sits in; `None` for the exterior.
+    pub(crate) interior_cell: Option<String>,
     pub(crate) mesh_key: String,
     /// Raw translation component bits.
     pub(crate) translation: [u32; 3],
@@ -674,6 +694,10 @@ impl CanonicalWrite for GrassPlacementProjection {
     fn write_canonical(&self, writer: &mut CanonicalWriter) {
         writer.write_str(&self.source);
         writer.write_u32(self.index);
+        writer.write_bool(self.interior_cell.is_some());
+        if let Some(interior_cell) = &self.interior_cell {
+            writer.write_str(interior_cell);
+        }
         writer.write_str(&self.mesh_key);
         write_vec3_bits(writer, self.translation);
         write_vec3_bits(writer, self.rotation);

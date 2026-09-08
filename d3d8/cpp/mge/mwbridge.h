@@ -3,6 +3,13 @@
 #include "bc7format.h"
 #include <string>
 
+// Forward declared so the engine layout headers stay out of every translation
+// unit that only needs the bridge's public interface.
+namespace TES3 {
+    struct Cell;
+    struct MobilePlayer;
+}
+
 
 //-----------------------------------------------------------------------------
 
@@ -20,8 +27,6 @@ public:
     inline bool IsLoaded();
     bool CanLoad();
 
-    DWORD GetAlwaysRun();
-    DWORD GetAutoRun();
     DWORD GetShadowToggleAddr();
     DWORD GetShadowRealAddr();
     DWORD GetShadowFovAddr();
@@ -30,10 +35,8 @@ public:
     void ToggleCrosshair();
     bool IsExterior();
     bool IsMenu();
-    bool IsLoadScreen();
     bool IsCombat();
     bool IsCrosshair();
-    bool IsAlwaysRun();
 
     DWORD GetNextTrack();
     DWORD GetMusicVol();
@@ -48,7 +51,6 @@ public:
     DWORD getScenegraphFogCol();
     void setScenegraphFogCol(DWORD c);
     float getScenegraphFogDensity();
-    bool CellHasWeather();
     float* GetWindVector();
     DWORD GetWthrStruct(int wthr);
     int GetWthrString(int wthr, int offset, char str[]);
@@ -72,7 +74,11 @@ public:
     void setSunriseSunset(float rise_time, float rise_dur, float set_time, float set_dur);
 
     DWORD IntCurCellAddr();
-    bool IntLikeExterior();
+    // The editor's "Behaves like exterior" flag, which exteriors also carry. It is what decides
+    // whether the current cell has weather, sky and outdoor lighting. `whenCellUnknown` is
+    // returned when no cell resolves - between cells, or before the environment exists - so
+    // render paths can keep their exterior setup on such a frame while interior queries do not.
+    bool IntLikeExterior(bool whenCellUnknown = false);
     bool IntIllegSleep();
     bool IntHasWater();
     float WaterLevel();
@@ -92,7 +98,6 @@ public:
     // pointers, unlike PlayerPositionX/Y/Z which return a valid-looking zero on failure.
     bool tryGetPlayerPosition(float outPosition[3]);
     float PlayerHeight();
-    bool IsPlayerWaiting();
     D3DXVECTOR3* PCam3Offset();
     DWORD getPlayerMACP();
     bool is3rdPerson();
@@ -136,64 +141,23 @@ public:
     MWBridge();
 
 protected:
+    /// The interior cell the player is in, or null in exteriors and before the
+    /// environment exists. Backs every interior-only query below.
+    TES3::Cell* getInteriorCell();
+
+    /// The player's mobile object. Not null-safe at each hop; see plan section 6.1.
+    TES3::MobilePlayer* getPlayerMobile();
+
+    // Latched by Load() once Morrowind's environment first becomes reachable.
+    // This is a one-shot latch, not a live probe: Present() keys the one-time
+    // engine patching and DistantLand::init() off `!IsLoaded() && CanLoad()`,
+    // which only ever fires while the two disagree.
     bool m_loaded;
 
-    /// Sets pointers to static memory of Morrowind
-    void InitStaticMemory();
-
-    /// Functions for reading and writing data at locations in Morrowind's memory
-    DWORD read_dword(const DWORD dwAddress);
-    WORD read_word(const DWORD dwAddress);
-    BYTE read_byte(const DWORD dwAddress);
-    float read_float(const DWORD dwAddress);
-    void write_dword(const DWORD dwAddress, DWORD dword);
-    void write_word(const DWORD dwAddress, WORD word);
-    void write_byte(const DWORD dwAddress, BYTE byte);
-    void write_float(const DWORD dwAddress, float f);
-    void write_ptr(const DWORD dwAddress, void* ptr);
-
-    /// Pointers to Morrowind Memory
-    DWORD
-    eMaster, eEnviro, eMaster1, eMaster2,
-             eFPS, eTimer, eD3D, eTruRenderWidth, eShadowSlider,
-             eCrosshair1, eAI, eView0, eRenderWidth,
-             eView1, eCombat, ePCRef,
-
-             eGamma, eView4, eLookMenu,
-
-             eX, eCos, eWorldFOV, eView2,
-
-             eSkyFOV, eMenuFOV, eView3, eExt, eMenu, eMouseLim,
-
-             eLoad,
-
-             eWthrArray, eCurWthrStruct, eNextWthrStruct,
-             eCurSkyCol, eCurFogCol,
-             eWindVector,
-             eSunriseHour, eSunsetHour, eSunriseDuration, eSunsetDuration,
-             eSunDir, eSunVis, // Real sun direction, sun(glare) alpha value
-             eWeatherRatio;
-
-    // floating point variables
-    DWORD eNextTrack, eMusicVol,
-          eAlwaysRun, eAutoRun,
-          eShadowToggle, eShadowReal, eShadowFOV,
-          eCrosshair2;
-
-    // Pointers to Morrowind code
-    DWORD eNoMusicBreak,
-          eGammaFunc,
-          eMusicVolFunc,
-          eHaggleUpdate, eHaggleAmount,
-          eMenuMouseMove,
-          eTruform, eGetMouseState,
-          eXMenuHudIn, eXMenuHudOut, eXMenuNoMouse, eXMenuNoFOV,
-          eXMenuWnds, eXMenuPopups, eXMenuLoWnds, eXMenuSubtitles, eXMenuFPS,
-          eNoWorldFOV, eXRotSpeed, eYRotSpeed,
-          eScrollScale, eBookScale, eJournalScale, eRipplesSwitch;
-
-    // Other values
-    DWORD dwAlwaysRunOffset;
+    // Cached shadow-camera frustum. Resolved lazily because the shadow manager
+    // does not exist until shadows are first enabled, and MGE writes FOV into it
+    // every time the player FOV changes.
+    DWORD eShadowFOV;
 };
 
 //-----------------------------------------------------------------------------

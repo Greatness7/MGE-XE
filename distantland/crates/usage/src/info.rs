@@ -45,6 +45,10 @@ pub struct UsageFilterOptions {
     pub exclude_script_disable_targets: bool,
     /// Global density applied to grass without a mesh-specific density override.
     pub grass_density: f32,
+    /// Maximum allowed width or height of rectangular terrain control maps, in texels.
+    pub max_terrain_control_texture_size: u32,
+    /// Maximum allowed estimated byte footprint of rectangular terrain control maps.
+    pub max_terrain_control_texture_bytes: u64,
 }
 
 #[cfg(test)]

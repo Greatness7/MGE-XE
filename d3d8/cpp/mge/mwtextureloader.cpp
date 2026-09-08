@@ -2,6 +2,7 @@
 #include "mge/mwpatches.h"
 #include "mge/bc7format.h"
 #include "support/log.h"
+#include "tes3/nitypes.h"
 
 #include <cstddef>
 #include <cstring>
@@ -21,103 +22,6 @@ void setBC7TextureSupport(bool supported) {
 
 //-----------------------------------------------------------------------------
 
-struct NiDX8Renderer {
-    void* vtbl;
-    int unknown_0x4[8];
-    IDirect3DDevice8* d3dDevice;
-    int unknown_0x28[414];
-};
-static_assert(sizeof(NiDX8Renderer) == 0x6A0);
-
-struct NiPixelFormat {
-    int format;
-    unsigned int channelMasks[4];
-    unsigned int bitsPerPixel;
-    unsigned int compareBits[2];
-};
-static_assert(sizeof(NiPixelFormat) == 0x20);
-
-struct NiPixelData {
-    void* vtbl;
-    unsigned int refCount;
-    NiPixelFormat format;
-    void* palette;
-    unsigned char* pixelsAllMips;
-    unsigned int* mipmapWidths;
-    unsigned int* mipmapHeights;
-    unsigned int* mipmapOffsets;
-    unsigned int mipmapLevels;
-    unsigned int bytesPerPixel;
-    unsigned int revisionID;
-};
-static_assert(sizeof(NiPixelData) == 0x48);
-static_assert(offsetof(NiPixelData, format) == 0x08);
-static_assert(offsetof(NiPixelData, mipmapLevels) == 0x3C);
-
-struct NiSourceTexture {
-    void* vtbl;
-    int unknown_0x4[10];
-    const char* filename;
-    const char* filenameOnPC;
-    NiPixelData* pixelData;
-    bool isStatic;
-};
-static_assert(sizeof(NiSourceTexture) == 0x3C);
-static_assert(offsetof(NiSourceTexture, pixelData) == 0x34);
-
-struct NiDX8RendererTextureData {
-    void* vtbl;
-    void* unknown_0x4;
-    NiSourceTexture* sourceTexture;
-    void* unknown_0xC;
-    NiDX8Renderer* renderer;
-    int pixelFormat[10];
-    void* d3dPalette;
-    int d3dPaletteRevision;
-    unsigned int width, height;
-    unsigned int levels;
-    bool bMipmap;
-    int unknown_0x54;
-    void* sourcePalette;
-    int sourcePaletteRevision;
-    IDirect3DTexture8* d3dTexture;
-    int sourceRevision;
-};
-static_assert(sizeof(NiDX8RendererTextureData) == 0x68);
-
-struct NiFile;
-
-struct NiFileVtbl {
-    void* deletingDtor;
-    void* asBool;
-    unsigned int (__thiscall* read)(NiFile*, void*, unsigned int);
-    void* write;
-    void (__thiscall* seek)(NiFile*, int, int);
-};
-
-struct NiFile {
-    NiFileVtbl* vtbl;
-    void* buffer;
-    unsigned int bufferAllocSize;
-    unsigned int bufferReadSize;
-    unsigned int position;
-    void* filePointer;
-    int accessMode;
-    bool valid;
-};
-static_assert(sizeof(NiFile) == 0x20);
-static_assert(offsetof(NiFile, position) == 0x10);
-
-struct NiDDSReader {
-    void* vtbl;
-    unsigned int width;
-    unsigned int height;
-    unsigned int mipMapLevels;
-    NiPixelFormat pixelFormat;
-};
-static_assert(sizeof(NiDDSReader) == 0x30);
-static_assert(offsetof(NiDDSReader, pixelFormat) == 0x10);
-
 struct DDSHeaderDX10 {
     unsigned int dxgiFormat;
     unsigned int resourceDimension;
@@ -127,23 +31,23 @@ struct DDSHeaderDX10 {
 };
 static_assert(sizeof(DDSHeaderDX10) == 0x14);
 
-using NiDDSReaderReadFile = NiPixelData* (__thiscall*)(NiDDSReader*, NiFile*, NiPixelData*);
-using NiDDSReaderDecodeHeader = bool (__thiscall*)(NiDDSReader*, NiFile*, unsigned int*, unsigned int*, NiPixelFormat*, bool*);
+using DDSReaderReadFile = NI::PixelData* (__thiscall*)(NI::DDSReader*, NI::File*, NI::PixelData*);
+using DDSReaderDecodeHeader = bool (__thiscall*)(NI::DDSReader*, NI::File*, unsigned int*, unsigned int*, NI::PixelFormat*, bool*);
 
-static const auto niDDSReaderReadFile = reinterpret_cast<NiDDSReaderReadFile>(0x708050);
-static const auto niDDSReaderDecodeHeader = reinterpret_cast<NiDDSReaderDecodeHeader>(0x707C10);
+static const auto niDDSReaderReadFile = reinterpret_cast<DDSReaderReadFile>(0x708050);
+static const auto niDDSReaderDecodeHeader = reinterpret_cast<DDSReaderDecodeHeader>(0x707C10);
 
-static bool readExact(NiFile* file, void* data, unsigned int length) {
+static bool readExact(NI::File* file, void* data, unsigned int length) {
     return file->vtbl->read(file, data, length) == length;
 }
 
-static bool __fastcall patchNiDDSReaderDecodeHeader(
-    NiDDSReader* reader,
+static bool __fastcall patchDDSReaderDecodeHeader(
+    NI::DDSReader* reader,
     void*,
-    NiFile* file,
+    NI::File* file,
     unsigned int* outWidth,
     unsigned int* outHeight,
-    NiPixelFormat* outPixelFormat,
+    NI::PixelFormat* outPixelFormat,
     bool* outMipmap)
 {
     const unsigned int startPosition = file->position;
@@ -209,7 +113,7 @@ static bool __fastcall patchNiDDSReaderDecodeHeader(
         return false;
     }
 
-    const auto niPixelFormatCtor = reinterpret_cast<void (__thiscall*)(NiPixelFormat*, int)>(0x6EDA40);
+    const auto niPixelFormatCtor = reinterpret_cast<void (__thiscall*)(NI::PixelFormat*, int)>(0x6EDA40);
     niPixelFormatCtor(&reader->pixelFormat, 8);
     reader->pixelFormat.channelMasks[0] = static_cast<unsigned int>(MGE_D3DFMT_BC7);
 
@@ -227,32 +131,32 @@ static bool __fastcall patchNiDDSReaderDecodeHeader(
     return true;
 }
 
-static NiPixelData* __fastcall patchNiDDSReaderReadFile(
-    NiDDSReader* reader,
+static NI::PixelData* __fastcall patchDDSReaderReadFile(
+    NI::DDSReader* reader,
     void*,
-    NiFile* file,
-    NiPixelData* pixelData)
+    NI::File* file,
+    NI::PixelData* pixelData)
 {
-    NiPixelData* result = niDDSReaderReadFile(reader, file, pixelData);
+    NI::PixelData* result = niDDSReaderReadFile(reader, file, pixelData);
     if (result && reader->pixelFormat.format >= 6 && reader->pixelFormat.format <= 8) {
         // ReadFile can reuse PixelData when only this tag differs, so refresh it after every read.
-        result->format.channelMasks[0] = reader->pixelFormat.channelMasks[0];
+        result->pixelFormat.channelMasks[0] = reader->pixelFormat.channelMasks[0];
     }
     return result;
 }
 
 static HRESULT __stdcall patchLoadTexture2DCreate(
     IDirect3DDevice8* device,
-    NiDX8RendererTextureData* sourceTextureData,
-    const NiPixelData* pixelData,
+    NI::DX8RendererTextureData* sourceTextureData,
+    const NI::PixelData* pixelData,
     D3DFORMAT d3dFormat) {
     // Static texture: Create staging texture in system memory pool
     // Dynamic texture: Create texture in managed pool
     auto width = sourceTextureData->width, height = sourceTextureData->height, levels = sourceTextureData->levels;
     auto pool = sourceTextureData->sourceTexture->isStatic ? D3DPOOL_SYSTEMMEM : D3DPOOL_MANAGED;
 
-    if (pixelData && pixelData->format.format == 8
-        && pixelData->format.channelMasks[0] == static_cast<unsigned int>(MGE_D3DFMT_BC7))
+    if (pixelData && pixelData->pixelFormat.format == 8
+        && pixelData->pixelFormat.channelMasks[0] == static_cast<unsigned int>(MGE_D3DFMT_BC7))
     {
         d3dFormat = MGE_D3DFMT_BC7;
     }
@@ -263,20 +167,20 @@ static HRESULT __stdcall patchLoadTexture2DCreate(
     return d3d8CreateTexture(device, width, height, levels, 0, d3dFormat, pool, &sourceTextureData->d3dTexture);
 }
 
-static void releaseConvertedPixelData(const NiPixelData* pixelData) {
+static void releaseConvertedPixelData(const NI::PixelData* pixelData) {
     if (!pixelData || pixelData->refCount != 0) {
         return;
     }
 
-    auto converted = const_cast<NiPixelData*>(pixelData);
+    auto converted = const_cast<NI::PixelData*>(pixelData);
     auto vtbl = *reinterpret_cast<void***>(converted);
-    auto deletingDtor = reinterpret_cast<void(__thiscall*)(NiPixelData*, int)>(vtbl[0]);
+    auto deletingDtor = reinterpret_cast<void(__thiscall*)(NI::PixelData*, int)>(vtbl[0]);
     deletingDtor(converted, 1);
 }
 
 static void uploadStagingTexture(
-    NiDX8RendererTextureData* sourceTextureData,
-    const NiPixelData* pixelData,
+    NI::DX8RendererTextureData* sourceTextureData,
+    const NI::PixelData* pixelData,
     D3DFORMAT d3dFormat) {
     // This upload step is only needed if it is a static texture
     if (sourceTextureData->sourceTexture->isStatic) {
@@ -294,8 +198,8 @@ static void uploadStagingTexture(
             return;
         }
 
-        if (pixelData && pixelData->format.format == 8
-            && pixelData->format.channelMasks[0] == static_cast<unsigned int>(MGE_D3DFMT_BC7))
+        if (pixelData && pixelData->pixelFormat.format == 8
+            && pixelData->pixelFormat.channelMasks[0] == static_cast<unsigned int>(MGE_D3DFMT_BC7))
         {
             d3dFormat = MGE_D3DFMT_BC7;
         }
@@ -319,8 +223,8 @@ static void uploadStagingTexture(
 }
 
 static void __stdcall patchLoadTexture2DUpload(
-    NiDX8RendererTextureData* sourceTextureData,
-    const NiPixelData* pixelData,
+    NI::DX8RendererTextureData* sourceTextureData,
+    const NI::PixelData* pixelData,
     D3DFORMAT d3dFormat) {
     uploadStagingTexture(sourceTextureData, pixelData, d3dFormat);
 
@@ -366,12 +270,12 @@ void patchLoadTexture2D() {
     write_byte(0x6BFCD7, 0x18);
     write_byte(0x6BFCE3, 0x24);
 
-    // NiDDSReader is reached only through these two adjacent .rdata vtable slots.
+    // NI::DDSReader is reached only through these two adjacent .rdata vtable slots.
     constexpr DWORD readFileSlot = 0x751328;
     constexpr DWORD decodeHeaderSlot = 0x75132C;
     VirtualMemWriteAccessor vw4(reinterpret_cast<void*>(readFileSlot), 2 * sizeof(void*), PAGE_READWRITE);
-    write_ptr(readFileSlot, reinterpret_cast<void*>(patchNiDDSReaderReadFile));
-    write_ptr(decodeHeaderSlot, reinterpret_cast<void*>(patchNiDDSReaderDecodeHeader));
+    write_ptr(readFileSlot, reinterpret_cast<void*>(patchDDSReaderReadFile));
+    write_ptr(decodeHeaderSlot, reinterpret_cast<void*>(patchDDSReaderDecodeHeader));
 }
 
 } // namespace MWTextureLoader

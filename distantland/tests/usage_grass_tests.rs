@@ -7,8 +7,8 @@ use distantland::{
     is_grass_plugin,
 };
 use distantland_test_support::{
-    BASELINE_WORLD_V1_GRASSLIST, BASELINE_WORLD_V1_MAINGRASS, FIXTURE_GRASS_PLUGIN_NAME, FIXTURE_PLUGIN_NAME,
-    FIXTURE_SECOND_GRASS_PLUGIN_NAME, build_hermetic_fixture,
+    BASELINE_WORLD_V1_GRASSLIST, BASELINE_WORLD_V1_MAINGRASS, FIXTURE_GRASS_INTERIOR_NAME, FIXTURE_GRASS_PLUGIN_NAME,
+    FIXTURE_PLUGIN_NAME, FIXTURE_SECOND_GRASS_PLUGIN_NAME, build_hermetic_fixture,
 };
 use itertools::Itertools;
 use tes3::esp::{Cell, Header, Plugin, Reference, Static, TES3Object};
@@ -75,6 +75,8 @@ fn grass_options() -> UsageFilterOptions {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     }
 }
 
@@ -111,6 +113,8 @@ fn main_load_order_collapses_groundcover_that_the_grass_list_keeps() {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     };
     let overrides = StaticOverrides::default();
 
@@ -133,6 +137,20 @@ fn main_load_order_collapses_groundcover_that_the_grass_list_keeps() {
     assert!(
         main_grass.iter().all(|fact| dedicated_grass.contains(fact)),
         "the placements the main list keeps should be a subset of what the grass list keeps"
+    );
+
+    // The grass list also keeps the plugin's one interior placement, in the world space the load
+    // order already holds for that cell, alongside the cell's own statics.
+    let interior = grass_usage
+        .cells
+        .get(FIXTURE_GRASS_INTERIOR_NAME)
+        .expect("the fixture interior is a distant world space");
+    assert_eq!(
+        interior
+            .values()
+            .filter(|reference| reference.id.as_ref() == "grass\\fixture_grass.nif")
+            .count(),
+        1
     );
 
     assert!(grass_warnings.is_empty(), "active content-master placements should not warn");
@@ -299,6 +317,8 @@ fn disjoint_grass_plugins_resolve_identically_in_either_list_order() {
         include_large_interiors: true,
         exclude_script_disable_targets: true,
         grass_density: 1.0,
+        max_terrain_control_texture_size: 0,
+        max_terrain_control_texture_bytes: 0,
     };
     let overrides = StaticOverrides::default();
     let (forward, _, _, _, ()) =
@@ -316,7 +336,7 @@ mod classification {
     use std::path::{Path, PathBuf};
 
     use distantland::{classify_grass_plugins, is_grass_plugin};
-    use tes3::esp::{Cell, FileType, Header, Landscape, LandscapeTexture, Plugin, Reference, Static, TES3Object};
+    use tes3::esp::{Cell, CellFlags, FileType, Header, Landscape, LandscapeTexture, Plugin, Reference, Static, TES3Object};
 
     const GRASS_MESH: &str = "grass\\test_grass.nif";
     /// One past `GRASS_PLUGIN_INSTANCE_THRESHOLD`, so Gate B never decides these tests.
@@ -353,6 +373,16 @@ mod classification {
             };
             cell.references.insert((0, refr_index), reference);
         }
+        TES3Object::Cell(cell)
+    }
+
+    /// An interior cell placing `count` references to `id`, all locally addressed.
+    fn interior_placements(name: &str, id: &str, count: u32) -> TES3Object {
+        let TES3Object::Cell(mut cell) = placements((0, 0), id, count) else {
+            unreachable!("placements builds a cell");
+        };
+        cell.name = name.to_owned();
+        cell.data.flags.insert(CellFlags::IS_INTERIOR);
         TES3Object::Cell(cell)
     }
 
@@ -408,6 +438,49 @@ mod classification {
         assert!(is_grass_plugin(&dependent, &[dir.to_path_buf()]));
         // An unresolvable master is "unknown", not "defines no grass".
         assert!(!is_grass_plugin(&dependent, &[]));
+    }
+
+    /// Groundcover written for interiors is groundcover: Gate B counts interior placements, so a
+    /// plugin whose bulk sits in named cells, or is split across both kinds, is suggested too.
+    #[test]
+    fn interior_placements_count_toward_gate_b() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+
+        let interior_only = write_plugin(
+            dir,
+            "interior-only.esp",
+            vec![
+                header(&[]),
+                grass_static("test_grass"),
+                interior_placements("Grassy Cave", "test_grass", BULK_PLACEMENTS),
+            ],
+        );
+        // Neither kind alone reaches the threshold; together they do.
+        let split = write_plugin(
+            dir,
+            "split.esp",
+            vec![
+                header(&[]),
+                grass_static("test_grass"),
+                placements((0, 0), "test_grass", BULK_PLACEMENTS / 2),
+                interior_placements("Grassy Cave", "test_grass", BULK_PLACEMENTS - BULK_PLACEMENTS / 2),
+            ],
+        );
+        let sparse = write_plugin(
+            dir,
+            "sparse.esp",
+            vec![
+                header(&[]),
+                grass_static("test_grass"),
+                interior_placements("Grassy Cave", "test_grass", BULK_PLACEMENTS - 1),
+            ],
+        );
+
+        assert_eq!(
+            classify_grass_plugins(&[interior_only, split, sparse], &[dir.to_path_buf()]),
+            [true, true, false]
+        );
     }
 
     /// The `Tamriel_Data.esm` shape: defines grass statics, places none. Broadening Gate A must

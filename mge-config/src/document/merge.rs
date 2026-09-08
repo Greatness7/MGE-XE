@@ -1,4 +1,235 @@
-use toml_edit::Item;
+use toml_edit::{InlineTable, Item, RawString, Value};
+
+use super::{max_table_position, renumber_tables, separate_from_preceding_table};
+
+/// Restores fixed-schema entries the destination document omitted.
+///
+/// The walk follows `template` paths only, so tables outside the schema such as
+/// `[generation]` and unknown root tables are never touched. Inserted keys and
+/// tables carry the template's comments, while their values come from the
+/// serialized `baseline` so entries removed by tolerant validation reappear with
+/// the value they load as. Existing entries are left byte-for-byte alone.
+///
+/// Runs before the baseline/current merge: a key the caller changed during this
+/// save is inserted with its template comment first, and the merge then applies
+/// the changed value while preserving that decoration.
+pub(super) fn complete_missing_entries(
+    destination: &mut toml_edit::Table,
+    template: &toml_edit::Table,
+    baseline: &toml_edit::Table,
+) {
+    let mut next = max_table_position(destination) + 1;
+    complete_missing_tables(destination, template, Some(baseline), &mut next);
+}
+
+/// Why a template table path needs no further completion in the destination.
+#[derive(Clone, Copy)]
+enum DestShape {
+    /// Present as a regular or dotted table; recurse into it.
+    Table,
+    /// Present as an inline value whose subtree misses template entries; expand it.
+    ExpandInline,
+    /// Present as a complete inline value or as data of an unrelated shape; leave alone.
+    Leave,
+}
+
+fn complete_missing_tables(
+    destination: &mut toml_edit::Table,
+    template: &toml_edit::Table,
+    baseline: Option<&toml_edit::Table>,
+    next: &mut isize,
+) {
+    for (key, template_item) in template.iter() {
+        let Some(template_table) = template_item.as_table() else {
+            if !destination.contains_key(key) {
+                insert_missing_value(destination, template, key, template_item, baseline.and_then(|b| b.get(key)));
+            }
+            continue;
+        };
+        let baseline_table = baseline.and_then(|b| b.get(key)).and_then(Item::as_table);
+        let shape = match destination.get(key) {
+            None => None,
+            Some(item) if item.is_table() => Some(DestShape::Table),
+            Some(item) => {
+                let incomplete_inline = item
+                    .as_value()
+                    .and_then(Value::as_inline_table)
+                    .is_some_and(|inline| !inline_subtree_is_complete(template_table, inline));
+                Some(if incomplete_inline {
+                    DestShape::ExpandInline
+                } else {
+                    DestShape::Leave
+                })
+            }
+        };
+        match shape {
+            None => {
+                let mut subtree = template_table.clone();
+                if let Some(baseline_table) = baseline_table {
+                    seed_values_from_baseline(&mut subtree, baseline_table);
+                }
+                separate_from_preceding_table(&mut subtree);
+                renumber_tables(&mut subtree, next);
+                insert_with_template_decor(destination, template, key, Item::Table(subtree));
+            }
+            // Dotted keys also parse as tables. Their values render with the full dotted
+            // path, where inserted keys keep comments and inserted sub-tables stay valid
+            // TOML, so no representation change is needed.
+            Some(DestShape::Table) => {
+                if let Some(dest_table) = destination.get_mut(key).and_then(Item::as_table_mut) {
+                    complete_missing_tables(dest_table, template_table, baseline_table, next);
+                }
+            }
+            Some(DestShape::ExpandInline) => {
+                let value = destination.get(key).and_then(Item::as_value).expect("classified above");
+                let inline = value
+                    .as_inline_table()
+                    .expect("classified as an incomplete inline table above");
+                let mut expanded = expand_inline_table(inline);
+                // Carry the inline value's trailing comment onto the new header; member
+                // separators inside the inline table are not header material and stay dropped.
+                if let Some(suffix) = value.decor().suffix().and_then(RawString::as_str) {
+                    let trimmed = suffix.trim_end_matches(['\r', '\n']);
+                    if trimmed.trim_start().starts_with('#') {
+                        expanded.decor_mut().set_suffix(trimmed);
+                    }
+                }
+                // Keys promoted to headers keep comment-bearing decoration but drop the
+                // whitespace-only trivia inherited from the inline syntax, which would
+                // otherwise render inside the header brackets.
+                let key_has_comment = destination
+                    .get_key_value(key)
+                    .and_then(|(existing, _)| existing.leaf_decor().prefix())
+                    .and_then(RawString::as_str)
+                    .is_some_and(|prefix| prefix.contains('#'));
+                if key_has_comment {
+                    // The key's comment renders before the header; an empty prefix stops
+                    // the encoder from adding its default blank line on top of it.
+                    expanded.decor_mut().set_prefix("");
+                } else {
+                    separate_from_preceding_table(&mut expanded);
+                }
+                if let Some(mut promoted) = destination.key_mut(key) {
+                    let decor = promoted.leaf_decor();
+                    let prefix_is_trivia = !decor
+                        .prefix()
+                        .and_then(RawString::as_str)
+                        .is_some_and(|trivia| trivia.contains('#'));
+                    let suffix_is_trivia = !decor
+                        .suffix()
+                        .and_then(RawString::as_str)
+                        .is_some_and(|trivia| trivia.contains('#'));
+                    if prefix_is_trivia {
+                        promoted.leaf_decor_mut().set_prefix("");
+                    }
+                    if suffix_is_trivia {
+                        promoted.leaf_decor_mut().set_suffix("");
+                    }
+                }
+                expanded.set_position(Some(*next));
+                *next += 1;
+                *destination.get_mut(key).expect("classified above") = Item::Table(expanded);
+                if let Some(dest_table) = destination.get_mut(key).and_then(Item::as_table_mut) {
+                    complete_missing_tables(dest_table, template_table, baseline_table, next);
+                }
+            }
+            Some(DestShape::Leave) => {}
+        }
+    }
+}
+
+/// Inserts an absent template value, with the baseline's value under the template's decoration.
+fn insert_missing_value(
+    destination: &mut toml_edit::Table,
+    template: &toml_edit::Table,
+    key: &str,
+    template_item: &Item,
+    baseline_item: Option<&Item>,
+) {
+    let mut item = template_item.clone();
+    if let (Some(template_value), Some(baseline_value)) = (item.as_value_mut(), baseline_item.and_then(Item::as_value)) {
+        let decor = template_value.decor().clone();
+        *template_value = baseline_value.clone();
+        *template_value.decor_mut() = decor;
+    }
+    insert_with_template_decor(destination, template, key, item);
+}
+
+/// Inserts `item` under `key`, reusing the template key's decoration so comments follow.
+fn insert_with_template_decor(destination: &mut toml_edit::Table, template: &toml_edit::Table, key: &str, item: Item) {
+    if let Some((template_key, _)) = template.get_key_value(key) {
+        destination.insert_formatted(template_key, item);
+    } else {
+        destination.insert(key, item);
+    }
+}
+
+/// Copies each template value's underlying baseline value while keeping template decoration.
+fn seed_values_from_baseline(template: &mut toml_edit::Table, baseline: &toml_edit::Table) {
+    for (key, item) in template.iter_mut() {
+        let Some(baseline_item) = baseline.get(key.get()) else {
+            continue;
+        };
+        match item {
+            Item::Value(value) => {
+                if let Some(baseline_value) = baseline_item.as_value() {
+                    let decor = value.decor().clone();
+                    *value = baseline_value.clone();
+                    *value.decor_mut() = decor;
+                }
+            }
+            Item::Table(child) => {
+                if let Some(baseline_child) = baseline_item.as_table() {
+                    seed_values_from_baseline(child, baseline_child);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Converts an inline table into a regular table, preserving key spelling and decoration.
+fn expand_inline_table(inline: &InlineTable) -> toml_edit::Table {
+    let mut table = toml_edit::Table::new();
+    for (name, value) in inline.iter() {
+        // Re-parse the original key so quoted spellings keep their representation, then
+        // re-attach its decoration.
+        let key = inline.key(name).map_or_else(
+            || toml_edit::Key::new(name),
+            |existing| {
+                let raw = existing.display_repr().to_string();
+                match toml_edit::Key::parse(&raw) {
+                    Ok(mut parsed) if !parsed.is_empty() => {
+                        let mut key = parsed.remove(0);
+                        *key.leaf_decor_mut() = existing.leaf_decor().clone();
+                        key
+                    }
+                    _ => {
+                        let mut key = toml_edit::Key::new(name);
+                        *key.leaf_decor_mut() = existing.leaf_decor().clone();
+                        key
+                    }
+                }
+            },
+        );
+        table.insert_formatted(&key, Item::Value(value.clone()));
+    }
+    table
+}
+
+/// Whether every template entry exists somewhere in the inline subtree.
+///
+/// Inline tables cannot hold comments or table headers, so any missing entry
+/// anywhere below forces the whole enclosing chain to expand.
+fn inline_subtree_is_complete(template: &toml_edit::Table, inline: &InlineTable) -> bool {
+    template.iter().all(|(key, template_item)| match template_item.as_table() {
+        Some(template_child) => inline
+            .get(key)
+            .and_then(Value::as_inline_table)
+            .is_some_and(|child| inline_subtree_is_complete(template_child, child)),
+        None => inline.contains_key(key),
+    })
+}
 
 pub(super) fn current_value_at_path(current: &toml_edit::Table, segments: &[&str]) -> Option<toml_edit::Value> {
     let (segment, remaining) = segments.split_first()?;

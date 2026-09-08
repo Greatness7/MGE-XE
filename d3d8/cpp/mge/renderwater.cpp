@@ -84,7 +84,7 @@ void DistantLand::renderWaterReflection(const D3DXMATRIX* view, const D3DXMATRIX
 
     if (reflectStatics) {
         // Draw statics reflection, with opposite culling and no dissolve
-        DWORD p = (mwBridge->CellHasWeather() && !mwBridge->IsUnderwater(eyePos.z)) ? PASS_RENDERSTATICSEXTERIOR : PASS_RENDERSTATICSINTERIOR;
+        DWORD p = (mwBridge->IntLikeExterior(true) && !mwBridge->IsUnderwater(eyePos.z)) ? PASS_RENDERSTATICSEXTERIOR : PASS_RENDERSTATICSINTERIOR;
         effect->SetFloat(ehNearViewRange, 0);
         effect->BeginPass(p);
         device->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
@@ -246,7 +246,7 @@ void DistantLand::clearReflection() {
     DWORD baseColour;
 
     texReflection->GetSurfaceLevel(0, &target);
-    if (mwBridge->CellHasWeather() || mwBridge->IsUnderwater(eyePos.z)) {
+    if (mwBridge->IntLikeExterior(true) || mwBridge->IsUnderwater(eyePos.z)) {
         // Use fog colour as reflection
         baseColour = (DWORD)horizonCol;
     } else {
@@ -283,7 +283,7 @@ void DistantLand::simulateDynamicWaves() {
     remainingWaveTime -= numWaveSteps * waveStep;
 
     // Preciptation (rain/snow) ripples
-    if (mwBridge->CellHasWeather()) {
+    if (mwBridge->IntLikeExterior(true)) {
         static float remainingRipples = 0;
 
         // Reset surface when not needed next time
@@ -367,6 +367,9 @@ void DistantLand::simulateDynamicWaves() {
     // Player local ripples
     // Move ripple texture with player; lock to texel alignment to prevent visible jitter
     const D3DXVECTOR3* playerPos = (const D3DXVECTOR3*)mwBridge->PlayerPositionPointer();
+    if (playerPos == nullptr) {
+        return;
+    }
     static int lastXpos = (int)floor(playerPos->x / waveTexWorldRes);
     static int lastYpos = (int)floor(playerPos->y / waveTexWorldRes);
 
@@ -408,7 +411,7 @@ void DistantLand::simulateDynamicWaves() {
 
     float rippleOrigin[2];
     float dz = playerPos->z - mwBridge->WaterLevel();
-    if (dz < 0 && dz > -128.0f * mwBridge->PlayerHeight()) {
+    if (dz < 0 && dz > -mwBridge->PlayerHeight()) {
         // Create waves around the player
         effect->BeginPass(PASS_PLAYERWAVE);
         for (int i = 0; i != numWaveSteps; ++i) {

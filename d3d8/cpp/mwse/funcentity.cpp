@@ -1,7 +1,8 @@
 
 #include "mge/mwbridge.h"
 #include "funcentity.h"
-#include "tes3types.h"
+#include "tes3/nitypes.h"
+#include "tes3/tes3types.h"
 
 #include <cstdio>
 
@@ -9,12 +10,11 @@
 
 using namespace TES3;
 
-static MWRecord* findEntity(const char* id) {
-    typedef MWRecord * (__thiscall *findMWEntity_t)(void*, const char*);
-    const findMWEntity_t findMWEntity = reinterpret_cast<findMWEntity_t>(0x4b8b60);
+static BaseObject* findEntity(const char* id) {
+    const auto resolveObject = reinterpret_cast<BaseObject* (__thiscall*)(NonDynamicData*, const char*)>(
+        Address::NonDynamicData_resolveObject);
 
-    DWORD* dataHandler = *reinterpret_cast<DWORD**>(0x7c67e0);
-    return findMWEntity(*reinterpret_cast<void**>(dataHandler), id);
+    return resolveObject(DataHandler::get()->nonDynamicData, id);
 }
 
 
@@ -85,8 +85,8 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseGetDeleted)
 
 // [ref] GetDeleted -> returns <long>
 bool mwseGetDeleted::execute(mwseInstruction* _this) {
-    const MWReference* refr = vmGetTargetRef();
-    VMREGTYPE ret = (refr->flags & 0x20) != 0;
+    const Reference* refr = vmGetTargetRef();
+    VMREGTYPE ret = (refr->objectFlags & ObjectFlag::Delete) != 0;
     return _this->vmPush(ret);
 }
 
@@ -95,12 +95,12 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseIsScripted)
 
 // [ref] IsScripted -> returns <long>
 bool mwseIsScripted::execute(mwseInstruction* _this) {
-    const MWReference* refr = vmGetTargetRef();
-    const MWRecord* entity = refr->baseEntity;
+    const Reference* refr = vmGetTargetRef();
+    const BaseObject* entity = refr->baseObject;
 
     // Call <vtbl + 0x4c> const char * Entity::getScript
-    typedef const char* (__thiscall *getScript_t)(const MWRecord*);
-    getScript_t getScript = reinterpret_cast<getScript_t>(entity->vtbl[0x13]);
+    typedef const char* (__thiscall *getScript_t)(const BaseObject*);
+    getScript_t getScript = reinterpret_cast<getScript_t>(entity->vTable[0x13]);
     VMREGTYPE ret = getScript(entity) != 0;
 
     return _this->vmPush(ret);
@@ -112,23 +112,23 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseSetEntityName)
 // Work around MWSE's SetEntityName bug.
 // [ref] SetEntityName <string name>
 bool mwseSetEntityName::execute(mwseInstruction* _this) {
-    MWReference* refr = vmGetTargetRef();
-    MWRecord* entity = refr->baseEntity;
+    Reference* refr = vmGetTargetRef();
+    BaseObject* entity = refr->baseObject;
     const char* name = _this->vmPopString();
     if (!name) { return false; }
 
     // Check if entity is an actor clone, as only the base entity can set the name
-    typedef char (__thiscall *isClone_t)(const MWRecord*);
-    isClone_t isClone = reinterpret_cast<isClone_t>(0x4f0ff0);
+    typedef char (__thiscall *isClone_t)(const BaseObject*);
+    isClone_t isClone = reinterpret_cast<isClone_t>(Address::BaseObject_isClone);
     if (isClone(entity)) {
-        // Get base entity
-        entity = *reinterpret_cast<MWRecord**>(reinterpret_cast<BYTE*>(entity) + 0x6c);
+        // Get base entity via NPCInstance::baseNPC
+        entity = reinterpret_cast<NPCInstance*>(entity)->baseNPC;
     }
 
     // Although all entities have a setName virtual function, a few do not implement it.
     // This switch covers the extra cases.
     size_t nameOffset = 0;
-    switch (entity->tagCode) {
+    switch (entity->objectType) {
     case MWTag_Apparatus:
         nameOffset = 0x64;
         break;
@@ -147,8 +147,8 @@ bool mwseSetEntityName::execute(mwseInstruction* _this) {
         std::snprintf(reinterpret_cast<char*>(entity) + nameOffset, 32, "%s", name);
     } else {
         // Call <vtbl + 0x10c> Entity::setName(const char *)
-        typedef void (__thiscall *setName_t)(MWRecord*, const char*);
-        setName_t setName = reinterpret_cast<setName_t>(entity->vtbl[0x43]);
+        typedef void (__thiscall *setName_t)(BaseObject*, const char*);
+        setName_t setName = reinterpret_cast<setName_t>(entity->vTable[0x43]);
         setName(entity, name);
     }
 
@@ -162,22 +162,23 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseSetOwner)
 // [ref] SetOwner <string id> -> <long success>
 bool mwseSetOwner::execute(mwseInstruction* _this) {
     VMREGTYPE ret = 0;
-    MWReference* refr = vmGetTargetRef();
+    Reference* refr = vmGetTargetRef();
     const char* id = _this->vmPopString();
     if (!id) { return false; }
 
-    typedef DWORD * (__thiscall *getConditionData_t)(MWReference*);
-    const getConditionData_t getConditionData = reinterpret_cast<getConditionData_t>(0x4e5460);
+    typedef DWORD * (__thiscall *getConditionData_t)(Reference*);
+    const getConditionData_t getConditionData = reinterpret_cast<getConditionData_t>(
+        Address::Reference_getAttachment6ItemData);
     DWORD* cond = getConditionData(refr);
 
     if (cond) {
         // Check if owner is a base NPC
-        const MWRecord* owner = findEntity(id);
-        if (owner && owner->vtbl == reinterpret_cast<void**>(0x749de8)) {
+        const BaseObject* owner = findEntity(id);
+        if (owner && owner->vTable == reinterpret_cast<void**>(Address::vtable_NPCBase)) {
             // Write owner into item condition struct
             cond[1] = reinterpret_cast<DWORD>(owner);
             // Set reference modified flag
-            refr->flags |= 2;
+            refr->objectFlags |= ObjectFlag::Modified;
             ret = 1;
         }
     }
@@ -191,21 +192,23 @@ MWSEINSTRUCTION_DECLARE_VTABLE(mwseModelSwitchNode)
 // [ref] mwseModelSwitchNode <string node_name> <long switch_index>
 bool mwseModelSwitchNode::execute(mwseInstruction* _this) {
     VMREGTYPE index = -1;
-    MWReference* refr = vmGetTargetRef();
+    Reference* refr = vmGetTargetRef();
     const char* node_name = _this->vmPopString();
     if (!node_name) { return false; }
     if (!_this->vmPop(&index)) { return false; }
 
-    if (refr->visual) {
-        Node* node = reinterpret_cast<Node*>(refr->visual);
+    if (refr->sceneNode) {
+        NI::Node* node = refr->sceneNode;
 
-        // Call <vtbl + 0x5c> Node * AVObject::findChildNode(const char *)
-        typedef Node * (__thiscall *findChildNode_t)(const Node*, const char*);
-        const findChildNode_t findChildNode = reinterpret_cast<findChildNode_t>(node->vtbl[0x17]);
-        Node* child = findChildNode(node, node_name);
+        // Call <vtbl + 0x5c> AVObject * AVObject::getObjectByName(const char *)
+        typedef NI::Node * (__thiscall *findChildNode_t)(const NI::Node*, const char*);
+        const findChildNode_t findChildNode = reinterpret_cast<findChildNode_t>(
+            reinterpret_cast<void**>(node->vTable)[0x17]);
+        NI::Node* child = findChildNode(node, node_name);
 
-        // Check if child is an NiSwitchNode
-        if (child && child->vtbl == reinterpret_cast<void**>(0x750080)) {
+        // Check if child is an NiSwitchNode. NiSwitchNode itself is not declared;
+        // its selected index sits at +0xB0.
+        if (child && reinterpret_cast<uintptr_t>(child->vTable) == Address::vtable_NiSwitchNode) {
             int* switch_index = reinterpret_cast<int*>(reinterpret_cast<BYTE*>(child) + 0xb0);
             *switch_index = index;
         }

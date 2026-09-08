@@ -50,15 +50,16 @@ in `setView`, then runs `renderShadowMap` under this gate:
 
 ```cpp
 !isRenderCached && isDistantCell() && (Configuration.MGEFlags & USE_SHADOWS)
-    && mwBridge->CellHasWeather() && !mwBridge->IsMenu()
+    && mwBridge->IntLikeExterior(true) && !mwBridge->IsMenu()
 ```
 
-`CellHasWeather()` restricts the whole feature to exterior weather cells. Interiors get no
-MGE shadows at all.
+`IntLikeExterior()` restricts the whole feature to cells with weather: exteriors, and the
+interiors flagged "Behaves like exterior". Ordinary interiors get no MGE shadows at all. The
+`true` argument keeps a frame with no resolvable cell on the exterior path.
 
 Stage 1 (end of scene 0) and Stage 2 (end of scenes 1+) each call `renderShadow` to
 project the finished map onto recorded geometry, under a gate that keeps the
-`!isRenderCached`, `isDistantCell()`, `USE_SHADOWS`, and `CellHasWeather()` checks. These
+`!isRenderCached`, `isDistantCell()`, `USE_SHADOWS`, and `IntLikeExterior(true)` checks. These
 stages do not repeat Stage 0's `!mwBridge->IsMenu()` check.
 
 `RenderTargetSwitcher` restores the render-target and depth-stencil bindings. The broader
@@ -333,7 +334,11 @@ half-texel offset with a flipped y.
 Grass is the only other reader. `renderGrassInst` binds `texSoftShadow` to `tex3`, and
 `XE Mod Grass.fx` calls the same `shadowDeltaZ` and `shadowESM` with the same cascade logic,
 differing only in that it transforms from world space rather than view space and applies the
-result directly to the pixel colour instead of relying on blend state.
+result directly to the pixel colour instead of relying on blend state. The atlas is only
+rendered for cells with weather, so when shadows are off or the cell has none (interiors with
+generated grass) `renderGrassInst` instead binds cascade matrices that place every receiver
+outside both cascades, and grass takes the unshadowed `dz = 1e-6` path rather than sampling
+whatever the last weather cell left in the atlas.
 
 Distant statics, distant terrain, the replacement water plane, and the sky and scattering
 passes do not sample the shadow map. Distant geometry casts but does not receive.
@@ -435,7 +440,7 @@ Uncomment to use it. There is no config flag.
 
 ## Gotchas
 
-- No shadows in interiors. `CellHasWeather()` gates the whole feature.
+- No shadows in ordinary interiors. `IntLikeExterior()` gates the whole feature.
 - Nothing Morrowind draws casts a shadow. Only distant terrain and distant statics do.
 - Cascade radii are compile-time constants, `shadowNearRadius = 1000` and
   `shadowFarRadius = 4000`, both in `rendershadow.cpp`.

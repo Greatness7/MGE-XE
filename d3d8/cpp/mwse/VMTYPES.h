@@ -2,8 +2,6 @@
 
 #include <wtypes.h>
 
-
-
 typedef BYTE* VPVOID;       // so I can do arithmetic
 typedef DWORD VMSIZE;       // to hold max address
 typedef WORD OPCODE;        // any consistent size
@@ -42,26 +40,4 @@ enum MWRecordTag {
     MWTag_Ammo = 0x4f4d4d41
 };
 
-struct MWRecord {
-    const void** vtbl;
-    union {
-        char tag[4];
-        unsigned int tagCode;
-    };
-    unsigned int flags;
-    void* sourceMod;
-};
 
-struct MWReference : MWRecord {
-    void* visual;
-    void* cellList;
-    MWReference* lastCloneRefr;
-    MWReference* nextListRefr;
-    MWReference* prevListRefr;
-    void* unknown;
-    MWRecord* baseEntity;
-    float orientation[3];
-    float position[3];
-    void* extraData;
-    unsigned int sourceID, targetID;
-};

@@ -14,6 +14,15 @@
   positions their skeletons imply rather than the engine's rounded ones, which stops their
   trembling far out. The engine hooks install at startup when the option is on, so turning it
   on takes a restart.
+- Grass in interiors. Interior placements in the generator's grass plugin list are now baked into
+  distant land and rendered like exterior grass, and a groundcover plugin that only places grass in
+  interiors is detected for the Grass tab. Interior grass sways with a small constant wind that no
+  weather affects, set by the new `distant_land.grass.interior_wind` key in `mgeXE.toml` and edited
+  as the Interior row of the Distant Land Weather Settings window, and no longer samples the sun
+  shadow atlas left over from the last exterior. Interiors flagged to behave like exteriors, such
+  as Mournhold's districts, have weather and treat their grass exactly like exterior grass. Grass
+  reaches only the interiors distant land already covers, so the Include options in the generator
+  window govern it too: an interior you exclude there stays on Morrowind's own fog and lighting.
 
 ### Changed
 

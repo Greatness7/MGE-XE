@@ -13,196 +13,17 @@
 #include "configuration.h"
 #include "mgeindexedskinning.h"
 #include "proxydx/d3d8interface.h"
+#include "support/crashlog.h"
 #include "support/log.h"
+#include "tes3/nitypes.h"
 
 // Adapted from the MWSE fork's indexed-skinning implementation (GPLv2):
 // SharedSE/NIDX8Renderer.{h,cpp}, SharedSE/NISkinInstance.{h,cpp} and the
-// MWSE_INDEXED_SKINNING block of MWSE/PatchUtil.cpp. The engine-facing behavior is unchanged;
-// the NetImmerse layouts are re-declared locally so MGE XE carries no dependency on MWSE.
+// MWSE_INDEXED_SKINNING block of MWSE/PatchUtil.cpp. The engine-facing behavior is
+// unchanged; the NetImmerse layouts live in tes3/nitypes.h, transcribed from MWSE
+// so MGE XE carries no build dependency on it.
 
 namespace {
-
-//---------------------------------------------------------------------------
-// Minimal NetImmerse ABI
-//
-// Only the layouts the four hooks actually touch. Every type carries a size
-// assertion; these describe the supported 32-bit Morrowind executable, so a
-// layout drift is a build break rather than a runtime corruption.
-//---------------------------------------------------------------------------
-
-namespace NI {
-
-struct Object;
-
-struct ObjectVTable {
-    void(__thiscall* destructor)(Object*, int);  // 0x0
-};
-
-struct Object {
-    ObjectVTable* vTable;  // 0x0
-    int refCount;          // 0x4
-};
-static_assert(sizeof(Object) == 0x8, "NI::Object failed size validation");
-
-// The engine's intrusive refcounted handle (NiPointer). Assigning through it
-// is what releases an incompatible partition back to the engine.
-template <class T>
-class Pointer {
-public:
-    Pointer(T* pointer = nullptr) {
-        claim(pointer);
-    }
-
-    Pointer(const Pointer<T>& other) {
-        claim(other.m_pointer);
-    }
-
-    ~Pointer() {
-        release();
-    }
-
-    Pointer<T>& operator=(const Pointer<T>& other) {
-        if (m_pointer != other.m_pointer) {
-            claim(other.m_pointer);
-        }
-        return *this;
-    }
-
-    Pointer<T>& operator=(T* pointer) {
-        if (m_pointer != pointer) {
-            claim(pointer);
-        }
-        return *this;
-    }
-
-    operator T*() const {
-        return m_pointer;
-    }
-
-    T* operator->() const {
-        return m_pointer;
-    }
-
-    T* get() const {
-        return m_pointer;
-    }
-
-private:
-    T* m_pointer = nullptr;
-
-    void release() {
-        if (m_pointer) {
-            T* const released = m_pointer;
-            m_pointer = nullptr;
-            if (--released->refCount == 0) {
-                released->vTable->destructor(static_cast<Object*>(released), 1);
-            }
-        }
-    }
-
-    void claim(T* pointer) {
-        release();
-        m_pointer = pointer;
-        if (m_pointer) {
-            m_pointer->refCount++;
-        }
-    }
-};
-static_assert(sizeof(Pointer<Object>) == 0x4, "NI::Pointer failed size validation");
-
-struct Point2 {
-    float x, y;
-};
-static_assert(sizeof(Point2) == 0x8, "NI::Point2 failed size validation");
-
-struct Point3 {
-    float x, y, z;
-};
-static_assert(sizeof(Point3) == 0xC, "NI::Point3 failed size validation");
-
-// Matches D3DCOLOR; the packer copies it straight into a D3DFVF_DIFFUSE slot.
-struct PackedColor {
-    unsigned char r, g, b, a;
-};
-static_assert(sizeof(PackedColor) == 0x4, "NI::PackedColor failed size validation");
-
-struct SkinPartition : Object {
-    struct Partition {
-        void* vtbl;                        // 0x0
-        unsigned short* bones;             // 0x4
-        float* weights;                    // 0x8
-        unsigned short* vertices;          // 0xC
-        unsigned char* bonePalette;        // 0x10
-        void* triangles;                   // 0x14
-        unsigned short* stripLengths;      // 0x18
-        unsigned short numVertices;        // 0x1C
-        unsigned short numTriangles;       // 0x1E
-        unsigned short numBones;           // 0x20
-        unsigned short numStripLengths;    // 0x22
-        unsigned short numBonesPerVertex;  // 0x24
-        void* bufferData;                  // 0x28
-    };
-
-    unsigned int partitionCount;  // 0x8
-    Partition* partitions;        // 0xC
-};
-static_assert(sizeof(SkinPartition) == 0x10, "NI::SkinPartition failed size validation");
-static_assert(
-    sizeof(SkinPartition::Partition) == 0x2C,
-    "NI::SkinPartition::Partition failed size validation");
-
-struct SkinData : Object {
-    Pointer<SkinPartition> partition;  // 0x8
-    unsigned char transform[0x34];     // 0xC  (NiTransform, passed through only)
-    unsigned int numBones;             // 0x40
-    void* boneData;                    // 0x44
-};
-static_assert(sizeof(SkinData) == 0x48, "NI::SkinData failed size validation");
-
-struct SkinInstance : Object {
-    Pointer<SkinData> skinData;  // 0x8
-    void* rootParent;            // 0xC
-    void** bones;                // 0x10
-    int unknown_0x14;            // 0x14
-};
-static_assert(sizeof(SkinInstance) == 0x18, "NI::SkinInstance failed size validation");
-
-struct GeometryData : Object {
-    unsigned short vertexCount;  // 0x8
-    unsigned short textureSets;  // 0xA
-    unsigned char bounds[0x10];  // 0xC  (NiBound, unused here)
-    Point3* vertex;              // 0x1C
-    Point3* normal;              // 0x20
-    PackedColor* color;          // 0x24
-    Point2* textureCoords;       // 0x28
-    unsigned int uniqueID;       // 0x2C
-    unsigned short revisionID;   // 0x30
-    bool unknown_0x32;           // 0x32
-};
-static_assert(sizeof(GeometryData) == 0x34, "NI::GeometryData failed size validation");
-
-struct DX8VertexBufferManager {
-    void* vTable;                 // 0x0
-    int unknown_0x4;              // 0x4
-    IDirect3DDevice8* d3dDevice;  // 0x8
-};
-static_assert(
-    sizeof(DX8VertexBufferManager) == 0xC,
-    "NI::DX8VertexBufferManager failed size validation");
-
-// Only the device pointer is needed. The full NiDX8Renderer is 0x6A0 bytes;
-// declaring the remainder would be maintenance with no consumer.
-struct DX8Renderer {
-    unsigned char padding_0x0[0x24];
-    IDirect3DDevice8* d3dDevice;  // 0x24
-};
-static_assert(
-    offsetof(DX8Renderer, d3dDevice) == 0x24,
-    "NI::DX8Renderer::d3dDevice failed offset validation");
-
-struct CriticalSection;
-
-}  // namespace NI
 
 //---------------------------------------------------------------------------
 // Engine entry points
@@ -216,7 +37,7 @@ NI::CriticalSection* const vertexBufferCriticalSection =
     reinterpret_cast<NI::CriticalSection*>(0x7DEA78);
 
 const auto NI_SkinPartition_makePartitions = reinterpret_cast<bool(__thiscall*)(
-    NI::SkinPartition*, NI::GeometryData*, NI::SkinData*, unsigned char, unsigned char)>(
+    NI::SkinPartition*, NI::TriBasedGeometryData*, NI::SkinData*, unsigned char, unsigned char)>(
     0x6C78F0);
 
 // `transform` and `worldBound` are forwarded untouched, so their layouts do
@@ -341,20 +162,28 @@ PackSkinnedVBFn originalPackSkinnedVB = nullptr;
 IDirect3DDevice8* negotiatedDevice = nullptr;
 bool indexedSkinningEnabled = false;
 
-// Partitions the indexed builder could not handle, which must not be retried
-// every frame. Keyed by raw pointer but holding an engine reference: without
-// that reference a released partition's address could be reused by an
-// unrelated allocation and misread as a previous fallback.
-using StockPartitionCache =
-    std::unordered_map<NI::SkinPartition*, NI::Pointer<NI::SkinPartition>>;
+// Geometry the indexed builder could not partition correctly, which must not be
+// retried. Keyed by geometry rather than by the partition it produced: the
+// defect is a property of the mesh's bone layout, so every skin instance sharing
+// that geometry and every rebuild of it fails the same way.
+//
+// The mapped value holds an engine reference. Without it a released geometry's
+// address could be reused by an unrelated allocation and misread as a previous
+// fallback.
+using StockOnlyGeometryCache =
+    std::unordered_map<NI::GeometryData*, NI::Pointer<NI::GeometryData>>;
 
 // Deliberately leaked. The entries own engine references, and running their
 // destructors from a static destructor would call into Morrowind during DLL or
 // process teardown, when the engine may already be gone. onDeviceReleased()
 // clears the cache while the runtime is still alive.
-StockPartitionCache& stockPartitions() {
-    static StockPartitionCache* const cache = new StockPartitionCache();
+StockOnlyGeometryCache& stockOnlyGeometry() {
+    static StockOnlyGeometryCache* const cache = new StockOnlyGeometryCache();
     return *cache;
+}
+
+bool isStockOnlyGeometry(NI::GeometryData* geometryData) {
+    return stockOnlyGeometry().find(geometryData) != stockOnlyGeometry().end();
 }
 
 //---------------------------------------------------------------------------
@@ -584,9 +413,52 @@ void negotiateIndexedSkinning(NI::DX8Renderer* renderer) {
     }
 }
 
-bool needsIndexedPartitionRebuild(NI::SkinPartition* skinPartition) {
-    // A partition the indexed builder already rejected stays as-is.
-    if (stockPartitions().find(skinPartition) != stockPartitions().end()) {
+// Every triangle lands in exactly one partition, so the sum is exact: short
+// means Morrowind's builder dropped triangles, and dropped triangles are never
+// drawn. Its bone-set merge can do that while still reporting success. The
+// defect does not depend on MGE XE's bone limits, but a wide palette merges
+// nearly every candidate pair, which takes it from rare to routine.
+// See docs/architecture/indexed-skinning.md §4.3.
+bool partitionsCoverAllTriangles(
+    NI::SkinPartition* skinPartition,
+    NI::TriBasedGeometryData* geometryData) {
+    unsigned int coveredTriangles = 0;
+    for (unsigned int i = 0; i < skinPartition->partitionCount; ++i) {
+        coveredTriangles += skinPartition->partitions[i].numTriangles;
+    }
+    return coveredTriangles == geometryData->triangleCount;
+}
+
+// Frees a partition array exactly as NiSkinPartition::dtor does (0x6C6B23):
+// Partition's first vtable slot is MSVC's vector deleting destructor, and flag 3
+// also releases the element-count cookie stored in front of the array. Required
+// because MakePartitions overwrites this->partitions without freeing what was
+// there.
+void releasePartitions(NI::SkinPartition* skinPartition) {
+    NI::SkinPartition::Partition* const partitions = skinPartition->partitions;
+
+    // Cleared before the array check, not after it. MakeBoneSets publishes
+    // partitionCount (0x6C77FF) before MakePartitions publishes the array
+    // (0x6C7ACA), so a faulted call can leave a count standing over no array.
+    skinPartition->partitions = nullptr;
+    skinPartition->partitionCount = 0;
+
+    if (!partitions || !partitions->vtbl) {
+        return;
+    }
+
+    using VectorDeletingDtor = void(__thiscall*)(NI::SkinPartition::Partition*, int);
+    VectorDeletingDtor* const vTable = static_cast<VectorDeletingDtor*>(partitions->vtbl);
+    vTable[0](partitions, 3);
+}
+
+bool needsIndexedPartitionRebuild(
+    NI::GeometryData* geometryData,
+    NI::SkinPartition* skinPartition) {
+    // Geometry the indexed builder already failed keeps its stock partition,
+    // which legitimately has no bone palette and would otherwise be rebuilt on
+    // every frame.
+    if (isStockOnlyGeometry(geometryData)) {
         return false;
     }
     // No partition yet: leave it null for the engine's lazy creation path.
@@ -632,7 +504,8 @@ void __fastcall PatchDrawSkinnedPrimitive(
 
     if (indexedSkinningEnabled && skinInstance && skinInstance->skinData) {
         NI::SkinData* const skinData = skinInstance->skinData.get();
-        if (skinData->partition && needsIndexedPartitionRebuild(skinData->partition.get())) {
+        if (skinData->partition
+            && needsIndexedPartitionRebuild(geometryData, skinData->partition.get())) {
             // Releases MGE XE's claim through normal refcounting; the engine
             // then rebuilds through the MakePartitions hook below.
             skinData->partition = nullptr;
@@ -643,41 +516,81 @@ void __fastcall PatchDrawSkinnedPrimitive(
         renderer, geometryData, skinInstance, transform, worldBound);
 }
 
+// The same merge defect that drops triangles can instead fault on a freed bone
+// set. Which one happens is decided by heap contents, not by the mesh, so the
+// fault is intermittent while the dropped triangles are not. MakePartitions
+// publishes this->partitions last (0x6C7ACA), so a faulted call leaves the
+// object safe to rebuild with the stock limits.
+//
+// Kept in its own function with no C++ locals: MSVC rejects __try in a function
+// that requires object unwinding.
+bool makePartitionsGuarded(
+    NI::SkinPartition* skinPartition,
+    NI::TriBasedGeometryData* geometryData,
+    NI::SkinData* skinData,
+    unsigned char bonesPerPartition,
+    unsigned char bonesPerVertex,
+    bool* faulted) {
+    __try {
+        return NI_SkinPartition_makePartitions(
+            skinPartition, geometryData, skinData, bonesPerPartition, bonesPerVertex);
+    } __except (
+        GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                         : EXCEPTION_CONTINUE_SEARCH) {
+        // The faulted call's allocations are lost, bounded by one occurrence
+        // per geometry.
+        *faulted = true;
+        return false;
+    }
+}
+
 bool __fastcall PatchMakeSkinPartitions(
     NI::SkinPartition* skinPartition,
     DWORD /*edx*/,
-    NI::GeometryData* geometryData,
+    NI::TriBasedGeometryData* geometryData,
     NI::SkinData* skinData,
     unsigned char bonesPerPartition,
     unsigned char bonesPerVertex) {
-    if (!indexedSkinningEnabled) {
+    if (!indexedSkinningEnabled || isStockOnlyGeometry(geometryData)) {
         return NI_SkinPartition_makePartitions(
             skinPartition, geometryData, skinData, bonesPerPartition, bonesPerVertex);
     }
 
-    const bool indexedResult = NI_SkinPartition_makePartitions(
-        skinPartition,
-        geometryData,
-        skinData,
-        MGE_INDEXED_SKINNING_PALETTE_SIZE,
-        4);
-    if (indexedResult && skinPartition->partitions && skinPartition->partitionCount != 0) {
+    bool faulted = false;
+    bool indexedResult;
+    {
+        CrashLog::ExpectedFaultScope expectedFault;
+        indexedResult = makePartitionsGuarded(
+            skinPartition,
+            geometryData,
+            skinData,
+            MGE_INDEXED_SKINNING_PALETTE_SIZE,
+            4,
+            &faulted);
+    }
+
+    if (indexedResult && skinPartition->partitions && skinPartition->partitionCount != 0
+        && partitionsCoverAllTriangles(skinPartition, geometryData)) {
         return true;
     }
 
-    LOG::logline(
-        "-- Indexed skinning repartition produced no usable partitions; using the stock path "
-        "for this skin.");
-    const bool stockResult = NI_SkinPartition_makePartitions(
-        skinPartition, geometryData, skinData, bonesPerPartition, bonesPerVertex);
-    const bool stockPartitionUsable =
-        stockResult && skinPartition->partitions && skinPartition->partitionCount != 0;
-    if (stockPartitionUsable) {
-        // Retains a reference so the address cannot be recycled underneath the
-        // cache while the entry lives.
-        stockPartitions()[skinPartition] = NI::Pointer<NI::SkinPartition>(skinPartition);
+    if (faulted) {
+        LOG::logline(
+            "!! Indexed skinning: Morrowind's partition builder faulted on geometry %p; "
+            "recovered onto the stock path for this mesh.",
+            geometryData);
+    } else {
+        LOG::logline(
+            "-- Indexed skinning: partitioning of geometry %p is incomplete; using the stock "
+            "path for this mesh.",
+            geometryData);
     }
-    return stockPartitionUsable;
+
+    stockOnlyGeometry()[geometryData] = NI::Pointer<NI::GeometryData>(geometryData);
+
+    releasePartitions(skinPartition);
+    return NI_SkinPartition_makePartitions(
+        skinPartition, geometryData, skinData, bonesPerPartition, bonesPerVertex);
 }
 
 // Installed over the function entry itself rather than a call site, so it must
@@ -838,7 +751,7 @@ void onDeviceReleased() {
     // Released here, while Morrowind is still running, rather than from a
     // static destructor during teardown. A fallback mesh may be retried once
     // after device recreation; that is cheaper than an unsafe release.
-    stockPartitions().clear();
+    stockOnlyGeometry().clear();
 }
 
 }  // namespace MorrowindIndexedSkinning

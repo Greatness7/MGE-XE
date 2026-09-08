@@ -3,15 +3,175 @@ use std::collections::BTreeSet;
 use super::*;
 
 impl<'a> UsageInfo<'a> {
+    /// Clips the terrain cell bounding rectangle to fit within the control-texture limits.
+    ///
+    /// Uses a greedy boundary trim: while either the dimension limit or the byte limit is
+    /// exceeded, drop whichever of the four boundary rows/columns holds the fewest populated
+    /// cells. Ties are broken in a fixed axis order (min_x, max_x, min_y, max_y) to keep
+    /// output deterministic.
+    ///
+    /// When cells are clipped, exterior references in the dropped region are also removed.
+    /// The retained region is stored on `self` and read back through
+    /// [`UsageInfo::terrain_control_clip`], both by the grass merge step and by the caller
+    /// that reports the clip. Nothing is stored when no cells were removed.
+    pub(crate) fn clip_terrain_control_region(&mut self, limits: &TerrainControlClipLimits) {
+        if self.terrain_cells.is_empty() {
+            return;
+        }
+
+        let (orig_min_x, orig_min_y, orig_max_x, orig_max_y) = terrain_cell_bounds(&self.terrain_cells);
+
+        if !region_exceeds_limits(orig_min_x, orig_min_y, orig_max_x, orig_max_y, limits) {
+            return;
+        }
+
+        let mut min_x = orig_min_x;
+        let mut min_y = orig_min_y;
+        let mut max_x = orig_max_x;
+        let mut max_y = orig_max_y;
+
+        // Build distinct populated coordinate lookups for O(1) boundary counting
+        // and O(log N) coordinate snapping.
+        let mut cells_by_x: hashbrown::HashMap<i32, Vec<i32>> = hashbrown::HashMap::new();
+        let mut cells_by_y: hashbrown::HashMap<i32, Vec<i32>> = hashbrown::HashMap::new();
+        for &(cx, cy) in self.terrain_cells.keys() {
+            cells_by_x.entry(cx).or_default().push(cy);
+            cells_by_y.entry(cy).or_default().push(cx);
+        }
+        let mut xs: Vec<i32> = cells_by_x.keys().copied().collect();
+        xs.sort_unstable();
+        let mut ys: Vec<i32> = cells_by_y.keys().copied().collect();
+        ys.sort_unstable();
+
+        while region_exceeds_limits(min_x, min_y, max_x, max_y, limits) {
+            // Snap each boundary to the nearest populated coordinate before counting.
+            // Draining empties one coordinate at a time converges to this state; snapping
+            // avoids O(gap × extent) scans across empty space.
+            let min_x_idx = xs.partition_point(|&x| x < min_x);
+            let max_x_idx = xs.partition_point(|&x| x <= max_x);
+            let min_y_idx = ys.partition_point(|&y| y < min_y);
+            let max_y_idx = ys.partition_point(|&y| y <= max_y);
+
+            if min_x_idx >= xs.len() || max_x_idx == 0 || min_y_idx >= ys.len() || max_y_idx == 0 {
+                break;
+            }
+
+            min_x = xs[min_x_idx];
+            max_x = xs[max_x_idx - 1];
+            min_y = ys[min_y_idx];
+            max_y = ys[max_y_idx - 1];
+
+            // Reachable when both boundaries on an axis have trimmed past every populated
+            // coordinate between them, which a very small dimension cap can force.
+            if max_x < min_x || max_y < min_y {
+                break;
+            }
+
+            if !region_exceeds_limits(min_x, min_y, max_x, max_y, limits) {
+                break;
+            }
+
+            // Count populated cells on each boundary within current bounds.
+            let count_min_x = count_boundary_x(&cells_by_x, min_x, min_y, max_y);
+            let count_max_x = count_boundary_x(&cells_by_x, max_x, min_y, max_y);
+            let count_min_y = count_boundary_y(&cells_by_y, min_y, min_x, max_x);
+            let count_max_y = count_boundary_y(&cells_by_y, max_y, min_x, max_x);
+
+            // Pick the boundary with fewest populated cells.
+            // Tie-break: min_x, max_x, min_y, max_y (fixed order for determinism).
+            let candidates = [
+                (count_min_x, BoundarySide::MinX),
+                (count_max_x, BoundarySide::MaxX),
+                (count_min_y, BoundarySide::MinY),
+                (count_max_y, BoundarySide::MaxY),
+            ];
+            let (_, side) = candidates.iter().min_by_key(|(count, _)| *count).unwrap();
+
+            match side {
+                BoundarySide::MinX => min_x += 1,
+                BoundarySide::MaxX => max_x -= 1,
+                BoundarySide::MinY => min_y += 1,
+                BoundarySide::MaxY => max_y -= 1,
+            }
+        }
+
+        // A region that retains nothing is not a salvage. Leave the map untouched so
+        // `validate_control_texture_region` fails with its full diagnostics rather than
+        // publishing a world with no terrain at all.
+        let retains_any = self
+            .terrain_cells
+            .keys()
+            .any(|&(cx, cy)| cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y);
+        if !retains_any {
+            return;
+        }
+
+        let mut dropped_cells: Vec<(i32, i32)> = Vec::new();
+        self.terrain_cells.retain(|&(cx, cy), _| {
+            let keep = cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y;
+            if !keep {
+                dropped_cells.push((cx, cy));
+            }
+            keep
+        });
+
+        if dropped_cells.is_empty() {
+            return;
+        }
+
+        // Sort dropped cells for deterministic reporting.
+        dropped_cells.sort_unstable();
+
+        // Tighten to the surviving cells so the reported region and the reference clip match
+        // the terrain that actually remains.
+        let (min_x, min_y, max_x, max_y) = terrain_cell_bounds(&self.terrain_cells);
+        self.clip_exterior_references_to_region(min_x, min_y, max_x, max_y);
+
+        self.terrain_control_clip = Some(TerrainControlClip {
+            retained_min: [min_x, min_y],
+            retained_max: [max_x, max_y],
+            dropped_cells,
+        });
+    }
+
+    /// Re-applies a previously computed terrain control clip to exterior references only.
+    ///
+    /// Called after the grass merge to remove grass placements in the clipped region.
+    pub(crate) fn reapply_terrain_control_clip(&mut self) {
+        let Some(clip) = &self.terrain_control_clip else {
+            return;
+        };
+        let ([min_x, min_y], [max_x, max_y]) = (clip.retained_min, clip.retained_max);
+        self.clip_exterior_references_to_region(min_x, min_y, max_x, max_y);
+    }
+
+    /// Removes exterior references whose cell coordinates fall outside the given bounds.
+    fn clip_exterior_references_to_region(&mut self, min_x: i32, min_y: i32, max_x: i32, max_y: i32) {
+        if let Some(references) = self.cells.get_mut("\0") {
+            references.retain(|_, reference| {
+                let (cx, cy) = reference.cell_coords();
+                cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y
+            });
+        }
+    }
+
     /// Discard interior cells that do not meet MGE-XE's inclusion criteria.
     ///
     /// This is done after the merge phase to ensure all references from all plugins
     /// are considered when calculating the cell's spatial span.
     ///
+    /// The verdicts are read back by [`Self::included_interiors`], which is how the grass merge
+    /// reaches the same decision for a cell whose only remaining content would be grass.
     pub(crate) fn filter_interiors(&mut self, args: &UsageFilterOptions, overrides: &StaticOverrides) {
         self.cells.retain(|name, references| {
             if name == "\0" {
                 return true;
+            }
+
+            // An unnamed interior cannot be addressed at runtime: `selectDistantCell` builds the
+            // same empty key the exterior world space uses, so the record could never be selected.
+            if name.is_empty() {
+                return false;
             }
 
             if let Some(&enabled) = overrides.interiors.get(name.as_uncased()) {
@@ -36,6 +196,25 @@ impl<'a> UsageInfo<'a> {
 
             false
         });
+    }
+
+    /// Interior world spaces that survived [`Self::filter_interiors`], mapping each cell's
+    /// case-insensitive name to the exact name bytes the load order carries for it.
+    ///
+    /// This is the inclusion decision the grass merge reuses. An interior the filter dropped must
+    /// not reappear through a grass placement: its world space would then exist after all, and
+    /// with it MGE's interior fog and distance-blend passes for that cell. The verdicts are read
+    /// back from the surviving cells rather than re-derived, because the reference span
+    /// [`is_large_interior_refs`] measures is gone once the filter has run.
+    ///
+    /// An interior whose references were all filtered out before `filter_interiors` ran is absent
+    /// here, so grass alone cannot keep it.
+    pub(crate) fn included_interiors(&self) -> HashMap<UString, String> {
+        self.cells
+            .keys()
+            .filter(|name| name.as_str() != "\0")
+            .map(|name| (Uncased::new(name.clone()), name.clone()))
+            .collect()
     }
 
     /// Normalizes reference IDs to their underlying mesh paths and applies visibility overrides.
@@ -369,4 +548,83 @@ fn is_large_interior_refs(references: &References<'_>) -> bool {
         max = max.max(pos);
     }
     (max - min).max_element() >= 10_000.0
+}
+
+/// Boundary side used as tie-break discriminant in the greedy shrink.
+#[derive(Clone, Copy)]
+enum BoundarySide {
+    MinX,
+    MaxX,
+    MinY,
+    MaxY,
+}
+
+/// Returns `(min_x, min_y, max_x, max_y)` for the terrain cell bounding rectangle.
+fn terrain_cell_bounds(terrain_cells: &TerrainCells<'_>) -> (i32, i32, i32, i32) {
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    for &(cx, cy) in terrain_cells.keys() {
+        min_x = min_x.min(cx);
+        min_y = min_y.min(cy);
+        max_x = max_x.max(cx);
+        max_y = max_y.max(cy);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+/// Checks whether the bounding rectangle exceeds either the dimension or byte limit.
+fn region_exceeds_limits(min_x: i32, min_y: i32, max_x: i32, max_y: i32, limits: &TerrainControlClipLimits) -> bool {
+    if max_x < min_x || max_y < min_y {
+        return false;
+    }
+    let width = (max_x - min_x + 1) as u32;
+    let height = (max_y - min_y + 1) as u32;
+    if width > limits.max_dimension_cells || height > limits.max_dimension_cells {
+        return true;
+    }
+    let material_w = u64::from(width) * u64::from(MATERIAL_PATCHES_PER_CELL);
+    let material_h = u64::from(height) * u64::from(MATERIAL_PATCHES_PER_CELL);
+    estimated_control_texture_bytes(material_w, material_h) > limits.max_bytes
+}
+
+/// Estimates the control-texture byte footprint for a given material size.
+///
+/// Mirrors the terrain crate's `estimated_control_texture_bytes`: two RGBA8 control maps
+/// plus a BC1 patch-albedo mip chain.
+fn estimated_control_texture_bytes(width: u64, height: u64) -> u64 {
+    let area = width * height;
+    // Two RGBA8 maps = area * 4 * 2 = area * 8
+    let rgba_bytes = area * 8;
+    // BC1 mip chain: sum of ceil(w/4)*ceil(h/4)*8 over all levels
+    let bc1_bytes = bc1_mip_chain_size(width as u32, height as u32);
+    rgba_bytes + bc1_bytes
+}
+
+/// Computes the total byte size of a BC1 mip chain down to 1×1 using `distantland_texture` primitives.
+fn bc1_mip_chain_size(mut width: u32, mut height: u32) -> u64 {
+    let mut total = 0_u64;
+    loop {
+        total += distantland_texture::dds::bcn_level_bytes(width, height, 8) as u64;
+        if width == 1 && height == 1 {
+            break;
+        }
+        (width, height) = distantland_texture::dds::next_mip_dimensions(width, height);
+    }
+    total
+}
+
+/// Counts populated terrain cells on a column boundary (fixed x, varying y).
+fn count_boundary_x(cells_by_x: &hashbrown::HashMap<i32, Vec<i32>>, x: i32, min_y: i32, max_y: i32) -> usize {
+    cells_by_x
+        .get(&x)
+        .map_or(0, |ys| ys.iter().filter(|&&y| y >= min_y && y <= max_y).count())
+}
+
+/// Counts populated terrain cells on a row boundary (fixed y, varying x).
+fn count_boundary_y(cells_by_y: &hashbrown::HashMap<i32, Vec<i32>>, y: i32, min_x: i32, max_x: i32) -> usize {
+    cells_by_y
+        .get(&y)
+        .map_or(0, |xs| xs.iter().filter(|&&x| x >= min_x && x <= max_x).count())
 }

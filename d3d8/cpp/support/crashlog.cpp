@@ -106,10 +106,20 @@ namespace {
         LOG::flush();
     }
 
+    // Non-zero while the thread is inside a fault MGE XE expects and handles.
+    // Thread-local because the vectored handler runs on the faulting thread,
+    // so a fault elsewhere still logs normally.
+    thread_local int expectedFaultDepth = 0;
+
     LONG CALLBACK vehHandler(EXCEPTION_POINTERS* info) {
         // Only act on hard faults. Benign first-chance exceptions (C++ EH, guard
         // page, debugger breakpoints, etc.) pass straight through untouched.
         if (!isHardwareFault(info->ExceptionRecord->ExceptionCode)) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        // A fault the caller is about to catch and report itself.
+        if (expectedFaultDepth > 0) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
@@ -154,6 +164,14 @@ namespace CrashLog {
         if (previous != unhandledFilter) {
             previousUnhandledFilter = previous;
         }
+    }
+
+    ExpectedFaultScope::ExpectedFaultScope() {
+        ++expectedFaultDepth;
+    }
+
+    ExpectedFaultScope::~ExpectedFaultScope() {
+        --expectedFaultDepth;
     }
 }
 

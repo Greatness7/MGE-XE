@@ -43,6 +43,9 @@ pub const BASELINE_WORLD_V1_MAINGRASS: &str = "baseline-world-v1-maingrass";
 /// Baseline-world variant with generator-only grass plugins outside the active load order.
 pub const BASELINE_WORLD_V1_GRASSLIST: &str = "baseline-world-v1-grasslist";
 
+/// The interior the grass-list fixture declares in the main world and places grass into.
+pub const FIXTURE_GRASS_INTERIOR_NAME: &str = "Fixture Grass Interior";
+
 /// Baseline-world variant whose contiguous 5-by-2 LAND block spans an absolute chunk boundary.
 pub const BASELINE_WORLD_V1_CHUNKSPAN: &str = "baseline-world-v1-chunkspan";
 
@@ -440,6 +443,11 @@ fn baseline_world_v1_plugin() -> Plugin {
 }
 
 /// Builds the active content master that supplies the dedicated grass plugin's STAT.
+///
+/// It also declares "Fixture Grass Interior" in the main world, because the grass list may only
+/// place into an interior distant land already keeps: a cell known solely to a grass plugin is one
+/// the player can never stand in, and `filter_interiors` drops it. The two markers span 20000
+/// units so `include_large_interiors` keeps the cell.
 fn grass_master_plugin() -> Plugin {
     let mut plugin = Plugin::new();
     let mut header = Header::default();
@@ -450,6 +458,22 @@ fn grass_master_plugin() -> Plugin {
         mesh: "grass\\fixture_grass.nif".to_owned(),
         ..Static::default()
     }));
+    plugin.objects.push(TES3Object::Static(Static {
+        id: "fixture_interior_marker".to_owned(),
+        mesh: "fixture_opaque.nif".to_owned(),
+        ..Static::default()
+    }));
+
+    let mut interior = Cell::default();
+    interior.name = FIXTURE_GRASS_INTERIOR_NAME.to_owned();
+    interior.data.flags.insert(CellFlags::IS_INTERIOR);
+    for (refr_index, x) in [(200, 0.0), (201, 20_000.0)] {
+        interior.references.insert(
+            (0, refr_index),
+            placed_reference(refr_index, "fixture_interior_marker", [x, 0.0, 0.0]),
+        );
+    }
+    plugin.objects.push(TES3Object::Cell(interior));
     plugin
 }
 
@@ -517,7 +541,7 @@ fn grass_list_plugin_with_ignored_content() -> Plugin {
     )));
 
     let mut interior = Cell::default();
-    interior.name = "Fixture Grass Interior".to_owned();
+    interior.name = FIXTURE_GRASS_INTERIOR_NAME.to_owned();
     interior.data.flags.insert(CellFlags::IS_INTERIOR);
     let interior_reference = placed_reference(102, "fixture_grass", [0.0, 0.0, 0.0]);
     interior.references.insert((0, 102), interior_reference);

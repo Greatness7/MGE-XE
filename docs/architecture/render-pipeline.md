@@ -75,7 +75,7 @@ it rescans dynamic-vis groups when the player-cell pointer changes, then selects
 worldspace on every call, setting `hasCurrentWorldSpace` — the flag `isDistantCell()` reads.
 Without a current worldspace Stage 0 still clears the reflection and still runs ripple
 simulation if `DYNAMIC_RIPPLES` is set; everything else is skipped. The shadow-map early pass
-additionally requires `USE_SHADOWS`, `CellHasWeather()`, and non-menu mode, and distant land
+additionally requires `USE_SHADOWS`, `IntLikeExterior(true)`, and non-menu mode, and distant land
 and statics are skipped entirely while `IsUnderwater(eyePos.z)`. Distant statics also need
 `staticsUploaded` and `USE_DISTANT_STATICS`. The numbered steps below are the enabled path:
 
@@ -118,14 +118,19 @@ Stage 1 (`EndScene` of scene 0):
 
 Stage 1 does nothing for a cached frame. Grass culling requires `isDistantCell()` and
 `staticsUploaded`; the grass draw additionally requires `USE_GRASS`; the shadow overlay
-requires `isDistantCell()`, `USE_SHADOWS`, and `CellHasWeather()`. Depth capture is
+requires `isDistantCell()`, `USE_SHADOWS`, and `IntLikeExterior(true)`. Depth capture is
 unconditional.
 
 - `cullGrass`: host query `VIS_GRASS` (frustum-limited to the grass distance), then
   `buildGrassInstanceVB` batches transforms into an instance VB (`GrassInstStride` 48,
   up to `MaxGrassElements` 8192 per batch).
 - Grass draw (`renderGrassInst`, `PASS_RENDERGRASSINST`): hardware instancing, wind sway
-  (smoothed wind vector), shadow receiving, alpha-to-coverage.
+  (smoothed wind vector), shadow receiving, alpha-to-coverage. Interiors are distant cells
+  too when the generator baked grass for them (interior world spaces in `usage.data`, selected
+  by cell name). Without weather the smoothed wind targets the constant
+  `distant_land.grass.interior_wind` rather than the engine's stale exterior wind, and the
+  shadow cascades are bound as matrices that map every receiver outside the atlas, since the
+  atlas is only rendered for cells with weather.
 - Shadow overlay (`renderShadow`, `PASS_RENDERSHADOW`/`PASS_RENDERSHADOWFFE`): re-draws
   recorded z-writing geometry and projects the soft shadow map onto it with blending.
 - Depth texture (`captureNativeDepth` when enabled and supported, otherwise
@@ -145,7 +150,7 @@ StageBlend (immediately after Stage 1) returns immediately for a cached frame:
 
 Stage 2 (`EndScene` of scenes 1+ until the frame is complete) uses the same shadow overlay +
 depth merge for geometry Morrowind draws in later scenes (post-stencil redraw, sorted
-alpha, 1st person), under the same `isDistantCell()` + `USE_SHADOWS` + `CellHasWeather()` gate
+alpha, 1st person), under the same `isDistantCell()` + `USE_SHADOWS` + `IntLikeExterior(true)` gate
 as Stage 1. A safe native frame merges nearer depth from the active DSV; otherwise
 `renderDepthAdditional` replays the recorded geometry. One Stage-2 fallback keeps all
 remaining Stage-2 invocations on replay for that frame. MGE skips it with no recorded draws.
