@@ -136,6 +136,7 @@ impl Settings {
             "render.fog_mode" => self.render.fog_mode.runtime_value().into(),
             "render.enable_shaders" => bool_number(self.render.enable_shaders),
             "render.indexed_skinning" => bool_number(self.render.indexed_skinning),
+            "render.camera_relative" => bool_number(self.render.camera_relative),
             "render.hdr_reaction_time" => self.render.hdr_reaction_time.into(),
             "render.fps_counter" => bool_number(self.render.fps_counter),
             "render.messages" => bool_number(self.render.messages),
@@ -254,6 +255,7 @@ impl Settings {
             }
             "render.enable_shaders" => self.render.enable_shaders = number_bool(value, path)?,
             "render.indexed_skinning" => self.render.indexed_skinning = number_bool(value, path)?,
+            "render.camera_relative" => self.render.camera_relative = number_bool(value, path)?,
             "render.hdr_reaction_time" => self.render.hdr_reaction_time = finite_f32(value, path)?,
             "render.fps_counter" => self.render.fps_counter = number_bool(value, path)?,
             "render.messages" => self.render.messages = number_bool(value, path)?,

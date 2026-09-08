@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include "mgeversion.h"
+#include "camerarelative.h"
 #include "configuration.h"
 #include "distantland.h"
 #include "morrowindskinning.h"
@@ -31,6 +32,10 @@ static float crosshairTimeout;
 static RenderedState rs;
 static FragmentState frs;
 static LightState lightrs;
+
+// The world matrix being set was already made camera-relative by an engine
+// hook in camerarelative.cpp (exact node or bone placement).
+static bool worldAlreadyRelative;
 
 static void initOnLoad();
 static bool detectMenu(const D3DMATRIX* m);
@@ -119,6 +124,7 @@ MGEProxyDevice::MGEProxyDevice(IDirect3DDevice9* real, ProxyD3D* d3d) : ProxyDev
     // presents a frame. The installer is one-shot, so recreating the device on
     // fullscreen alt-tab does not re-patch.
     MorrowindIndexedSkinning::installHooks();
+    CameraRelative::installHooks();
 }
 
 HRESULT _stdcall MGEProxyDevice::QueryInterface(REFIID a, LPVOID* b) {
@@ -185,6 +191,8 @@ HRESULT _stdcall MGEProxyDevice::GetIndexedSkinningCaps(MgeIndexedSkinningCaps* 
 }
 
 HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
+    CameraRelative::onPresent();
+
     auto mwBridge = MWBridge::get();
 
     // Load Morrowind's dynamic memory pointers
@@ -448,12 +456,30 @@ HRESULT _stdcall MGEProxyDevice::Clear(DWORD a, const D3DRECT* b, DWORD c, D3DCO
 }
 
 HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3DMATRIX* b) {
+    worldAlreadyRelative = CameraRelative::takeWorldRelative();
+
+    if (a == D3DTS_VIEW) {
+        // Decide the space of this scene before the recorder sees the view, so every
+        // world matrix captured afterwards is combined with the same view.
+        CameraRelative::onViewTransform(b, rendertargetNormal);
+        // Lights the device still holds from the previous scene may be in the other space.
+        refreshActiveLights();
+    }
+
     captureTransform(a, b);
 
     if (rendertargetNormal) {
         if (a == D3DTS_VIEW) {
             isMainView = !detectMenu(b);
 
+            if (CameraRelative::active()) {
+                // The scene was chosen by camera identity; the device view has to
+                // match the camera-relative world matrices it is about to receive.
+                D3DXMATRIX view;
+                CameraRelative::setCameraEffects(&camEffectsMatrix);
+                CameraRelative::deviceView(&camEffectsMatrix, &view);
+                return ProxyDevice::SetTransform(a, &view);
+            }
             if (isMainView) {
                 D3DXMATRIX view = *b;
                 view *= camEffectsMatrix;
@@ -479,6 +505,15 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
     if (a == D3DTS_PROJECTION) {
         DistantLand::trackDepthProjection(b);
     }
+
+    if (CameraRelative::active() && !worldAlreadyRelative
+        && a >= D3DTS_WORLDMATRIX(0) && a < D3DTS_WORLDMATRIX(MGE_INDEXED_SKINNING_PALETTE_SIZE)) {
+        // The real device only ever sees camera-relative world matrices in this
+        // space, so its own fixed-function world-view product is small-number math.
+        D3DXMATRIX world;
+        CameraRelative::relativeWorld(b, &world);
+        return ProxyDevice::SetTransform(a, &world);
+    }
     return ProxyDevice::SetTransform(a, b);
 }
 
@@ -497,7 +532,32 @@ HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
         DistantLand::setSunLight(b);
     }
 
-    return ProxyDevice::SetLight(a, b);
+    return uploadLight(a, b);
+}
+
+HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
+    CameraRelative::recordLightUpload(a, absolute);
+
+    if (CameraRelative::active() && absolute->Type != D3DLIGHT_DIRECTIONAL) {
+        // Keep the fixed-function path's lights in the same space as its geometry.
+        D3DLIGHT8 light = *absolute;
+        CameraRelative::relativePosition(&absolute->Position, &light.Position);
+        return ProxyDevice::SetLight(a, &light);
+    }
+    return ProxyDevice::SetLight(a, absolute);
+}
+
+void MGEProxyDevice::refreshLight(DWORD a) {
+    D3DLIGHT8 absolute;
+    if (CameraRelative::lightUploadStale(a, &absolute)) {
+        uploadLight(a, &absolute);
+    }
+}
+
+void MGEProxyDevice::refreshActiveLights() {
+    for (DWORD index : lightrs.active) {
+        refreshLight(index);
+    }
 }
 
 HRESULT _stdcall MGEProxyDevice::SetRenderState(D3DRENDERSTATETYPE a, DWORD b) {
@@ -611,6 +671,7 @@ ULONG _stdcall MGEProxyDevice::Release() {
         // references. The executable patches stay installed; they are
         // process-lifetime and the next device renegotiates against them.
         MorrowindIndexedSkinning::onDeviceReleased();
+        CameraRelative::onDeviceReleased();
     }
 
     return r;
@@ -705,6 +766,9 @@ HRESULT _stdcall MGEProxyDevice::LightEnable(DWORD a, BOOL b) {
         if (std::find(lightrs.active.begin(), lightrs.active.end(), a) == lightrs.active.end()) {
             lightrs.active.push_back(a);
         }
+        // The engine re-enables a light without re-uploading it; the device
+        // copy may date from another scene or camera position.
+        refreshLight(a);
     } else {
         if (std::remove(lightrs.active.begin(), lightrs.active.end(), a) != lightrs.active.end()) {
             lightrs.active.pop_back();
@@ -818,6 +882,30 @@ void captureFragmentRenderState(DWORD a, D3DTEXTURESTAGESTATETYPE b, DWORD c) {
 void captureTransform(D3DTRANSFORMSTATETYPE a, const D3DMATRIX* b) {
     if (a >= D3DTS_WORLDMATRIX(0) && a < D3DTS_WORLDMATRIX(MGE_INDEXED_SKINNING_PALETTE_SIZE)) {
         const UINT index = a - D3DTS_WORLDMATRIX(0);
+
+        if (CameraRelative::active()) {
+            // The engine's world translation is exact; the rounding happens in the
+            // world-view product. Subtract the camera first, then multiply in double.
+            // A matrix an engine hook already placed relative to the camera is used
+            // as is, and the recorder's absolute copy is rebuilt from it.
+            D3DXMATRIX world;
+            D3DXMATRIX absolute;
+            if (worldAlreadyRelative) {
+                world = *b;
+                CameraRelative::absoluteFromRelative(b, &absolute);
+            } else {
+                CameraRelative::relativeWorld(b, &world);
+                absolute = *b;
+            }
+            FixedFunctionShader::setSkinningWorldTransform(index, &world, &rs.viewTransform);
+
+            if (index < 4) {
+                rs.worldTransforms[index] = absolute;
+                CameraRelative::multiplyWorldView(&world, &rs.viewTransform, &rs.worldViewTransforms[index]);
+            }
+            return;
+        }
+
         const auto world = static_cast<const D3DXMATRIX*>(b);
         FixedFunctionShader::setSkinningWorldTransform(index, world, &rs.viewTransform);
 
@@ -829,7 +917,9 @@ void captureTransform(D3DTRANSFORMSTATETYPE a, const D3DMATRIX* b) {
     }
 
     if (a == D3DTS_VIEW) {
-        rs.viewTransform = *b;
+        // While camera-relative space is active the recorder works against a
+        // rotation-only view; world matrices carry the camera offset instead.
+        rs.viewTransform = CameraRelative::active() ? *CameraRelative::recorderView() : *static_cast<const D3DXMATRIX*>(b);
         FixedFunctionShader::setSkinningViewTransform(&rs.viewTransform);
         lightrs.lightsTransformed.clear();
         return;

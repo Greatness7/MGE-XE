@@ -34,6 +34,13 @@ enable_shaders = false
 # falls back to stock skinning when it is absent. Read once at process start, so
 # changing it takes effect after a full game restart.
 indexed_skinning = false
+# Render the near scene relative to the camera position, computed in double
+# precision. Removes the shimmer of objects, terrain seams and the whole scene
+# far from the world origin (province mods), where float32 world coordinates
+# round by a visible amount. Read once at process start, so turning it on
+# takes effect after a full game restart; turning it off applies from the
+# next scene.
+camera_relative = false
 # HDR adaptation time in seconds, clamped to 0.01..30.
 hdr_reaction_time = 2.0
 # Draw MGE XE's FPS counter.

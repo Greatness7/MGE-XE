@@ -31,6 +31,13 @@ public:
     HRESULT _stdcall SetIndices(IDirect3DIndexBuffer8* a, UINT b);
 
 private:
+    // Forwards a light, given in absolute space, to the real device in the
+    // space of the current scene, and records it for re-upload when that
+    // space or the camera origin changes.
+    HRESULT uploadLight(DWORD a, const D3DLIGHT8* absolute);
+    void refreshLight(DWORD a);
+    void refreshActiveLights();
+
     // Set at construction from the DXVK expanded-light-limit capability, and
     // re-evaluated whenever fullscreen Alt-Tab recreates the device.
     bool expandedLightLimitSupported;
