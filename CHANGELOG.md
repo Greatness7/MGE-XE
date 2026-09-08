@@ -1,42 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.21.0 beta
 
 ### Added
 
-- Distant statics now stream in and out as you travel instead of all loading at startup.
-  This means VRAM usage no longer scales with the size of your mod list.
-- Camera-relative rendering, on by default (`render.camera_relative`). Far from the map origin,
-  objects, terrain edges and the whole scene shimmer as the camera moves because the game's
-  float32 world coordinates round by a visible amount. The near scene is now combined with the
-  camera in double precision, relative to the exact camera position, so that rounding never
-  reaches the screen. Actors, creatures and the first-person arms are placed from the exact
-  positions their skeletons imply rather than the engine's rounded ones, which stops their
-  trembling far out. The engine hooks install at startup, so turning it off applies from the
-  next scene and turning it back on takes a restart.
-- Grass in interiors. Interior placements in the generator's grass plugin list are now baked into
-  distant land and rendered like exterior grass, and a groundcover plugin that only places grass in
-  interiors is detected for the Grass tab. Interior grass sways with a small constant wind that no
-  weather affects, set by the new `distant_land.grass.interior_wind` key in `mgeXE.toml` and edited
-  as the Interior row of the Distant Land Weather Settings window, and no longer samples the sun
-  shadow atlas left over from the last exterior. Interiors flagged to behave like exteriors, such
-  as Mournhold's districts, have weather and treat their grass exactly like exterior grass. Grass
-  reaches only the interiors distant land already covers, so the Include options in the generator
-  window govern it too: an interior you exclude there stays on Morrowind's own fog and lighting.
+- Camera-relative rendering, on by default. Fixes the jittering that was caused by float precision
+  loss in areas far from the world origin, primarily in the Project Tamriel mods. ([#20](https://github.com/Greatness7/MGE-XE/issues/20))
+- Distant statics now stream in and out as you travel instead of all loading at startup, so VRAM
+  use no longer scales with the size of your mod list.
+- Grass rendering is new enabled in interiors. The interface now auto-detects interior grass mods. ([#21](https://github.com/Greatness7/MGE-XE/issues/21))
+- The `mgeXE.toml` file now automatically updates itself to include new settings as they released.
 
 ### Changed
 
 - Distant statics use about 23% less video memory and disk space.
-- `MGE_DL_VERSION` 17 to 18. Distant land must be regenerated after updating.
+- Interiors with no name are ignored and no longer add their contents to the exterior world spaces.
 
 ### Fixed
 
-- Fixed a crash caused by the distant object list being read one entry past its end, drawing a
-  leftover object from an earlier frame. The bug predates the fork; it only became a crash once
-  distant statics started streaming.
-- Water reflections no longer render half-finished for a frame when distant land is busy.
-- The generator's memory warnings no longer count streamed geometry against your card, so large
-  installs stop being told to reduce settings that are fine as they are.
+- Fixed a (MGE XE UF) crash caused by reading one entry past the end of the distant object list.
+- Fixed a memory leak when loading textures that caused out-of-memory crashes on large installs.
+- Fixed malformed assets causing crashes or render incorrectly with `indexed_skinning` enabled.
+- Fixed distant land generation failing on mods that place cells very far from the world origin.
+- Fixed enabling per-pixel lighting not updating light attenuation values to `Morrowind.ini`.
+- Fixed several inherited (MGE XE) bugs related to water ripple logic.
 
 ## v0.20.3 beta
 
