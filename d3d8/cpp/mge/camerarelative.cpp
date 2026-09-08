@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <unordered_map>
 
 #include "configuration.h"
@@ -407,7 +408,8 @@ bool storedFollowsParent(const NI::AVObject* node, const NI::AVObject* parent) {
 // Open-addressed table keyed by node pointer, retired by generation at each
 // main-view activation and at Present rather than cleared. A miss after the
 // probe limit just recomputes. The slot count is headroom, not a measurement:
-// 48 bytes a slot, 384 KB resident whether or not the feature is on.
+// 48 bytes a slot, 384 KB, allocated at install so a process that never turns
+// the feature on never spends the address space.
 //
 // A hit assumes the parent chain that produced the entry is unchanged. The
 // key covers the node's own stored translation, not the parent's rotation,
@@ -425,7 +427,7 @@ struct CacheEntry {
     double exact[3];
 };
 
-CacheEntry cache[CACHE_SLOTS];
+CacheEntry* cache = nullptr;
 unsigned cacheGeneration = 1;
 
 void retireCache() {
@@ -435,6 +437,9 @@ void retireCache() {
 }
 
 CacheEntry* cacheSlot(const NI::AVObject* node) {
+    if (!cache) {
+        return nullptr;
+    }
     const std::uintptr_t key = reinterpret_cast<std::uintptr_t>(node);
     unsigned index = static_cast<unsigned>((key >> 4) * 2654435761u) & (CACHE_SLOTS - 1);
     for (unsigned probe = 0; probe < CACHE_PROBE_LIMIT; ++probe) {
@@ -527,13 +532,22 @@ const NI::AVObject* nodeFromWorldTransform(const NI::Transform* transform) {
 // node at the moment it is made, together with the roots it went into. A
 // camera that hangs from one of those roots then has the exact position of
 // the pair plus the float offset between its location and the copy; any other
-// camera uses its own parent chain.
+// camera uses its own parent chain. The pair is scoped to the frame it was
+// captured in: every patched call site runs before that frame's scene render
+// (TES3Game::renderNextFrame issues the frame's Present after it), so a pair
+// that survives into the next frame is one the engine chose not to refresh
+// and the camera walks its own chain instead.
 //---------------------------------------------------------------------------
 
 constexpr int EYE_MAX_PARENT_DEPTH = 3;
 
+// Bumped at Present only, so it names the frame being built. The cache
+// generation cannot stand in: that also retires mid-frame, at each activation.
+unsigned frameCounter = 1;
+
 struct EyePair {
     bool valid;
+    unsigned frame;  // the pair describes this frame's pose and no other
     const NI::AVObject* roots[CAMERA_ROOT_COUNT];  // compared by value, never read
     float stored[3];
     double exact[3];
@@ -572,6 +586,7 @@ void captureEyeUnguarded(const char* playerAnimController) {
     eyePair.exact[0] = exact[0] + (static_cast<double>(eye.x) - headStored.x);
     eyePair.exact[1] = exact[1] + (static_cast<double>(eye.y) - headStored.y);
     eyePair.exact[2] = exact[2] + (static_cast<double>(eye.z) - headStored.z);
+    eyePair.frame = frameCounter;
     eyePair.valid = true;
 }
 
@@ -632,7 +647,7 @@ bool hangsFromCopiedRoot(const NI::AVObject* camera) {
 }
 
 bool eyeExactUnguarded(const NI::AVObject* camera, const float* worldLocation, double out[3]) {
-    if (eyePair.valid && hangsFromCopiedRoot(camera)) {
+    if (eyePair.valid && eyePair.frame == frameCounter && hangsFromCopiedRoot(camera)) {
         out[0] = eyePair.exact[0] + (static_cast<double>(worldLocation[0]) - eyePair.stored[0]);
         out[1] = eyePair.exact[1] + (static_cast<double>(worldLocation[1]) - eyePair.stored[1]);
         out[2] = eyePair.exact[2] + (static_cast<double>(worldLocation[2]) - eyePair.stored[2]);
@@ -853,15 +868,29 @@ void __fastcall patchSetModelTransform(void* renderer, void* /*edx*/, const NI::
 
 // Exact world transform of a node: stored rotation and scale, exact translation
 // where the chain allows it, stored translation otherwise.
-DTransform exactWorldTransform(const NI::AVObject* node) {
-    DTransform out = fromNi(node->worldTransform);
+bool exactWorldTransformUnguarded(const NI::AVObject* node, DTransform* out) {
+    *out = fromNi(node->worldTransform);
     double exact[3];
-    if (exactWorldTranslation(node, exact)) {
-        out.t[0] = exact[0];
-        out.t[1] = exact[1];
-        out.t[2] = exact[2];
+    if (exactWorldTranslationUnguarded(node, exact, 0)) {
+        out->t[0] = exact[0];
+        out->t[1] = exact[1];
+        out->t[2] = exact[2];
     }
-    return out;
+    return true;
+}
+
+// The guard covers the stored transform as well as the chain walk: one of the
+// callers passes a node recovered from a transform pointer, so the first read
+// is as much a guess as the parent chain behind it. False leaves *out unusable.
+bool exactWorldTransform(const NI::AVObject* node, DTransform* out) {
+    if (!node) {
+        return false;
+    }
+    __try {
+        return exactWorldTransformUnguarded(node, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 // The tail of the engine's SetModelTransform and SetSkinnedModelTransforms:
@@ -895,11 +924,14 @@ void __fastcall patchSetSkinnedModelTransforms(
     // composed in double with exact translations, then taken camera-relative.
     DTransform shape = fromNi(*transform);
     if (transform == currentGeometryTransform) {
-        shape = exactWorldTransform(nodeFromWorldTransform(transform));
+        DTransform exact;
+        if (exactWorldTransform(nodeFromWorldTransform(transform), &exact)) {
+            shape = exact;
+        }
     }
-    const DTransform rootParent = exactWorldTransform(skinInstance->rootParent);
+    DTransform rootParent;
     DTransform inverseRootParent;
-    if (!invert(rootParent, &inverseRootParent)) {
+    if (!exactWorldTransform(skinInstance->rootParent, &rootParent) || !invert(rootParent, &inverseRootParent)) {
         engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
         return;
     }
@@ -914,7 +946,13 @@ void __fastcall patchSetSkinnedModelTransforms(
     const DTransform skinToRoot = combine(combine(shape, fromNi(skinData->transform)), inverseRootParent);
     for (unsigned short i = 0; i < partition->numBones; ++i) {
         const unsigned short boneIndex = partition->bones[i];
-        const DTransform bone = exactWorldTransform(skinInstance->bones[boneIndex]);
+        DTransform bone;
+        if (!exactWorldTransform(skinInstance->bones[boneIndex], &bone)) {
+            // The engine's own pass writes every bone in the partition, so the
+            // ones already set above are overwritten, not left in mixed spaces.
+            engineSetSkinnedModelTransforms(renderer, skinInstance, partition, transform, bound);
+            return;
+        }
         const DTransform palette = combine(combine(skinToRoot, bone), fromNi(skinData->boneData[boneIndex].transform));
 
         NI::Transform relative;
@@ -990,6 +1028,14 @@ void installHooks() {
     }
     originalSetCameraData = reinterpret_cast<SetCameraDataFn>(original);
 
+    // Value-initialized, so every slot starts at a generation the first scene
+    // cannot match. A failed allocation is not fatal: cacheSlot then misses
+    // and every position is recomputed.
+    cache = new (std::nothrow) CacheEntry[CACHE_SLOTS]();
+    if (!cache) {
+        LOG::logline("!! Camera-relative rendering: position cache allocation failed; positions recomputed per node.");
+    }
+
     // Rigid draws: which node is being drawn, and its placement.
     rigidHooksInstalled = installRigidHooks();
 
@@ -1030,6 +1076,10 @@ void onViewTransform(const D3DMATRIX* engineView, bool renderTargetNormal) {
     }
 
     activate(engineView);
+}
+
+bool installed() {
+    return cameraHookInstalled;
 }
 
 bool active() {
@@ -1132,6 +1182,7 @@ bool lightUploadStale(DWORD index, D3DLIGHT8* absolute) {
 }
 
 void onPresent() {
+    ++frameCounter;
     retireCache();
 }
 
@@ -1141,6 +1192,7 @@ void onDeviceReleased() {
     pose.valid = false;
     pose.owned = false;
     pose.exactValid = false;
+    eyePair.valid = false;
     lightUploads.clear();
     retireCache();
 }

@@ -286,9 +286,12 @@ pipeline relies on.
   activates only when it is `WorldController::worldCamera` or `armCamera` (the pointers at
   +0x134 and +0x160) and the render target is the back buffer. The menu, splash, shadow,
   reflection and any mod-created camera render scenes that stay absolute, and so does the
-  identity view `NiDX8Renderer::RenderScreenPoly` sets around loading-screen polygons, which
-  belongs to no pose. Scenes are told apart by camera identity, never by matrix shape;
-  `detectMenu` stays for MGE's own main-view bookkeeping only.
+  view `NiDX8Renderer::RenderScreenPoly` sets around screen polygons — a constant identity
+  written once into `screenPolyView` by `NiDX8Renderer::init`, never derived from camera data,
+  and matching no camera pose. Which scene a pose belongs to is decided by camera identity,
+  never by matrix shape; the rotation comparison against the standing pose is a second gate
+  that only says whether this view is the one that pose produced. `detectMenu` stays for MGE's
+  own main-view bookkeeping only.
 - **Space convention** while the world or first-person scene is active: the real device and the FFE/PPL
   shaders see world matrices whose translation is `world - camera` and a rotation-only view.
   `rs.worldTransforms` stays absolute for the sky and water replays, and `renderStage0` takes

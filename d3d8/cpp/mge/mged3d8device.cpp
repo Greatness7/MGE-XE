@@ -536,6 +536,10 @@ HRESULT _stdcall MGEProxyDevice::SetLight(DWORD a, const D3DLIGHT8* b) {
 }
 
 HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
+    if (!CameraRelative::installed()) {
+        // No scene can become active, so nothing would ever read the record.
+        return ProxyDevice::SetLight(a, absolute);
+    }
     CameraRelative::recordLightUpload(a, absolute);
 
     if (CameraRelative::active() && absolute->Type != D3DLIGHT_DIRECTIONAL) {
@@ -548,6 +552,9 @@ HRESULT MGEProxyDevice::uploadLight(DWORD a, const D3DLIGHT8* absolute) {
 }
 
 void MGEProxyDevice::refreshLight(DWORD a) {
+    if (!CameraRelative::installed()) {
+        return;
+    }
     D3DLIGHT8 absolute;
     if (CameraRelative::lightUploadStale(a, &absolute)) {
         uploadLight(a, &absolute);
@@ -555,6 +562,9 @@ void MGEProxyDevice::refreshLight(DWORD a) {
 }
 
 void MGEProxyDevice::refreshActiveLights() {
+    if (!CameraRelative::installed()) {
+        return;
+    }
     for (DWORD index : lightrs.active) {
         refreshLight(index);
     }

@@ -116,7 +116,6 @@ struct ConfigurationStruct {
     bool EnableIndexedSkinning;
     // Camera-relative rendering of the Morrowind near scene (see camerarelative.h).
     bool EnableCameraRelativeRendering;
-    // Diagnostic: log the world-view precision error every 300 frames.
 
     struct {
         float zoom, zoomRate, zoomRateTarget;

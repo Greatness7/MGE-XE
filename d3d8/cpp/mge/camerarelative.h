@@ -49,12 +49,20 @@ namespace CameraRelative {
 // sites or none.
 void installHooks();
 
+// Whether those hooks are in place. False for the lifetime of the process
+// when the option was off at startup, in which case no scene can ever become
+// active and the proxy can skip its light bookkeeping entirely.
+bool installed();
+
 // Called by the proxy for every D3DTS_VIEW it receives, before the recorder
 // captures it. Activates camera-relative space when the feature is enabled,
 // the render target is the back buffer, the last recorded pose belongs to
 // the engine's world or first-person camera, and `engineView` carries that
-// pose's rotation; deactivates otherwise. Scenes are told apart by which
-// NiCamera the engine clicked, never by the shape of the matrix.
+// pose's rotation; deactivates otherwise. Which scene a pose belongs to is
+// decided by the NiCamera the engine clicked, never by the shape of a matrix.
+// The rotation comparison is a second gate on top of that, confirming that
+// this particular view is the one the pose produced: other views reach the
+// proxy while a pose stands, and they stay absolute.
 void onViewTransform(const D3DMATRIX* engineView, bool renderTargetNormal);
 
 bool active();
@@ -100,7 +108,8 @@ void relativePosition(const D3DVECTOR* position, D3DVECTOR* out);
 // camera moved on. The proxy records every light it forwards, in absolute
 // space, together with the space and origin it was uploaded under, and asks
 // at each view and each LightEnable whether that still matches; when it does
-// not, it uploads the recorded light again.
+// not, it uploads the recorded light again. Only worth calling while
+// installed(); the records are read by nothing else.
 void recordLightUpload(DWORD index, const D3DLIGHT8* absolute);
 bool lightUploadStale(DWORD index, D3DLIGHT8* absolute);
 
