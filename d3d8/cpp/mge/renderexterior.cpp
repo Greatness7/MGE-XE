@@ -24,7 +24,6 @@ namespace {
         terrainEffect->SetFloat(DistantLand::ehTerrainGutterSize, DistantLand::terrainConstants.gutterSize);
         terrainEffect->SetFloat(DistantLand::ehTerrainPhysicalTileSize, DistantLand::terrainConstants.physicalTileSize);
         terrainEffect->SetFloat(DistantLand::ehTerrainTilesPerRow, DistantLand::terrainConstants.tilesPerRow);
-        terrainEffect->SetInt(DistantLand::ehTerrainAtlasMaxLod, static_cast<int>(DistantLand::terrainConstants.atlasMaxLod));
         terrainEffect->SetFloat(DistantLand::ehTerrainPatternCount, DistantLand::terrainConstants.patternCount);
         terrainEffect->SetFloat(DistantLand::ehTerrainPatternTileSize, DistantLand::terrainConstants.patternTileSize);
         terrainEffect->SetFloat(DistantLand::ehTerrainPatternGutterSize, DistantLand::terrainConstants.patternGutterSize);
@@ -54,7 +53,7 @@ namespace {
         setSamplerStateForTexture(DistantLand::texTerrainAtlas, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
         setSamplerStateForTexture(DistantLand::texTerrainAtlas, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         setSamplerStateForTexture(DistantLand::texTerrainAtlas, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-        setSamplerStateForTexture(DistantLand::texTerrainAtlas, D3DSAMP_MAXMIPLEVEL, static_cast<DWORD>(DistantLand::terrainConstants.atlasMaxLod));
+        setSamplerStateForTexture(DistantLand::texTerrainAtlas, D3DSAMP_MAXMIPLEVEL, 0);
 
         setSamplerStateForTexture(DistantLand::texTerrainMaterial, D3DSAMP_MINFILTER, D3DTEXF_POINT);
         setSamplerStateForTexture(DistantLand::texTerrainMaterial, D3DSAMP_MAGFILTER, D3DTEXF_POINT);

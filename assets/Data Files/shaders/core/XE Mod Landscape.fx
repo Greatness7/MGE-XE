@@ -19,7 +19,6 @@ shared float terrainLogicalTileSize;
 shared float terrainGutterSize;
 shared float terrainPhysicalTileSize;
 shared float terrainTilesPerRow;
-shared int terrainAtlasMaxLod;
 shared float terrainPatternCount;
 shared float terrainPatternTileSize;
 shared float terrainPatternGutterSize;
@@ -31,7 +30,7 @@ sampler terrainAtlasSampler = sampler_state {
     minfilter = linear;
     magfilter = linear;
     mipfilter = linear;
-    maxmiplevel = terrainAtlasMaxLod;
+    maxmiplevel = 0;
     addressu = clamp;
     addressv = clamp;
 };

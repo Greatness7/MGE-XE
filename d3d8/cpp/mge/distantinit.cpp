@@ -285,7 +285,6 @@ D3DXHANDLE DistantLand::ehTerrainLogicalTileSize;
 D3DXHANDLE DistantLand::ehTerrainGutterSize;
 D3DXHANDLE DistantLand::ehTerrainPhysicalTileSize;
 D3DXHANDLE DistantLand::ehTerrainTilesPerRow;
-D3DXHANDLE DistantLand::ehTerrainAtlasMaxLod;
 D3DXHANDLE DistantLand::ehTerrainPatternCount;
 D3DXHANDLE DistantLand::ehTerrainPatternTileSize;
 D3DXHANDLE DistantLand::ehTerrainPatternGutterSize;
@@ -864,7 +863,6 @@ bool DistantLand::initShader() {
     ehTerrainGutterSize = effect->GetParameterByName(0, "terrainGutterSize");
     ehTerrainPhysicalTileSize = effect->GetParameterByName(0, "terrainPhysicalTileSize");
     ehTerrainTilesPerRow = effect->GetParameterByName(0, "terrainTilesPerRow");
-    ehTerrainAtlasMaxLod = effect->GetParameterByName(0, "terrainAtlasMaxLod");
     ehTerrainPatternCount = effect->GetParameterByName(0, "terrainPatternCount");
     ehTerrainPatternTileSize = effect->GetParameterByName(0, "terrainPatternTileSize");
     ehTerrainPatternGutterSize = effect->GetParameterByName(0, "terrainPatternGutterSize");
@@ -905,7 +903,6 @@ bool DistantLand::initShader() {
         { ehTerrainGutterSize, "terrainGutterSize" },
         { ehTerrainPhysicalTileSize, "terrainPhysicalTileSize" },
         { ehTerrainTilesPerRow, "terrainTilesPerRow" },
-        { ehTerrainAtlasMaxLod, "terrainAtlasMaxLod" },
         { ehTerrainPatternCount, "terrainPatternCount" },
         { ehTerrainPatternTileSize, "terrainPatternTileSize" },
         { ehTerrainPatternGutterSize, "terrainPatternGutterSize" },

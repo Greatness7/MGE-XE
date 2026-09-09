@@ -78,7 +78,6 @@ public:
         float gutterSize;
         float physicalTileSize;
         float tilesPerRow;
-        float atlasMaxLod;
         float patternCount;
         float patternTileSize;
         float patternGutterSize;
@@ -286,7 +285,6 @@ public:
     static D3DXHANDLE ehTerrainAtlasTex, ehTerrainMaterialTex, ehTerrainMaterialFlagsTex, ehTerrainPatchAlbedoTex, ehTerrainBlendPatternsTex;
     static D3DXHANDLE ehTerrainWorldOrigin, ehTerrainInvAtlasSize, ehTerrainInvMaterialSize;
     static D3DXHANDLE ehTerrainLogicalTileSize, ehTerrainGutterSize, ehTerrainPhysicalTileSize, ehTerrainTilesPerRow;
-    static D3DXHANDLE ehTerrainAtlasMaxLod;
     static D3DXHANDLE ehTerrainPatternCount, ehTerrainPatternTileSize, ehTerrainPatternGutterSize, ehTerrainPatternPhysicalSize, ehTerrainPatternsPerRow;
     static D3DXHANDLE ehRippleOrigin;
     static D3DXHANDLE ehWaveHeight;
@@ -426,7 +424,7 @@ public:
     static IDirect3DSurface9* captureScreenshot();
 };
 
-static_assert(sizeof(DistantLand::TerrainRuntimeConstants) == 64, "Terrain runtime constants ABI drifted");
+static_assert(sizeof(DistantLand::TerrainRuntimeConstants) == 60, "Terrain runtime constants ABI drifted");
 
 class RenderTargetSwitcher {
     IDirect3DSurface9* savedTarget, *savedDepthStencil;
