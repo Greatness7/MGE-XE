@@ -32,7 +32,7 @@ HRESULT _stdcall MGEProxyD3D::CreateDevice(UINT a, D3DDEVTYPE b, HWND c, DWORD d
 
         if (Configuration.Borderless) {
             // Remove non-client window parts and move window flush to screen edge / centre if smaller than display
-            SetWindowLong(hMainWnd, GWL_STYLE, WS_VISIBLE);
+            SetWindowLong(hMainWnd, GWL_STYLE, WS_VISIBLE | WS_POPUP);
             SetWindowPos(hMainWnd, NULL, wx, wy, e->BackBufferWidth, e->BackBufferHeight, SWP_NOACTIVATE|SWP_NOCOPYBITS|SWP_NOZORDER);
         } else {
             // Move window to top, with client area centred on one axis

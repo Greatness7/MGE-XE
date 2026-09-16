@@ -20,7 +20,7 @@ static void _stdcall onUIScaleInit() {
         int wy = std::max(0, Configuration.WindowAlignY * (GetSystemMetrics(SM_CYSCREEN) - gameOptions->windowHeight) / 2);
 
         // Remove non-client window parts and move window flush to screen edge / centre if smaller than display
-        SetWindowLong(hMainWnd, GWL_STYLE, WS_VISIBLE);
+        SetWindowLong(hMainWnd, GWL_STYLE, WS_VISIBLE | WS_POPUP);
         SetWindowPos(hMainWnd, NULL, wx, wy, gameOptions->windowWidth, gameOptions->windowHeight, SWP_NOACTIVATE|SWP_NOCOPYBITS|SWP_NOZORDER);
     }
 
