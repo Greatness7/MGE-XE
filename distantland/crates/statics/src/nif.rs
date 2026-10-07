@@ -105,9 +105,11 @@ pub(crate) fn clear_root_node_transforms(stream: &mut NiStream) {
 
 /// Iterates visible triangle shapes with accumulated transforms and render properties.
 ///
-/// DFS traversal skips dynamic effects, billboards, particles, collision nodes, culled/editor
-/// markers, inactive LOD/switch children, missing geometry, and unsupported texture formats.
+/// DFS traversal skips dynamic effects, particles, collision nodes, culled/editor markers,
+/// inactive LOD/switch children, missing geometry, and unsupported texture formats.
 /// LOD selection uses the child covering the `LOD_DIST` sample.
+/// Billboard nodes use their stored transforms like ordinary nodes, preserving legacy
+/// fixed-geometry behavior.
 ///
 /// Skinned shapes are included; callers are expected to have baked deformation first, via
 /// [`NiStream::apply_skins`], which clears the skin instance.
@@ -126,7 +128,6 @@ pub(crate) fn visible_geometries(stream: &NiStream) -> impl Iterator<Item = Geom
             };
 
             if this.is_instance_of::<NiDynamicEffect>()
-                || this.is_instance_of::<NiBillboardNode>()
                 || this.is_instance_of::<NiBSParticleNode>()
                 || this.is_instance_of::<RootCollisionNode>()
             {

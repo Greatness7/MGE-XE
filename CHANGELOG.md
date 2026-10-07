@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- Fixed a regression that caused billboard shapes to be ignored when generating distant statics.
 - Fixed a (MGE XE UF) crash caused by reading one entry past the end of the distant object list.
 - Fixed a memory leak when loading textures that caused out-of-memory crashes on large installs.
 - Fixed malformed assets causing crashes or render incorrectly with `indexed_skinning` enabled.
