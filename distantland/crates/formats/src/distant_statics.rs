@@ -196,10 +196,16 @@ pub struct PackedSubset {
     pub has_alpha: u8,
     /// Non-zero when this subset uses an animated UV controller.
     pub has_uv_controller: u8,
+    /// Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only.
+    /// [`SUBSET_WATER_DRY_SPACE`] = a dry space in water, which is never drawn.
+    pub water: u8,
     /// Optional generated terrain-horizon culling footprint.
     pub horizon_footprint: HorizonFootprint,
     /// Texture path serialized as a NUL-terminated path in the static mesh file.
     pub texture: Box<str>,
+    /// Look line of distant water, as the mesh gives it after its `wv:` prefix. Empty when there
+    /// is none. Only a water subset has one. The runtime reads the keys in it.
+    pub water_look: Box<str>,
 }
 
 impl Default for PackedSubset {
@@ -213,8 +219,10 @@ impl Default for PackedSubset {
             palette: Vec::default(),
             has_alpha: 0,
             has_uv_controller: 0,
+            water: 0,
             horizon_footprint: HorizonFootprint::default(),
             texture: Box::<str>::from(""),
+            water_look: Box::<str>::from(""),
         }
     }
 }
@@ -241,7 +249,12 @@ pub const HEADER_SIZE: usize = 160;
 /// Byte size of one `StaticRecord`.
 pub const STATIC_RECORD_SIZE: usize = 52;
 /// Byte size of one `SubsetRecord`.
-pub const SUBSET_RECORD_SIZE: usize = 152;
+pub const SUBSET_RECORD_SIZE: usize = 168;
+/// The value of [`PackedSubset::water`] for a dry space: a closed shape that holds no water.
+pub const SUBSET_WATER_DRY_SPACE: u8 = 3;
+
+/// Maximum length in bytes of the look line of a water subset, without the trailing NUL.
+pub const WATER_LOOK_MAX_LENGTH: usize = 255;
 /// Byte size of one `ComponentRecord`.
 pub const COMPONENT_RECORD_SIZE: usize = 16;
 /// Byte size of one `UvBoundRecord`.
@@ -273,7 +286,7 @@ pub struct StaticMeshesFileHeader {
     pub header_size: u32,
     /// `StaticRecord` byte size (52).
     pub static_record_size: u32,
-    /// `SubsetRecord` byte size (152).
+    /// `SubsetRecord` byte size (168).
     pub subset_record_size: u32,
     /// Regular (non-grass) vertex byte stride (20).
     pub vertex_stride: u32,
@@ -337,7 +350,7 @@ pub struct StaticRecord {
     pub subset_count: u32,
 }
 
-/// One subset entry in the subset table (152 bytes).
+/// One subset entry in the subset table (168 bytes).
 #[derive(Pod, Zeroable, Clone, Copy, Default, Debug, PartialEq)]
 #[repr(C)]
 pub struct SubsetRecord {
@@ -355,7 +368,8 @@ pub struct SubsetRecord {
     pub vertex_count: u32,
     /// Number of triangles.
     pub triangle_count: u32,
-    /// Bitmask: bit 0 = has_alpha, bit 1 = has_uv_controller.
+    /// Bitmask: bit 0 = has_alpha, bit 1 = has_uv_controller, bit 2 = distant water,
+    /// bit 3 = distant water that reflects the sky only, bit 4 = a dry space in water.
     pub flags: u32,
     /// Length of the texture path in bytes (excluding the trailing NUL).
     pub texture_path_length: u32,
@@ -369,13 +383,20 @@ pub struct SubsetRecord {
     pub first_palette_index: u32,
     /// Number of palette entries owned by this subset. Zero for grass.
     pub palette_count: u32,
+    /// File-absolute offset of the NUL-terminated look line in the texture blob. Zero when there
+    /// is none.
+    pub look_offset: u64,
+    /// Length of the look line in bytes (excluding the trailing NUL). Zero when there is none.
+    pub look_length: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
 }
 
 /// Deserializes a complete v6 `static_meshes` file into its stored static records.
 ///
 /// Source mesh keys are not present in the file, so the returned vector follows the file's
-/// static-table order. All file offsets, table sizes, record ranges, texture strings, component
-/// ranges, palette ranges, vertex strides, and triangle indices are validated before a value is
+/// static-table order. All file offsets, table sizes, record ranges, texture strings, look lines,
+/// component ranges, palette ranges, vertex strides, and triangle indices are validated before a value is
 /// returned. Per-vertex palette ordinals are not validated: a wrong-but-in-range ordinal selects
 /// the wrong atlas tile, which the writer's cap check already rejects at the producer.
 ///
@@ -596,7 +617,12 @@ fn decode_subset(
     expected_palette: &mut u32,
     geometry_cursor: &mut usize,
 ) -> io::Result<PackedSubset> {
-    if record.flags & !0b11 != 0 {
+    // Bit 3 says what distant water reflects, so it is valid only with bit 2. A dry space
+    // (bit 4) is not water.
+    if record.flags & !0b1_1111 != 0
+        || record.flags & 0b1100 == 0b1000
+        || (record.flags & 0b1_0000 != 0 && record.flags & 0b1100 != 0)
+    {
         return Err(invalid_data(format!(
             "static_meshes subset {subset_index} has unknown flags {:#x}",
             record.flags
@@ -604,6 +630,7 @@ fn decode_subset(
     }
     validate_horizon_footprint(record.horizon_footprint, subset_index)?;
     let texture = decode_texture_path(bytes, texture_blob, subset_index, record)?;
+    let water_look = decode_water_look(bytes, texture_blob, subset_index, record)?;
 
     if record.first_component_index != *expected_component {
         return Err(invalid_data(format!(
@@ -720,8 +747,15 @@ fn decode_subset(
         palette,
         has_alpha: (record.flags & 1) as u8,
         has_uv_controller: ((record.flags >> 1) & 1) as u8,
+        water: match (record.flags >> 2) & 7 {
+            0 => 0,
+            1 => 1,
+            3 => 2,
+            _ => SUBSET_WATER_DRY_SPACE,
+        },
         horizon_footprint: record.horizon_footprint,
         texture,
+        water_look,
     })
 }
 
@@ -806,6 +840,65 @@ fn decode_texture_path(
         ))
     })?;
     Ok(Box::<str>::from(path))
+}
+
+/// Reads the look line of a subset. A subset without one has a zero offset and a zero length.
+fn decode_water_look(
+    bytes: &[u8],
+    texture_blob: &Range<usize>,
+    subset_index: u32,
+    record: SubsetRecord,
+) -> io::Result<Box<str>> {
+    if record.reserved != 0 {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} reserved field must be zero, found {}",
+            record.reserved
+        )));
+    }
+    if record.look_length == 0 {
+        if record.look_offset != 0 {
+            return Err(invalid_data(format!(
+                "static_meshes subset {subset_index} has a look offset without a look length"
+            )));
+        }
+        return Ok(Box::<str>::from(""));
+    }
+    if record.flags & 0b100 == 0 {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} has a look but is not distant water"
+        )));
+    }
+    if record.look_length as usize > WATER_LOOK_MAX_LENGTH {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} look length {} exceeds the maximum {WATER_LOOK_MAX_LENGTH}",
+            record.look_length
+        )));
+    }
+    let total_size = u64::from(record.look_length) + 1;
+    let range = checked_file_range(record.look_offset, total_size, bytes.len(), "subset look")?;
+    if range.start < texture_blob.start || range.end > texture_blob.end {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} look lies outside the texture blob"
+        )));
+    }
+    let terminator = range.end - 1;
+    if bytes[terminator] != 0 {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} look is not NUL terminated"
+        )));
+    }
+    let look_bytes = &bytes[range.start..terminator];
+    if look_bytes.contains(&0) {
+        return Err(invalid_data(format!(
+            "static_meshes subset {subset_index} look contains an interior NUL"
+        )));
+    }
+    if !look_bytes.is_ascii() {
+        return Err(invalid_data(format!("static_meshes subset {subset_index} look is not ASCII")));
+    }
+    let look = std::str::from_utf8(look_bytes)
+        .map_err(|error| invalid_data(format!("static_meshes subset {subset_index} look is not UTF-8: {error}")))?;
+    Ok(Box::<str>::from(look))
 }
 
 fn validate_components(components: &[ComponentRecord], triangle_count: u32, subset_index: u32) -> io::Result<()> {
@@ -1087,6 +1180,9 @@ const _: () = {
     assert!(std::mem::offset_of!(SubsetRecord, component_count) == 140);
     assert!(std::mem::offset_of!(SubsetRecord, first_palette_index) == 144);
     assert!(std::mem::offset_of!(SubsetRecord, palette_count) == 148);
+    assert!(std::mem::offset_of!(SubsetRecord, look_offset) == 152);
+    assert!(std::mem::offset_of!(SubsetRecord, look_length) == 160);
+    assert!(std::mem::offset_of!(SubsetRecord, reserved) == 164);
 };
 
 #[cfg(test)]

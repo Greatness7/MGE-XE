@@ -20,7 +20,12 @@ enum RenderPassID {
     PASS_WAVESTEP,
     PASS_WORKAROUND,
     PASS_RENDERSHADOW_INDEXED,
-    PASS_RENDERSHADOWFFE_INDEXED
+    PASS_RENDERSHADOWFFE_INDEXED,
+    PASS_RENDERWATERVOLUME,
+    PASS_RENDERWATERVOLUME_DISTANT,
+    // The first of the passes that MGE writes for the water shaders of mods: two for each
+    // shader, for a surface near the player and for one from the distant land
+    PASS_WATERSHADER_FIRST
 };
 
 enum RenderShadowMapID {

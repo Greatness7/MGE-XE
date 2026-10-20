@@ -12,6 +12,7 @@
 #include "distantland.h"
 #include "morrowindskinning.h"
 #include "mwbridge.h"
+#include "waterlook.h"
 #include "mwpatches.h"
 #include "statusoverlay.h"
 #include "userhud.h"
@@ -23,6 +24,12 @@ static bool isMainView, isStencilScene, isAmbientWhite;
 static DWORD stencilRef;
 static bool stage0Complete, isFrameComplete, isHUDComplete;
 static bool isWaterMaterial, waterDrawn, distantWater;
+// Marks the surface mesh of a water volume, set on its material by the mod that owns the mesh:
+// 99998 for a surface that reflects what is on screen, 99997 for one that reflects the sky only.
+// The emissive colour of that material is the colour of the water.
+static bool isWaterVolumeMaterial, waterVolumeReflectsScene;
+static unsigned int waterVolumeSlot;
+static D3DCOLORVALUE waterVolumeTint;
 
 static bool zoomSensSaved;
 static float zoomSensX, zoomSensY;
@@ -320,6 +327,8 @@ HRESULT _stdcall MGEProxyDevice::Present(const RECT* a, const RECT* b, HWND c, c
     sceneCount = -1;
     stage0Complete = false;
     waterDrawn = false;
+    DistantLand::waterVolumeDrawn = false;
+    DistantLand::discardWaterVolumes();
     isFrameComplete = false;
     isHUDComplete = false;
     DistantLand::beginDepthFrame();
@@ -420,8 +429,10 @@ HRESULT _stdcall MGEProxyDevice::EndScene() {
 
             DistantLand::renderStage1();
             DistantLand::renderStageBlend();
+            DistantLand::flushWaterVolumes(true);
         } else if (!isFrameComplete) {
             DistantLand::renderStage2();
+            DistantLand::flushWaterVolumes(false);
 
             if (distantWater && !waterDrawn && !isStencilScene) {
                 // The Morrowind water grid can be out of view, or scene/stencil order can be
@@ -520,6 +531,21 @@ HRESULT _stdcall MGEProxyDevice::SetTransform(D3DTRANSFORMSTATETYPE a, const D3D
 HRESULT _stdcall MGEProxyDevice::SetMaterial(const D3DMATERIAL8* a) {
     captureMaterial(a);
     isWaterMaterial = (a->Power == 99999.0f);
+    if (isWaterMaterial) {
+        DistantLand::waterPlaneTint[0] = a->Emissive.r;
+        DistantLand::waterPlaneTint[1] = a->Emissive.g;
+        DistantLand::waterPlaneTint[2] = a->Emissive.b;
+    }
+    // A surface of a water volume: the two old markers, or a look slot
+    waterVolumeReflectsScene = (a->Power == 99998.0f);
+    isWaterVolumeMaterial = waterVolumeReflectsScene || (a->Power == 99997.0f);
+    waterVolumeSlot = 0;
+    if (a->Power >= WaterLooks::slotMarkerBase && a->Power < WaterLooks::slotMarkerBase + WaterLooks::maxSlots) {
+        waterVolumeSlot = static_cast<unsigned int>(a->Power - WaterLooks::slotMarkerBase);
+        waterVolumeReflectsScene = (WaterLooks::get(waterVolumeSlot).flags & WATER_LOOK_REFLECTS_SCENE) != 0;
+        isWaterVolumeMaterial = true;
+    }
+    waterVolumeTint = a->Emissive;
 
     return ProxyDevice::SetMaterial(a);
 }
@@ -656,6 +682,9 @@ HRESULT _stdcall MGEProxyDevice::DrawIndexedPrimitive(D3DPRIMITIVETYPE a, UINT b
                 }
                 return D3D_OK;
             }
+        } else if (isWaterVolumeMaterial && distantWater && DistantLand::renderWaterVolume(&rs, waterVolumeReflectsScene, waterVolumeTint, waterVolumeSlot, &lightrs)) {
+            // The surface of a water volume was drawn with the water shading.
+            return D3D_OK;
         } else {
             // DistantLand may record the draw for a later pass and signal that the original is
             // already represented; in that case suppress the game draw.

@@ -95,6 +95,74 @@ Only `cells` and `terrain_cells` retain their collected data for downstream stat
   adjustments.
 - Computes minimum bounding spheres (minsphere) and AABBs; applies the early size filter using
   the mesh's maximum placed scale, `min_static_size`, and `door_size_multiplier`.
+- Decides whether the mesh is distant water (`mesh_water` in `nif.rs`): a mesh override says so,
+  or an object in it has a surface or body name from the `water` table of the metadata. The
+  objects are taken from the root, depth first, the children of a node in their order, and the
+  first surface name gives the look. An object that nothing under the root refers to does not
+  count. In a water mesh everything under a body name is left out and the remaining shapes
+  become water subsets (`SubsetWater`). Water subsets keep their source texture path (no
+  atlas), the static is not merged, and it is exempt from the buried-in-terrain cull. A water
+  subset needs no texture and no UVs: without them it gets zero UVs and the path of the
+  embedded error texture, because `static_meshes` has no subset without a texture path. The
+  vertex colour of a water subset is the colour of its water: the `water_color` of the mesh
+  override, or the emissive colour of the material, with black for the usual colour. The alpha
+  is 1, or the alpha of the vertex colour of the mesh when the look line of the subset has
+  `opacity=vertex` and the shape has vertex colours.
+- Keeps the dry spaces of the mesh: every shape that has a mask name of the `water` table, or
+  lies under an object that has one, becomes a subset of the kind `SubsetWater::DrySpace`.
+  The runtime never draws it; it draws no water inside it. A mask name does not make a mesh
+  water: a boat keeps its type, and its other shapes are ordinary subsets in the atlas. In a
+  water mesh the dry space is not a surface of the water. A dry space subset is handled as a
+  water subset is where that keeps it whole and apart: it needs no texture and no UVs (it
+  gets the path of the embedded error texture, and the texture of its shape is not looked
+  for), it keeps out of the atlas, its static is not merged (`DistantStatic::stays_alone`),
+  so the buried-triangle trim of the merges does not reach it, it does not count in the
+  buried-in-terrain test of its reference (`is_buried`), and it is not simplified, because
+  the count of the runtime needs the shape closed. It has no alpha flag, no UV
+  controller, no look line and no colour of water. Two things switch it off: the `dry_space`
+  key of the mesh override with `false`, and a `water` table without mask names. The shapes
+  are then left out of the distant mesh.
+- Finds the look line of a mesh that is drawn as water (`mesh_water_look` in `nif.rs`): the
+  text after the `wv:` prefix of the first string extra data that has the prefix, without white
+  space at its ends. The walk is the walk of the water names, with the extra data of each
+  object in the order of its chain. The look line of the mesh override
+  (`StaticOverride::water_look`, the `wv` key of a mesh entry in the metadata) comes first: when
+  the override has one, the mesh is not searched, and an empty text takes the look line away.
+  The metadata parser takes the `wv:` prefix and the white space at the ends away, and it
+  leaves out a text that the file format does not take, with a warning that names the source
+  and the mesh. Every water subset of the mesh carries the text (`Subset::water_look`); a
+  subset that is not water has none. An empty text is no look line. A text longer than 255
+  bytes (`WATER_LOOK_MAX_LENGTH`) or with a byte that is not ASCII is left out
+  (`water_look_fault` in `nif.rs`), with a warning that names the mesh. Subsets with different
+  look lines do not merge.
+- Reads one key of the look line (`look_has_vertex_opacity` in `nif.rs`): `opacity` with the
+  value `vertex`. The runtime reads all other keys, so a new key needs no generator change.
+  The words are split as `WaterLooks::parse` of the runtime splits them: white space of C is
+  between the words, the key is the text before the first `=` of a word, and the case of the
+  key does not count. The case of the value does not count, and the last `opacity` key
+  decides. With the key, the alpha of each vertex of a water subset is the alpha of the vertex
+  colour of the mesh. The rest of the pipeline keeps the alpha: the weld keys and the
+  simplifier take all four parts of the colour, water statics are not merged, and
+  `into_distant_static` packs the alpha into the fourth byte of the vertex colour.
+
+The subset record of `static_meshes` (`SubsetRecord`, 168 bytes) stores the look line in three
+fields after `palette_count`. The fields before them keep their offsets. `MGE_DL_VERSION` 20
+is the first version with these fields. Version 21 adds flag bit 4 of the record, a dry space
+in water. The bit stands alone: with it, the two water bits are zero and the subset has no
+look line. A runtime of version 20 refuses a record with the bit.
+
+| Offset | Field | Type | Meaning |
+| --- | --- | --- | --- |
+| 152 | `look_offset` | `u64` | File-absolute offset of the look line in the texture blob. `0` when there is none. |
+| 160 | `look_length` | `u32` | Length of the look line in bytes, without the trailing NUL. `0` when there is none. |
+| 164 | `reserved` | `u32` | Zero. |
+
+The look line is NUL-terminated in the texture blob, with the texture paths. The writer stores
+equal strings once, also when one is a texture path and the other is a look line: each record
+gives the offset and the length of its own string. The reader rejects a look line on a subset
+that is not water, a range that is not inside the blob, a missing or an interior NUL, a byte
+that is not ASCII, a length above 255, an offset without a length, and a `reserved` field that
+is not zero. The shard input fingerprint includes the look line of a subset that has one.
 
 The result is the `DistantStatics` map (`IndexMap<String, DistantStatic>` keyed by normalized
 mesh path) defined in [crates/statics/src/model.rs](../../crates/statics/src/model.rs).
@@ -309,6 +377,12 @@ Two layered configuration sources, merged into one `StaticOverrides` by `Overrid
   exclusion wins when the same value is both included and excluded. Per-mesh `ignore_script = true`
   is the metadata equivalent of the legacy `no_script` keyword.
 
+The `water` table (`WaterNames`) names the shapes that mark distant water. It has no file of
+its own: the shipped default override TOML sets it, and plugin metadata can replace it. A later
+source replaces the whole table, and `OverridesBuilder::set_water_names` warns when it replaces
+a different table from another source. The format is in
+[mod-metadata-guide.md](../../../docs/mod-metadata-guide.md).
+
 `DynamicVisData` (named visibility groups with ranges, deduplicated across sources) flows into
 `usage.data` so MGE-XE can toggle groups at runtime; references in a dynamic-vis group are
 excluded from merging.
@@ -318,8 +392,12 @@ excluded from merging.
 Before atlas application replaces texture symbols and before merge mutation removes member
 references, `generation::unit_fingerprint` captures mesh, merge-cell, and static-texture unit
 fingerprints. Mesh units include unresolved/read-failed/filtered states, resolution facts, raw
-content identity, settings/override/admission inputs, bounds, and ordered source textures. A
-BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
+content identity, settings/override/admission inputs, bounds, and ordered source textures. The
+unit of a mesh that the water rules apply to also includes the water names, because the names
+choose its shapes. The look line of a water mesh needs no entry of its own: it is in the bytes
+of the mesh file, and the raw content identity is the hash of those bytes. The look line of a
+mesh override is in the override input (`MeshOverrideProjection::water_look`), written for an
+override that has one alone. A BVH-free enumerator applies the same merge eligibility filter on every run, including legacy
 bundle hits, and fingerprints cells with at least two eligible stable-key members. Merge units are
 the one statics-domain unit with terrain inputs: because merged geometry is culled against the
 heightmap, each carries the `height_hash` of the 3x3 cell block around its own cell plus the

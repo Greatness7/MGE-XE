@@ -104,6 +104,7 @@ fn collect_dirty_cell_partners(
         };
         if distant_static.static_type != crate::mge_xe::distant_statics::StaticType::StaticGrass
             && distant_static.bounding_sphere.radius * reference.scale >= 32.0
+            && !distant_static.stays_alone()
         {
             partners.insert(reference.id.to_string());
         }

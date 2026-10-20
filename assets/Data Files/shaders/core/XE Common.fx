@@ -25,6 +25,34 @@ shared float4 skyScatterColFar;
 shared float fogStart, fogRange;
 shared float nearFogStart, nearFogRange;
 shared float nearViewRange;
+shared float waterVolumeReflectRange;
+shared float waterVolumeHandoff;
+shared float4 waterVolumeSky;
+// Over how many units of water what is under a water volume surface fades into the colour of
+// deep water; 800 is the standard
+shared float waterVolumeClarity;
+shared float3 waterVolumeTint;
+shared float3 waterPlaneTint;
+// The look of the water volume surface that is drawn: x, y the drift of the ripples in the
+// axes of the mesh, z the speed and w the size of the ripples
+shared float4 waterVolumeFlow;
+// x glow, y opacity, z what the vertex colour of the mesh is used for: 1 added for the tint,
+// 2 added for the opacity, w 1 added when the surface reflects what is on screen and not the
+// sky only, 2 added when the surface is drawn from the distant land
+shared float4 waterVolumeMix;
+// Light on a water volume, for the options that are compiled in (WATER_VOLUME_LIGHTS,
+// WATER_VOLUME_CAUSTICS). The point lights that the game lit the mesh with: place in the
+// world with 1 in w, or all zero for an empty row; colour; falloff as constant, linear,
+// quadratic. The strength of the caustics is that of the water of the cell, 0 to 100, and 0
+// where there is no sun.
+shared float4 waterVolumeLightPos[4];
+shared float4 waterVolumeLightCol[4];
+shared float4 waterVolumeLightFalloff[4];
+shared float waterVolumeCaustics;
+// Free values of the look, p0 to p3, for the water shader of a mod
+shared float4 waterVolumeParams[4];
+// The base texture of the mesh of the surface, for the water shader of a mod
+shared texture texMesh0, texMesh1;
 shared float3 sunPos;
 shared float sunVis;
 shared float2 windVec;
@@ -320,3 +348,23 @@ float calc_coverage(float a, float alpha_ref, float falloff_rate) {
 }
 
 //------------------------------------------------------------
+// Water of a colour. The colour is the emissive colour of the material of the water: of a
+// water volume (waterVolumeTint, or the vertex colour far away), or of the water of the cell
+// (waterPlaneTint). Black, which such a material has unless a mod changes it, is the usual
+// colour.
+
+// The colour that deep water tends to: the usual one, or the tint in the light of the sun and the sky.
+float3 waterDepthBase(float3 usual, float3 tint) {
+    float tinted = step(0.5 / 255, max(tint.r, max(tint.g, tint.b)));
+    float3 light = 0.05 * sunCol * (1 - pow(1 - sunVis, 2)) + 0.085 * (2 * skyCol + fogColFar);
+    return lerp(usual, light * tint, tinted);
+}
+
+// What is left of the light that comes through this much water: a colour takes the other
+// colours out, more with depth.
+float3 waterTransmission(float3 tint, float depth) {
+    float tintMax = max(tint.r, max(tint.g, tint.b));
+    float tinted = step(0.5 / 255, tintMax);
+    float3 hue = lerp(1, max(tint / max(tintMax, 1e-4), 0.05), tinted);
+    return pow(hue, depth / 200);
+}

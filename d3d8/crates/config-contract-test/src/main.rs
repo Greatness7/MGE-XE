@@ -66,7 +66,7 @@ fn main() {
 
     let expected = mge_config::ConfigDocument::open(root.join(mge_config::FILE_NAME));
     let count = unsafe { mge_config_contract_binding_count() };
-    assert_eq!(count, 132, "binding row count changed; update the reviewed inventory");
+    assert_eq!(count, 133, "binding row count changed; update the reviewed inventory");
 
     let mut seen = BTreeSet::new();
     let mut dont_save = BTreeSet::new();

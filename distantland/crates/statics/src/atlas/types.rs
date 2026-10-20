@@ -55,7 +55,7 @@ impl AtlasTextureSet<IndexSet<String>> {
             .values()
             .filter(|ds| ds.static_type != StaticType::StaticGrass)
             .flat_map(|ds| &ds.subsets)
-            .filter(|subset| !subset.has_uv_controller)
+            .filter(|subset| !subset.keeps_source_texture())
             .filter(|subset| subset.is_opaque())
             .filter_map(|subset| vfs.texture_key_for_sym(subset.texture.source_sym()?))
         {
@@ -70,7 +70,7 @@ impl AtlasTextureSet<IndexSet<String>> {
             .values()
             .filter(|ds| ds.static_type != StaticType::StaticGrass)
             .flat_map(|ds| &ds.subsets)
-            .filter(|subset| !subset.has_uv_controller)
+            .filter(|subset| !subset.keeps_source_texture())
             .filter(|subset| subset.has_alpha())
             .filter_map(|subset| vfs.texture_key_for_sym(subset.texture.source_sym()?))
         {

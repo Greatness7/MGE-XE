@@ -328,7 +328,7 @@ fn accumulate_static(
     }
     let scale = ds.max_scale;
     for (subset_index, subset) in ds.subsets.iter().enumerate() {
-        if subset.has_uv_controller {
+        if subset.keeps_source_texture() {
             continue;
         }
         let Some(sym) = subset.texture.source_sym() else {

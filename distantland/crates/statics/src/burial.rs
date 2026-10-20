@@ -2,7 +2,7 @@
 
 use glam::Vec3Swizzles;
 
-use crate::model::DistantStatic;
+use crate::model::{DistantStatic, SubsetWater};
 use crate::usage::{
     BurialStats, DistantReference, EXPOSED_AREA_RATIO_THRESHOLD, EXPOSED_HEIGHT_EPSILON, MAX_EXPOSED_HEIGHT_THRESHOLD,
     MIN_VALID_TRIANGLE_RATIO, MIN_VALID_TRIANGLES, TerrainCells, terrain_height_at,
@@ -25,6 +25,10 @@ pub fn is_buried(
     let mut max_exposed_height = 0.0f32;
 
     for subset in &distant_static.subsets {
+        // A dry space is never seen, so it says nothing about how much of the mesh shows.
+        if subset.water == SubsetWater::DrySpace {
+            continue;
+        }
         let world_sphere = subset.bounding_sphere.transformed_by(&transform);
         let sphere_terrain_z = terrain_height_at(terrain_cells, world_sphere.center.xy());
 

@@ -1,5 +1,7 @@
-use super::OverridesBuilder;
+use std::sync::{Arc, Mutex};
+
 use super::parse::{parse_ranges, parse_static_keywords, strip_comment, unescape};
+use super::{OverridesBuilder, WaterNames};
 use crate::mge_xe::distant_statics::StaticType;
 
 #[test]
@@ -85,4 +87,69 @@ fn test_parse_ranges_max_8() {
     let tokens: Vec<&[u8]> = vec![b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9", b"10"];
     let ranges = parse_ranges(&tokens);
     assert_eq!(ranges.len(), 8);
+}
+
+/// Collects the messages of the warnings that are logged while it is the subscriber.
+struct WarningLog(Arc<Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for WarningLog {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.is_event() && *metadata.level() == tracing::Level::WARN
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Message<'a>(&'a mut Vec<String>);
+        impl tracing::field::Visit for Message<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0.push(format!("{value:?}"));
+                }
+            }
+        }
+        event.record(&mut Message(&mut self.0.lock().unwrap()));
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[test]
+fn later_water_names_replace_the_table_and_warn_when_they_differ() {
+    let names = |surface: &str| WaterNames {
+        surface: vec![surface.to_owned()],
+        body: vec!["waterbody".to_owned()],
+        mask: Vec::new(),
+        ..WaterNames::default()
+    };
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+
+    let overrides = tracing::subscriber::with_default(WarningLog(warnings.clone()), || {
+        let mut builder = OverridesBuilder::new();
+        builder.begin_source("default.toml");
+        builder.set_water_names(names("watervolume"));
+        // The same names from another source are not a conflict.
+        builder.begin_source("Same-metadata.toml");
+        builder.set_water_names(names("watervolume"));
+        assert!(warnings.lock().unwrap().is_empty());
+
+        builder.begin_source("Other-metadata.toml");
+        builder.set_water_names(names("pond"));
+        builder.finish()
+    });
+
+    // The later table replaces the earlier one whole.
+    assert_eq!(overrides.water_names, names("pond"));
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        ["Water names from Other-metadata.toml replace conflicting names from Same-metadata.toml"]
+    );
 }

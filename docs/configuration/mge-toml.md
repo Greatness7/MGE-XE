@@ -174,6 +174,29 @@ still installed.
 The host-only horizon setting with no obsolete C++ binding is
 `distant_land.horizon.rebuild_eye_threshold`.
 
+`distant_land.water.volume_reflection_cells` has no obsolete INI predecessor. It is how far
+from the camera, in cells, a water volume among the distant statics reflects what is on screen;
+farther away it reflects the sky only. A water volume that the game draws itself, near the
+camera, reflects what is on screen for every value but `0`. The default is `8.0`, the range
+`0` to `64`, and `0` turns the screen reflection of all water volumes off, near ones too:
+they reflect the sky only.
+
+Three settings put light on water volumes. They have no obsolete INI predecessor. Each is
+`false` by default, and the water shading has no code for one that is off, so it costs
+nothing then. A change takes effect when the game starts.
+
+- `distant_land.water.volume_shadows`: the shadows of distant land fall on the surface. In a
+  shadow the water has no glint of the sun and its depth is a little darker. It needs
+  `distant_land.shadows.enabled` and a cell with weather.
+- `distant_land.water.volume_point_lights`: the lamps and fires of the game glint in the
+  surface of a water volume near the player, in the hue of the light. A surface takes up to
+  four lights, those that the game lights its mesh with, and the glint falls off with
+  distance as the light of the game does: a lamp must be near the water to show.
+- `distant_land.water.volume_caustics`: the light pattern of ripples on what is under the
+  surface, with the strength of `distant_land.water.caustics_intensity`, in a cell with
+  weather, on surfaces that face up. As for the water of the cell, the pattern fades with
+  the distance of the camera.
+
 `distant_land.grass.interior_wind` has no obsolete INI predecessor either. It
 is the constant wind applied to grass placed in interior cells, which have no
 weather to drive the per-weather wind factors. It uses the same units as those

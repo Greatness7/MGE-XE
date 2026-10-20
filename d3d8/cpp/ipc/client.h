@@ -236,7 +236,7 @@ namespace IPC {
 		* @param visibleSet ID of a shared vector of RenderMesh objects which will be populated with the results of the search.
 		* @param viewFrustum The camera's current view frustum.
 		* @param setFlags Flags indicating which types of meshes to search for. One or more of VIS_NEAR, VIS_FAR, VIS_VERY_FAR,
-		*                 VIS_STATIC (= all 3 of the preceding flags), VIS_GRASS, or VIS_LAND.
+		*                 VIS_STATIC (= all 3 of the preceding flags), VIS_GRASS, VIS_LAND, or VIS_WATER.
 		* @param sort The desired sorting of the result set, if any. If no sorting is requested (the default), the server will
 		*             enable parallel writing on the vector, allowing the client to iterate over the results as they're
 		*             populated, if desired (@ref VecView::start_read).
@@ -250,7 +250,7 @@ namespace IPC {
 		* @param viewFrustum The camera's current view frustum.
 		* @param viewSphere A sphere defining the region within the draw distance.
 		* @param setFlags Flags indicating which types of meshes to search for. One or more of VIS_NEAR, VIS_FAR, VIS_VERY_FAR,
-		*                 VIS_STATIC (= all 3 of the preceding flags), VIS_GRASS, or VIS_LAND.
+		*                 VIS_STATIC (= all 3 of the preceding flags), VIS_GRASS, VIS_LAND, or VIS_WATER.
 		* @param sort The desired sorting of the result set, if any. If no sorting is requested (the default), the server will
 		*             enable parallel writing on the vector, allowing the client to iterate over the results as they're
 		*             populated, if desired (@ref VecView::start_read).

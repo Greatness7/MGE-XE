@@ -212,7 +212,7 @@ actually being drawn rather than planner overhead.
 - **`cargo xtask deploy` installs the bundled stock DXVK `d3d9.dll` over a custom build.** Restore
   the custom one afterwards or the budget interop is silently absent and every session takes the
   infinite-cap full drain.
-- **Regenerate distant land if generation state predates format 9.** `MGE_DL_VERSION` is 18 and does
+- **Regenerate distant land if generation state predates format 9.** `MGE_DL_VERSION` is 21 and does
   not identify that mismatch.
 
 ## Known limits

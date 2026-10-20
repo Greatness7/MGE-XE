@@ -1563,3 +1563,781 @@ fn coincident_position_distinct_uv_stress_subset_optimizes() {
     assert_eq!(subset.vertices.len(), vertex_count as usize);
     assert!(all_indices_in_range(&subset));
 }
+
+/// A water mesh as a modeller writes it: a root with a surface shape and a body shape under it,
+/// both textured and both visible in the file.
+fn build_test_water_nif(surface_name: &str) -> Vec<u8> {
+    build_test_water_nif_of_color(surface_name, None)
+}
+
+/// A water mesh whose shapes have a material with this emissive colour, or no material.
+fn build_test_water_nif_of_color(surface_name: &str, emissive: Option<Vec3>) -> Vec<u8> {
+    let mut stream = NiStream::new();
+    let material_link = emissive.map(|emissive_color| {
+        stream.insert(NiMaterialProperty {
+            emissive_color,
+            ..NiMaterialProperty::default()
+        })
+    });
+
+    let texture_link = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture_link;
+    let texturing_property_link = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+    for (name, z) in [(surface_name, 0.0), ("WaterBody", -100.0)] {
+        let mut geometry_data = NiTriShapeData::default();
+        geometry_data.vertices = vec![Vec3::new(0.0, 0.0, z), Vec3::new(1.0, 0.0, z), Vec3::new(0.0, 1.0, z)];
+        geometry_data.normals = vec![Vec3::Z; 3];
+        geometry_data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+        geometry_data.triangles = vec![[0, 1, 2]];
+        geometry_data.update_center_radius();
+        let geometry_data_link = stream.insert(geometry_data);
+
+        let mut shape = NiTriShape::default();
+        shape.name = name.into();
+        shape.geometry_data = geometry_data_link.cast();
+        shape.properties.push(texturing_property_link.cast());
+        if let Some(material_link) = material_link {
+            shape.properties.push(material_link.cast());
+        }
+        root.children.push(stream.insert(shape).cast());
+    }
+
+    let root_link = stream.insert(root);
+    stream.roots.push(root_link.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn from_nif_writes_the_color_of_water_into_its_vertices() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let green = Vec3::new(0.25, 0.5, 0.125);
+    write_test_static_asset(root, "usual.nif", &build_test_water_nif("WaterVolume"));
+    write_test_static_asset(root, "green.nif", &build_test_water_nif_of_color("WaterVolume", Some(green)));
+    write_test_static_asset(
+        root,
+        "plain.nif",
+        &build_test_water_nif_of_color("WaterVolume plain", Some(green)),
+    );
+
+    let mut overrides = StaticOverrides::default();
+    overrides.water_names = kit_water_names();
+    let colors = |mesh: &str, overrides: &StaticOverrides| -> Vec<Vec4> {
+        let water = water_test_static(root, mesh, overrides);
+        water.subsets[0].vertices.iter().map(|vertex| vertex.color).collect()
+    };
+
+    // Without a colour the vertices are black: water of the usual colour.
+    assert!(
+        colors("usual.nif", &overrides)
+            .iter()
+            .all(|color| *color == Vec4::new(0.0, 0.0, 0.0, 1.0))
+    );
+    // The emissive colour of the material is the colour of the water.
+    assert!(
+        colors("green.nif", &overrides)
+            .iter()
+            .all(|color| *color == green.extend(1.0))
+    );
+    // A mesh that keeps its own look keeps its own vertex colours.
+    assert!(
+        colors("plain.nif", &overrides)
+            .iter()
+            .all(|color| *color != green.extend(1.0))
+    );
+
+    // A registered colour comes before the material.
+    overrides.mesh_overrides.insert(
+        "green.nif".to_owned(),
+        crate::overrides::StaticOverride {
+            water_color: Some([1.0, 0.0, 0.5]),
+            ..Default::default()
+        },
+    );
+    assert!(
+        colors("green.nif", &overrides)
+            .iter()
+            .all(|color| *color == Vec4::new(1.0, 0.0, 0.5, 1.0))
+    );
+}
+
+fn water_test_static(root: &Path, mesh: &str, overrides: &StaticOverrides) -> DistantStatic {
+    let vfs = make_test_vfs(root);
+    DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, overrides)
+        .distant_static
+        .expect("water test static")
+}
+
+fn kit_water_names() -> crate::overrides::WaterNames {
+    crate::overrides::WaterNames {
+        surface: vec!["watervolume".to_owned()],
+        body: vec!["waterbody".to_owned()],
+        mask: Vec::new(),
+        plain_words: vec!["plain".to_owned()],
+        sky_only_words: vec!["skyonly".to_owned()],
+    }
+}
+
+fn water_override(water: bool) -> crate::overrides::StaticOverride {
+    crate::overrides::StaticOverride {
+        water: Some(water),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn from_nif_takes_water_by_names_and_leaves_the_body_out() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "water.nif", &build_test_water_nif("WaterVolume"));
+    write_test_static_asset(root, "sky.nif", &build_test_water_nif("WaterVolume skyonly"));
+    write_test_static_asset(root, "plain.nif", &build_test_water_nif("WaterVolume plain"));
+    write_test_static_asset(root, "body_only.nif", &build_test_water_nif("Surface"));
+
+    // Without rules the mesh is an ordinary static: the surface and the body.
+    let ordinary = water_test_static(root, "water.nif", &StaticOverrides::default());
+    assert_eq!(ordinary.subsets.len(), 2);
+    assert!(!ordinary.has_water());
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+
+    // With the names the body is left out and the surface is water.
+    let water = water_test_static(root, "water.nif", &by_names);
+    assert_eq!(water.subsets.len(), 1);
+    assert_eq!(water.subsets[0].water, SubsetWater::ReflectsScene);
+    assert!(water.subsets[0].keeps_source_texture());
+    assert_eq!(water.bounding_box.min.z, 0.0);
+
+    // The words in the surface name choose the look.
+    let sky = water_test_static(root, "sky.nif", &by_names);
+    assert_eq!(sky.subsets.len(), 1);
+    assert_eq!(sky.subsets[0].water, SubsetWater::SkyOnly);
+    let plain = water_test_static(root, "plain.nif", &by_names);
+    assert_eq!(plain.subsets.len(), 1);
+    assert!(!plain.has_water());
+
+    // A body alone makes the mesh water.
+    let body_only = water_test_static(root, "body_only.nif", &by_names);
+    assert_eq!(body_only.subsets.len(), 1);
+    assert_eq!(body_only.subsets[0].water, SubsetWater::ReflectsScene);
+
+    // A mesh override can say that the mesh is not water, whatever its names say.
+    let mut refused = StaticOverrides::default();
+    refused.water_names = kit_water_names();
+    refused.mesh_overrides.insert("water.nif".to_owned(), water_override(false));
+    let not_water = water_test_static(root, "water.nif", &refused);
+    assert_eq!(not_water.subsets.len(), 2);
+    assert!(!not_water.has_water());
+
+    // A mesh override can make a mesh water without any name: every shape is surface.
+    let mut registered = StaticOverrides::default();
+    registered.mesh_overrides.insert("water.nif".to_owned(), water_override(true));
+    let by_override = water_test_static(root, "water.nif", &registered);
+    assert_eq!(by_override.subsets.len(), 2);
+    assert!(
+        by_override
+            .subsets
+            .iter()
+            .all(|subset| subset.water == SubsetWater::ReflectsScene)
+    );
+}
+
+/// A mesh with a dry space: a textured shape with the name `first_name`, and a closed shape
+/// with the name `WaterMask` that has no texture and no UVs, as a modeller leaves it.
+fn build_test_dry_space_nif(first_name: &str) -> Vec<u8> {
+    let mut stream = NiStream::new();
+    let texture_link = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture_link;
+    let texturing_property_link = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+
+    let mut first_data = NiTriShapeData::default();
+    first_data.vertices = vec![Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), Vec3::new(0.0, 100.0, 0.0)];
+    first_data.normals = vec![Vec3::Z; 3];
+    first_data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+    first_data.triangles = vec![[0, 1, 2]];
+    first_data.update_center_radius();
+    let mut first = NiTriShape::default();
+    first.name = first_name.into();
+    first.geometry_data = stream.insert(first_data).cast();
+    first.properties.push(texturing_property_link.cast());
+    root.children.push(stream.insert(first).cast());
+
+    // The dry space: four faces that close a space under the first shape.
+    let mut mask_data = NiTriShapeData::default();
+    mask_data.vertices = vec![
+        Vec3::new(10.0, 10.0, -10.0),
+        Vec3::new(60.0, 10.0, -10.0),
+        Vec3::new(10.0, 60.0, -10.0),
+        Vec3::new(10.0, 10.0, -60.0),
+    ];
+    mask_data.triangles = vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
+    mask_data.update_center_radius();
+    let mut mask = NiTriShape::default();
+    mask.name = "WaterMask".into();
+    mask.geometry_data = stream.insert(mask_data).cast();
+    root.children.push(stream.insert(mask).cast());
+
+    let root_link = stream.insert(root);
+    stream.roots.push(root_link.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+fn dry_space_names() -> crate::overrides::WaterNames {
+    crate::overrides::WaterNames {
+        mask: vec!["watermask".to_owned()],
+        ..kit_water_names()
+    }
+}
+
+fn dry_space_override(dry_space: bool) -> crate::overrides::StaticOverride {
+    crate::overrides::StaticOverride {
+        dry_space: Some(dry_space),
+        ..Default::default()
+    }
+}
+
+fn subset_of_kind(distant_static: &DistantStatic, water: SubsetWater) -> &Subset {
+    distant_static
+        .subsets
+        .iter()
+        .find(|subset| subset.water == water)
+        .expect("subset of the kind")
+}
+
+#[test]
+fn from_nif_keeps_a_dry_space_as_a_subset_that_is_not_drawn() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "boat.nif", &build_test_dry_space_nif("Hull"));
+    let vfs = make_test_vfs(root);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = dry_space_names();
+
+    // The boat stays an ordinary static. Its hull is as it is without the rules, and the dry
+    // space is a subset of its own, whole, without a texture of the mesh.
+    let boat = DistantStatic::from_nif_with_identity("boat.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+        .distant_static
+        .expect("boat static");
+    assert_eq!(boat.static_type, StaticType::StaticAuto);
+    assert!(!boat.has_water());
+    assert!(boat.stays_alone());
+    assert!(boat.water_rules);
+    assert_eq!(boat.subsets.len(), 2);
+    let hull = subset_of_kind(&boat, SubsetWater::None);
+    assert!(!hull.keeps_source_texture());
+    assert_eq!(hull.triangles.len(), 1);
+    let dry = subset_of_kind(&boat, SubsetWater::DrySpace);
+    assert_eq!(dry.triangles.len(), 4);
+    assert!(dry.keeps_source_texture());
+    assert!(!dry.allows_simplification());
+    assert!(!dry.has_alpha && !dry.has_uv_controller && dry.water_look.is_none());
+    let sym = dry.texture.source_sym().expect("source texture");
+    assert_eq!(vfs.texture_key_for_sym(sym), Some(crate::vfs::STATIC_ERROR_TEXTURE_KEY));
+    assert_eq!(boat.bounding_box.min.z, -60.0);
+
+    // The static_meshes file takes the dry space, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    packed.insert("boat.nif".to_owned(), boat.into_distant_static(&vfs, 1.0));
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    let kinds: Vec<u8> = read[0].subsets.iter().map(|subset| subset.water).sorted().collect();
+    assert_eq!(kinds, [0, crate::mge_xe::distant_statics::SUBSET_WATER_DRY_SPACE]);
+}
+
+#[test]
+fn from_nif_leaves_a_dry_space_out_when_the_mesh_or_the_table_says_so() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "boat.nif", &build_test_dry_space_nif("Hull"));
+    let hull_alone = |boat: &DistantStatic| {
+        assert_eq!(boat.subsets.len(), 1);
+        assert_eq!(boat.subsets[0].water, SubsetWater::None);
+        assert!(!boat.stays_alone());
+        assert_eq!(boat.bounding_box.min.z, 0.0);
+    };
+
+    // The mesh entry says no: the shape of the dry space is left out.
+    let mut refused = StaticOverrides::default();
+    refused.water_names = dry_space_names();
+    refused
+        .mesh_overrides
+        .insert("boat.nif".to_owned(), dry_space_override(false));
+    let boat = water_test_static(root, "boat.nif", &refused);
+    hull_alone(&boat);
+    assert!(boat.water_rules);
+
+    // With `true` the mesh is as without the key.
+    refused.mesh_overrides.insert("boat.nif".to_owned(), dry_space_override(true));
+    assert!(water_test_static(root, "boat.nif", &refused).stays_alone());
+
+    // An empty list of names: no shape is a dry space, and the mesh has no water rules. The
+    // shape has no texture, so it is not a part of the ordinary static.
+    let mut no_names = StaticOverrides::default();
+    no_names.water_names = kit_water_names();
+    let boat = water_test_static(root, "boat.nif", &no_names);
+    hull_alone(&boat);
+    assert!(!boat.water_rules);
+}
+
+#[test]
+fn from_nif_keeps_the_surface_of_a_water_mesh_that_has_a_dry_space() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "pond.nif", &build_test_dry_space_nif("WaterVolume"));
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = dry_space_names();
+    let pond = water_test_static(root, "pond.nif", &by_names);
+    assert!(pond.has_water());
+    assert_eq!(pond.subsets.len(), 2);
+    let surface = subset_of_kind(&pond, SubsetWater::ReflectsScene);
+    assert_eq!(surface.triangles.len(), 1);
+    // The dry space is not a surface of the water, and has no colour of water.
+    let dry = subset_of_kind(&pond, SubsetWater::DrySpace);
+    assert_eq!(dry.triangles.len(), 4);
+    assert!(dry.vertices.iter().all(|vertex| vertex.color == Vec4::ONE));
+
+    // Without the dry spaces the water is as before.
+    by_names
+        .mesh_overrides
+        .insert("pond.nif".to_owned(), dry_space_override(false));
+    let pond = water_test_static(root, "pond.nif", &by_names);
+    assert_eq!(pond.subsets.len(), 1);
+    assert_eq!(pond.subsets[0].water, SubsetWater::ReflectsScene);
+}
+
+/// A water mesh whose surface shape has no texture and no UVs. Its body is textured.
+fn build_test_bare_water_nif(surface_name: &str) -> Vec<u8> {
+    let mut stream = NiStream::new();
+    let texture_link = stream.insert(NiSourceTexture {
+        source: TextureSource::External("uv_anim\\ghost.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture_link;
+    let texturing_property_link = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+    for (name, z, textured) in [(surface_name, 0.0, false), ("WaterBody", -100.0, true)] {
+        let mut geometry_data = NiTriShapeData::default();
+        geometry_data.vertices = vec![Vec3::new(0.0, 0.0, z), Vec3::new(1.0, 0.0, z), Vec3::new(0.0, 1.0, z)];
+        geometry_data.normals = vec![Vec3::Z; 3];
+        geometry_data.triangles = vec![[0, 1, 2]];
+        if textured {
+            geometry_data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+        }
+        geometry_data.update_center_radius();
+        let geometry_data_link = stream.insert(geometry_data);
+
+        let mut shape = NiTriShape::default();
+        shape.name = name.into();
+        shape.geometry_data = geometry_data_link.cast();
+        if textured {
+            shape.properties.push(texturing_property_link.cast());
+        }
+        root.children.push(stream.insert(shape).cast());
+    }
+
+    let root_link = stream.insert(root);
+    stream.roots.push(root_link.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn from_nif_keeps_a_water_subset_without_texture_and_uvs() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(root, "bare.nif", &build_test_bare_water_nif("WaterVolume"));
+    write_test_static_asset(root, "bare_plain.nif", &build_test_bare_water_nif("WaterVolume plain"));
+    let vfs = make_test_vfs(root);
+
+    // As an ordinary static the surface is left out: it has no texture and no UVs.
+    let ordinary = water_test_static(root, "bare.nif", &StaticOverrides::default());
+    assert_eq!(ordinary.subsets.len(), 1);
+    assert_eq!(ordinary.bounding_box.min.z, -100.0);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+
+    // As water the surface is kept, with zero UVs and the error texture as its texture.
+    let water = DistantStatic::from_nif_with_identity("bare.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+        .distant_static
+        .expect("water static");
+    assert_eq!(water.subsets.len(), 1);
+    let subset = &water.subsets[0];
+    assert_eq!(subset.water, SubsetWater::ReflectsScene);
+    assert_eq!(subset.vertices.len(), 3);
+    assert_eq!(subset.triangles.len(), 1);
+    assert_eq!(water.bounding_box.min.z, 0.0);
+    assert!(subset.vertices.iter().all(|vertex| vertex.uv == Vec2::ZERO));
+    let sym = subset.texture.source_sym().expect("source texture");
+    assert_eq!(vfs.texture_key_for_sym(sym), Some(crate::vfs::STATIC_ERROR_TEXTURE_KEY));
+
+    // The static_meshes file takes the subset, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    packed.insert("bare.nif".to_owned(), water.into_distant_static(&vfs, 1.0));
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    assert_eq!(read[0].subsets.len(), 1);
+    assert_eq!(read[0].subsets[0].water, 1);
+    assert_eq!(read[0].subsets[0].texture.as_ref(), crate::vfs::STATIC_ERROR_TEXTURE_KEY);
+    assert!(
+        read[0].subsets[0]
+            .vertices
+            .iter()
+            .all(|vertex| vertex.uv == [half::f16::ZERO; 2])
+    );
+
+    // A mesh that keeps its own look is an ordinary static: the surface is left out as before,
+    // and the body is left out as the body of water.
+    let plain = DistantStatic::from_nif_with_identity("bare_plain.nif", &vfs, 1.0, 0.0, false, 1.0, false, &by_names);
+    assert!(plain.distant_static.is_none());
+}
+
+/// The same mesh with this string as the string extra data of its root.
+fn with_root_string(nif: &[u8], value: &str) -> Vec<u8> {
+    let mut stream = NiStream::from_bytes(nif).expect("parse test nif");
+    let mut data = NiStringExtraData::default();
+    data.value = value.into();
+    let data_link = stream.insert(data);
+    let root = stream.roots[0];
+    let Some(NiType::NiNode(root)) = stream.objects.get_mut(root.key) else {
+        panic!("root node");
+    };
+    root.extra_data = data_link.cast();
+    stream.save_bytes().expect("serialize test nif")
+}
+
+fn water_looks(distant_static: &DistantStatic) -> Vec<Option<&str>> {
+    distant_static
+        .subsets
+        .iter()
+        .map(|subset| subset.water_look.as_deref())
+        .collect()
+}
+
+#[test]
+fn from_nif_gives_the_look_line_to_water_subsets_alone() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let look_string = "wv: flow=0,-140 speed=1.2 shader=tw_foam p0=0.4,0.5,1.5 ";
+    let look = "flow=0,-140 speed=1.2 shader=tw_foam p0=0.4,0.5,1.5";
+    write_test_static_asset(
+        root,
+        "water.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume"), look_string),
+    );
+    write_test_static_asset(
+        root,
+        "plain.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume plain"), look_string),
+    );
+    write_test_static_asset(root, "no_look.nif", &build_test_water_nif("WaterVolume"));
+    let vfs = make_test_vfs(root);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+
+    // The water subset carries the text after the prefix, without the white space at its end.
+    let water = water_test_static(root, "water.nif", &by_names);
+    assert_eq!(water_looks(&water), [Some(look)]);
+
+    // A water mesh that keeps its own look is not drawn as water: no subset has the look line.
+    let plain = water_test_static(root, "plain.nif", &by_names);
+    assert!(!plain.has_water());
+    assert_eq!(water_looks(&plain), [None]);
+
+    // Without water rules the same file is an ordinary mesh.
+    let ordinary = water_test_static(root, "water.nif", &StaticOverrides::default());
+    assert_eq!(water_looks(&ordinary), [None, None]);
+
+    // A water mesh without the string has no look line.
+    let no_look = water_test_static(root, "no_look.nif", &by_names);
+    assert!(no_look.has_water());
+    assert_eq!(water_looks(&no_look), [None]);
+
+    // Every subset of a mesh that a mesh override makes water is water, and has the look line.
+    let mut registered = StaticOverrides::default();
+    registered.mesh_overrides.insert("water.nif".to_owned(), water_override(true));
+    let by_override = water_test_static(root, "water.nif", &registered);
+    assert_eq!(water_looks(&by_override), [Some(look), Some(look)]);
+
+    // The static_meshes file takes the look line, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    for mesh in ["water.nif", "no_look.nif"] {
+        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+            .distant_static
+            .expect("water static");
+        packed.insert(mesh.to_owned(), water.into_distant_static(&vfs, 1.0));
+    }
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    assert_eq!(read[0].subsets[0].water_look.as_ref(), look);
+    assert_eq!(read[1].subsets[0].water_look.as_ref(), "");
+}
+
+#[test]
+fn from_nif_leaves_out_a_look_line_that_the_file_format_does_not_take() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let water_nif = build_test_water_nif("WaterVolume");
+    let longest = "x".repeat(WATER_LOOK_MAX_LENGTH);
+    for (mesh, look_string) in [
+        ("longest.nif", format!("wv: {longest}")),
+        ("too_long.nif", format!("wv: {longest}x")),
+        ("not_ascii.nif", "wv: shader=caf\u{e9}".to_owned()),
+        ("empty.nif", "wv:   ".to_owned()),
+    ] {
+        write_test_static_asset(root, mesh, &with_root_string(&water_nif, &look_string));
+    }
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+    let look_of = |mesh: &str| {
+        let water = water_test_static(root, mesh, &by_names);
+        // The mesh stays water with or without its look line.
+        assert!(water.has_water());
+        water.subsets[0].water_look.clone()
+    };
+
+    assert_eq!(look_of("longest.nif").as_deref(), Some(longest.as_str()));
+    assert_eq!(look_of("too_long.nif"), None);
+    assert_eq!(look_of("not_ascii.nif"), None);
+    assert_eq!(look_of("empty.nif"), None);
+}
+
+#[test]
+fn subsets_with_different_look_lines_do_not_merge() {
+    let water_subset = |look: Option<&str>| Subset {
+        vertices: vec![Vertex::default(); 3],
+        triangles: vec![[0, 1, 2]],
+        water: SubsetWater::ReflectsScene,
+        water_look: look.map(Arc::from),
+        ..Subset::default()
+    };
+
+    assert!(water_subset(Some("speed=2")).can_merge_with(&water_subset(Some("speed=2"))));
+    assert!(!water_subset(Some("speed=2")).can_merge_with(&water_subset(Some("speed=3"))));
+    assert!(!water_subset(Some("speed=2")).can_merge_with(&water_subset(None)));
+}
+
+fn look_override(look: &str) -> crate::overrides::StaticOverride {
+    crate::overrides::StaticOverride {
+        water_look: Some(look.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn from_nif_takes_the_look_line_of_the_mesh_entry_before_the_look_line_of_the_mesh() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    write_test_static_asset(
+        root,
+        "water.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume"), "wv: speed=2"),
+    );
+    write_test_static_asset(root, "no_look.nif", &build_test_water_nif("WaterVolume"));
+    write_test_static_asset(
+        root,
+        "plain.nif",
+        &with_root_string(&build_test_water_nif("WaterVolume plain"), "wv: speed=2"),
+    );
+
+    let look_of = |mesh: &str, entry: Option<&str>| {
+        let mut overrides = StaticOverrides::default();
+        overrides.water_names = kit_water_names();
+        if let Some(look) = entry {
+            overrides.mesh_overrides.insert(mesh.to_owned(), look_override(look));
+        }
+        water_test_static(root, mesh, &overrides).subsets[0].water_look.clone()
+    };
+
+    assert_eq!(look_of("water.nif", None).as_deref(), Some("speed=2"));
+    // The look line of the mesh entry replaces the look line of the mesh.
+    assert_eq!(
+        look_of("water.nif", Some("flow=0,-140 glow=0.3")).as_deref(),
+        Some("flow=0,-140 glow=0.3")
+    );
+    // A mesh without a look line gets one.
+    assert_eq!(look_of("no_look.nif", Some("glow=0.3")).as_deref(), Some("glow=0.3"));
+    // An empty look line of the mesh entry takes the look line of the mesh away.
+    assert_eq!(look_of("water.nif", Some("")), None);
+    // A look line that the file format does not take is left out, and the look line of the mesh
+    // does not come back.
+    let too_long = "x".repeat(WATER_LOOK_MAX_LENGTH + 1);
+    assert_eq!(look_of("water.nif", Some(&too_long)), None);
+    assert_eq!(look_of("water.nif", Some("shader=caf\u{e9}")), None);
+    // A mesh that is not drawn as water has no look line.
+    assert_eq!(look_of("plain.nif", Some("glow=0.3")), None);
+
+    // A mesh entry can make the mesh water and give it the look line.
+    let mut registered = StaticOverrides::default();
+    registered.mesh_overrides.insert(
+        "no_look.nif".to_owned(),
+        crate::overrides::StaticOverride {
+            water: Some(true),
+            ..look_override("glow=0.3")
+        },
+    );
+    let by_override = water_test_static(root, "no_look.nif", &registered);
+    assert_eq!(water_looks(&by_override), [Some("glow=0.3"), Some("glow=0.3")]);
+}
+
+/// The same mesh with vertex colours in every shape: a colour that is not the colour of the
+/// water, with these alphas.
+fn with_vertex_alphas(nif: &[u8], alphas: [f32; 3]) -> Vec<u8> {
+    let mut stream = NiStream::from_bytes(nif).expect("parse test nif");
+    for object in stream.objects.values_mut() {
+        if let NiType::NiTriShapeData(data) = object {
+            data.vertex_colors = alphas.iter().map(|alpha| Vec4::new(0.75, 0.5, 0.25, *alpha)).collect();
+        }
+    }
+    stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn from_nif_writes_the_vertex_alpha_of_water_with_opacity_from_vertices() {
+    let dir = tempdir().expect("tempdir");
+    let root = dir.path();
+    let alphas = [0.0, 0.5, 1.0];
+    let green = Vec3::new(0.25, 0.5, 0.125);
+    let colored = with_vertex_alphas(&build_test_water_nif_of_color("WaterVolume", Some(green)), alphas);
+    let look_string = "wv: flow=0,-140 Opacity=Vertex shader=tw_foam";
+    write_test_static_asset(root, "vertex.nif", &with_root_string(&colored, look_string));
+    write_test_static_asset(root, "number.nif", &with_root_string(&colored, "wv: opacity=0.5"));
+    write_test_static_asset(root, "no_look.nif", &colored);
+    write_test_static_asset(
+        root,
+        "no_colors.nif",
+        &with_root_string(&build_test_water_nif_of_color("WaterVolume", Some(green)), look_string),
+    );
+    let vfs = make_test_vfs(root);
+
+    let mut by_names = StaticOverrides::default();
+    by_names.water_names = kit_water_names();
+    let colors = |mesh: &str, overrides: &StaticOverrides| -> Vec<Vec4> {
+        let water = water_test_static(root, mesh, overrides);
+        assert!(water.has_water());
+        water.subsets[0].vertices.iter().map(|vertex| vertex.color).collect()
+    };
+    let with_alphas = alphas.map(|alpha| green.extend(alpha));
+    let opaque = [green.extend(1.0); 3];
+
+    // The alpha is the alpha of the vertex colour of the mesh. The colour stays the colour of
+    // the water.
+    assert_eq!(colors("vertex.nif", &by_names), with_alphas);
+    // Without the key with the value `vertex` the alpha is 1.
+    assert_eq!(colors("number.nif", &by_names), opaque);
+    assert_eq!(colors("no_look.nif", &by_names), opaque);
+    // Without vertex colours the alpha is 1.
+    assert_eq!(colors("no_colors.nif", &by_names), opaque);
+
+    // The look line of the mesh entry decides when there is one.
+    let with_entry = |mesh: &str, look: &str| {
+        let mut overrides = StaticOverrides::default();
+        overrides.water_names = kit_water_names();
+        overrides.mesh_overrides.insert(mesh.to_owned(), look_override(look));
+        overrides
+    };
+    assert_eq!(
+        colors("no_look.nif", &with_entry("no_look.nif", "opacity=vertex")),
+        with_alphas
+    );
+    assert_eq!(colors("vertex.nif", &with_entry("vertex.nif", "glow=0.3")), opaque);
+    assert_eq!(colors("vertex.nif", &with_entry("vertex.nif", "")), opaque);
+    // A registered colour does not change the alpha.
+    let mut registered = with_entry("no_look.nif", "opacity=vertex");
+    registered
+        .mesh_overrides
+        .get_mut("no_look.nif")
+        .expect("mesh entry")
+        .water_color = Some([1.0, 0.0, 0.5]);
+    assert_eq!(
+        colors("no_look.nif", &registered),
+        alphas.map(|alpha| Vec4::new(1.0, 0.0, 0.5, alpha))
+    );
+
+    // The static_meshes file takes the alpha, and gives it back.
+    let mut packed = crate::PackedDistantStatics::default();
+    for mesh in ["vertex.nif", "number.nif"] {
+        let water = DistantStatic::from_nif_with_identity(mesh, &vfs, 1.0, 0.0, false, 1.0, false, &by_names)
+            .distant_static
+            .expect("water static");
+        packed.insert(mesh.to_owned(), water.into_distant_static(&vfs, 1.0));
+    }
+    let bytes = crate::serialize_static_meshes(&packed).expect("serialize");
+    let read = crate::mge_xe::distant_statics::deserialize_static_meshes(&bytes).expect("deserialize");
+    let stored_alphas = |index: usize| -> Vec<u8> {
+        assert_eq!(read[index].subsets[0].water, 1);
+        let mut alphas: Vec<u8> = read[index].subsets[0].vertices.iter().map(|vertex| vertex.color[3]).collect();
+        alphas.sort_unstable();
+        alphas
+    };
+    let from_vertices = stored_alphas(0);
+    assert_eq!(from_vertices[0], 0);
+    assert!((127..=128).contains(&from_vertices[1]));
+    assert_eq!(from_vertices[2], 255);
+    assert_eq!(stored_alphas(1), [255, 255, 255]);
+}
+
+#[test]
+fn optimization_keeps_water_vertices_that_differ_in_alpha_alone() {
+    // Two triangles with a common edge. Each triangle has its own copy of the two vertices of
+    // the edge.
+    let quad = |edge_alpha: f32| {
+        let vertex = |x: f32, y: f32, alpha: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            normal: Vec3::Z,
+            color: Vec4::new(0.25, 0.5, 0.125, alpha),
+            ..Vertex::default()
+        };
+        let mut subset = Subset {
+            vertices: vec![
+                vertex(0.0, 0.0, 1.0),
+                vertex(1.0, 0.0, 1.0),
+                vertex(0.0, 1.0, 1.0),
+                vertex(1.0, 0.0, edge_alpha),
+                vertex(1.0, 1.0, 1.0),
+                vertex(0.0, 1.0, edge_alpha),
+            ],
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+            water: SubsetWater::ReflectsScene,
+            water_look: Some("opacity=vertex".into()),
+            ..Subset::default()
+        };
+        subset.optimize_with(&mut StaticMeshContext::default(), "test.nif", 0);
+        assert!(all_indices_in_range(&subset));
+        subset
+    };
+
+    // With one alpha the copies become one vertex.
+    assert_eq!(quad(1.0).vertices.len(), 4);
+    // With two alphas the copies stay, each with its alpha.
+    let two_alphas = quad(0.25);
+    assert_eq!(two_alphas.vertices.len(), 6);
+    assert_eq!(two_alphas.vertices.iter().filter(|vertex| vertex.color.w == 0.25).count(), 2);
+}

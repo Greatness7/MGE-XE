@@ -78,8 +78,10 @@ fn make_test_subset(texture: &str, vertex_count: usize, triangle_count: usize) -
         palette: Vec::new(),
         has_alpha: 0,
         has_uv_controller: 1,
+        water: 0,
         horizon_footprint: HorizonFootprint::default(),
         texture: Box::<str>::from(texture),
+        water_look: Box::<str>::from(""),
     }
 }
 
@@ -100,8 +102,10 @@ fn subset_with(texture: &str, vertices: Vec<PackedVertex>, triangles: Vec<[u16; 
         palette: Vec::new(),
         has_alpha: 0,
         has_uv_controller: 0,
+        water: 0,
         horizon_footprint: HorizonFootprint::default(),
         texture: Box::<str>::from(texture),
+        water_look: Box::<str>::from(""),
     }
 }
 
@@ -159,7 +163,7 @@ fn v4_empty_file() {
     assert_eq!(header.version, 6);
     assert_eq!(header.header_size, HEADER_SIZE as u32);
     assert_eq!(HEADER_SIZE, 160);
-    assert_eq!(SUBSET_RECORD_SIZE, 152);
+    assert_eq!(SUBSET_RECORD_SIZE, 168);
     assert_eq!(COMPONENT_RECORD_SIZE, 16);
     assert_eq!(PALETTE_RECORD_SIZE, 16);
     assert_eq!(header.vertex_stride, STATIC_VERTEX_STRIDE as u32);
@@ -441,6 +445,127 @@ fn v4_subset_flags() {
 
     assert_eq!(sub.flags, 3); // bit 0 (alpha) + bit 1 (uv_controller)
     assert_eq!(sub.horizon_footprint.vertex_count, 0);
+}
+
+#[test]
+fn subset_water_flags() {
+    // The two water bits and the dry space bit; the test subset has other flags of its own.
+    let water_bits_of = |water: u8| {
+        let mut subset = make_test_subset("f.dds", 1, 1);
+        subset.water = water;
+        let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+        let bytes = serialize_static_meshes(&distant_statics).unwrap();
+        let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+        subset_record(&bytes, header, 0).flags & 0b1_1100
+    };
+
+    assert_eq!(water_bits_of(0), 0);
+    assert_eq!(water_bits_of(1), 0b0100); // bit 2 (distant water)
+    assert_eq!(water_bits_of(2), 0b1100); // bit 2 + bit 3 (reflects the sky only)
+    assert_eq!(water_bits_of(3), 0b1_0000); // bit 4 alone (a dry space is not water)
+}
+
+#[test]
+fn a_dry_space_subset_reads_back_and_takes_no_look() {
+    let mut dry = make_test_subset("f.dds", 1, 1);
+    dry.water = SUBSET_WATER_DRY_SPACE;
+    let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![dry.clone(), water_subset("a.dds", "")])]
+        .into_iter()
+        .collect();
+    let bytes = serialize_static_meshes(&distant_statics).unwrap();
+    let read = crate::distant_statics::deserialize_static_meshes(&bytes).unwrap();
+    assert_eq!(read[0].subsets[0].water, SUBSET_WATER_DRY_SPACE);
+    assert_eq!(read[0].subsets[1].water, 1);
+
+    let serialize = |subset: PackedSubset| {
+        let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+        serialize_static_meshes(&distant_statics)
+    };
+    // A dry space is not water, so it has no look.
+    let mut with_look = dry.clone();
+    with_look.water_look = "flow=0,1".into();
+    assert!(serialize(with_look).is_err());
+    // A value past the dry space is not known.
+    let mut unknown = dry;
+    unknown.water = SUBSET_WATER_DRY_SPACE + 1;
+    assert!(serialize(unknown).is_err());
+}
+
+fn water_subset(texture: &str, look: &str) -> PackedSubset {
+    let mut subset = make_test_subset(texture, 1, 1);
+    subset.water = 1;
+    subset.water_look = look.into();
+    subset
+}
+
+#[test]
+fn water_looks_are_stored_once_in_the_texture_blob() {
+    let look = "flow=0,-140 speed=1.2";
+    let distant_statics: PackedDistantStatics = [make_test_static(
+        "a.nif",
+        vec![
+            water_subset("a.dds", look),
+            water_subset("a.dds", look),
+            make_test_subset("a.dds", 1, 1),
+        ],
+    )]
+    .into_iter()
+    .collect();
+
+    let bytes = serialize_static_meshes(&distant_statics).unwrap();
+    let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+    let first = subset_record(&bytes, header, 0);
+    let second = subset_record(&bytes, header, 1);
+    let plain = subset_record(&bytes, header, 2);
+
+    assert_eq!(header.texture_blob_size, ("a.dds".len() + 1 + look.len() + 1) as u64);
+    assert_eq!(first.look_offset, header.texture_blob_offset + "a.dds".len() as u64 + 1);
+    assert_eq!(first.look_length, look.len() as u32);
+    assert_eq!(
+        (second.look_offset, second.look_length),
+        (first.look_offset, first.look_length)
+    );
+    assert_eq!((plain.look_offset, plain.look_length, plain.reserved), (0, 0, 0));
+
+    let start = first.look_offset as usize;
+    assert_eq!(&bytes[start..start + look.len()], look.as_bytes());
+    assert_eq!(bytes[start + look.len()], 0);
+}
+
+#[test]
+fn a_water_look_equal_to_a_texture_path_reads_back_as_both() {
+    // The two strings share their bytes in the blob. Each record has its own offset and length.
+    let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![water_subset("same", "same")])]
+        .into_iter()
+        .collect();
+
+    let bytes = serialize_static_meshes(&distant_statics).unwrap();
+    let header = bytemuck::from_bytes::<StaticMeshesFileHeader>(&bytes[..HEADER_SIZE]);
+    let record = subset_record(&bytes, header, 0);
+    assert_eq!(header.texture_blob_size, "same".len() as u64 + 1);
+    assert_eq!(record.look_offset, record.texture_path_offset);
+
+    let read = crate::distant_statics::deserialize_static_meshes(&bytes).unwrap();
+    assert_eq!(read[0].subsets[0].texture.as_ref(), "same");
+    assert_eq!(read[0].subsets[0].water_look.as_ref(), "same");
+}
+
+#[test]
+fn water_look_limits_are_enforced() {
+    let serialize = |subset: PackedSubset| {
+        let distant_statics: PackedDistantStatics = [make_test_static("a.nif", vec![subset])].into_iter().collect();
+        serialize_static_meshes(&distant_statics)
+    };
+
+    assert!(serialize(water_subset("a.dds", &"x".repeat(255))).is_ok());
+    assert!(serialize(water_subset("a.dds", &"x".repeat(256))).is_err());
+    assert!(serialize(water_subset("a.dds", "shader=caf\u{e9}")).is_err());
+    assert!(serialize(water_subset("a.dds", "flow=0\0,1")).is_err());
+
+    // A subset that is not water has no look.
+    let mut not_water = make_test_subset("a.dds", 1, 1);
+    not_water.water_look = "flow=0,1".into();
+    assert!(serialize(not_water).is_err());
 }
 
 #[test]

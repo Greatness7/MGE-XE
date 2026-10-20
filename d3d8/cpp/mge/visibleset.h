@@ -3,6 +3,7 @@
 #include "ipc/vecwrap.h"
 
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -41,6 +42,13 @@ public:
                 const D3DXHANDLE* uv_bound_palette_handle,
                 unsigned int vertex_size,
                 bool parallelRead = false);
+
+    // Distant water comes in a visible set of its own (VIS_WATER), with the dry spaces in
+    // water. This loop draws the meshes of it that prepare takes. For a mesh that it takes,
+    // prepare sets the pass and the values of its look and gives true.
+    void RenderWater(IDirect3DDevice9* device,
+                     unsigned int vertex_size,
+                     const std::function<bool(const RenderMesh&)>& prepare);
 
     void RemoveAll() {
         visible_set.clear();

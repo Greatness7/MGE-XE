@@ -357,6 +357,13 @@ pub(crate) fn validate_bounds(settings: &mut Settings) -> Result<Vec<Warning>, V
         &mut warnings,
     );
     clamp_f32(
+        &mut distant.water.volume_reflection_cells,
+        0.0,
+        64.0,
+        "distant_land.water.volume_reflection_cells",
+        &mut warnings,
+    )?;
+    clamp_f32(
         &mut distant.fog.above_water_start,
         FOG_ABOVE_START_RANGE.0,
         FOG_ABOVE_START_RANGE.1,

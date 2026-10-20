@@ -611,7 +611,14 @@ fn run_generation(
                 .map(|static_| (static_.static_type, &static_.bounding_box))
         });
         metrics.usage.burial = usage_info.discard_low_visibility_references(
-            |key| distant_statics.get(key).map(|static_| static_.static_type),
+            // A water surface lies level with the land around it by design. An unknown type
+            // exempts it, as grass is exempted.
+            |key| {
+                distant_statics
+                    .get(key)
+                    .filter(|static_| !static_.has_water())
+                    .map(|static_| static_.static_type)
+            },
             |terrain_cells, reference, stats| {
                 distant_statics
                     .get(reference.id.as_ref())

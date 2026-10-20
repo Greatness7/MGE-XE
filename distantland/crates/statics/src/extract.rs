@@ -1,8 +1,9 @@
 //! NIF input adapter that builds intermediate distant statics from mesh files.
 
+use std::sync::Arc;
 use std::time::Instant;
 
-use glam::{Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4};
 use hashbrown::HashMap;
 use minsphere::BoundingSphereScratch;
 use rayon::prelude::*;
@@ -281,7 +282,13 @@ impl DistantStatic {
         clear_root_node_transforms(&mut stream);
         normalize_texture_paths(&mut stream);
 
-        let shapes: Vec<_> = visible_geometries(&stream).collect();
+        let registered = overrides.mesh_overrides.get(rel_path);
+        let registered_water = registered.and_then(|ovr| ovr.water);
+        let registered_water_color = registered.and_then(|ovr| ovr.water_color);
+        let registered_water_look = registered.and_then(|ovr| ovr.water_look.as_deref());
+        let registered_dry_space = registered.and_then(|ovr| ovr.dry_space);
+        let water = mesh_water(&stream, &overrides.water_names, registered_water, registered_dry_space);
+        let shapes: Vec<_> = visible_geometries(&stream, water).collect();
         if shapes.is_empty() {
             return None;
         }
@@ -317,11 +324,28 @@ impl DistantStatic {
         // TODO: Skip meshes with too low alpha threshold?
 
         let mut subsets = Vec::with_capacity(shapes.len());
+        let water_surface = water.map_or(crate::model::SubsetWater::None, |water| water.surface);
+        // The look line of the mesh entry comes before the look line in the mesh.
+        let water_look = if water_surface.is_water() {
+            match registered_water_look {
+                Some(look) => stored_water_look(rel_path, look, "of the mesh entry"),
+                None => mesh_water_look(&stream).and_then(|look| stored_water_look(rel_path, look, "of the water mesh")),
+            }
+        } else {
+            None
+        };
+        let opacity_from_vertices = water_look.as_deref().is_some_and(look_has_vertex_opacity);
 
         for geometry in shapes {
             let data = geometry.data;
             let transform = geometry.transform;
             let mut subset = Subset::default();
+            // A dry space in a water mesh is not a surface of that water.
+            let subset_water = if geometry.dry_space {
+                crate::model::SubsetWater::DrySpace
+            } else {
+                water_surface
+            };
 
             // TODO: Verify how the engine handles slash prefixes - is `trim_matches` more appropriate?
             let texture_path = geometry
@@ -330,12 +354,17 @@ impl DistantStatic {
                 .trim_prefix("\\")
                 .trim_prefix("textures")
                 .trim_prefix("\\");
+            // A dry space is never drawn, so the texture of its shape is not looked for.
+            let texture_path = if geometry.dry_space { "" } else { texture_path };
 
-            if texture_path.is_empty() {
+            // The water pass reads no texture and no UVs, so a water subset is kept without them.
+            // So is a dry space.
+            if texture_path.is_empty() && !subset_water.is_kept_apart() {
                 continue;
             }
 
-            let Some(uv_set) = data.uv_set(0) else {
+            let uv_set = data.uv_set(0);
+            if uv_set.is_none() && !subset_water.is_kept_apart() {
                 let message = format!(
                     "{rel_path}: skipped malformed static subset with {} vertices and {} UV values",
                     data.vertices.len(),
@@ -349,7 +378,7 @@ impl DistantStatic {
                     "Skipped malformed NIF subset with incomplete UV set"
                 );
                 continue;
-            };
+            }
 
             let has_normals = data.normals.len() == data.vertices.len();
             let has_colors = data.vertex_colors.len() == data.vertices.len();
@@ -357,6 +386,18 @@ impl DistantStatic {
             let material_color = material
                 .map(|material| material.diffuse_color.extend(material.alpha))
                 .unwrap_or(Vec4::ONE);
+            // A water subset carries the colour of its water in the vertex colour, where the
+            // water pass reads it: the registered colour, or the emissive colour of the
+            // material. Black is water of the usual colour. The alpha is 1, or the alpha of the
+            // vertex colour of the mesh when the look line has `opacity=vertex` and the shape has
+            // vertex colours.
+            let water_color = subset_water.is_water().then(|| {
+                registered_water_color
+                    .map(Vec3::from)
+                    .or_else(|| material.map(|material| material.emissive_color))
+                    .unwrap_or(Vec3::ZERO)
+            });
+            let water_alpha_from_vertices = opacity_from_vertices && has_colors;
 
             // Every vertex below gets the identity bound, so the subset's distinct set is that
             // one entry. Seeding it here rather than at the atlas stage makes the invariant
@@ -371,22 +412,27 @@ impl DistantStatic {
             };
             subset.uv_bounds = vec![identity_bound];
 
-            // `uv_set` yields exactly `data.vertices.len()` values, so every vertex is
+            // `uv_set` holds exactly `data.vertices.len()` values, so every vertex is
             // written here; collecting sizes the buffer once instead of zero-filling it.
+            // A water subset without UVs gets zero UVs.
             subset.vertices = data
                 .vertices
                 .iter()
-                .zip(uv_set)
                 .enumerate()
-                .map(|(i, (position, uv))| Vertex {
+                .map(|(i, position)| Vertex {
                     position: transform.transform_point3(*position),
                     normal: if has_normals {
                         transform.transform_vector3(data.normals[i])
                     } else {
                         Vec3::Z
                     },
-                    uv: *uv,
-                    color: if has_colors { data.vertex_colors[i] } else { material_color },
+                    uv: uv_set.map_or(Vec2::ZERO, |uv_set| uv_set[i]),
+                    color: match water_color {
+                        Some(color) if water_alpha_from_vertices => color.extend(data.vertex_colors[i].w),
+                        Some(color) => color.extend(1.0),
+                        None if has_colors => data.vertex_colors[i],
+                        None => material_color,
+                    },
                     uv_bound: identity_bound,
                 })
                 .collect();
@@ -418,12 +464,19 @@ impl DistantStatic {
             subset.triangles = sanitized.triangles;
 
             // Static texture resolution is total: unresolved or unsupported texture
-            // references are remapped to the embedded visible error texture.
+            // references are remapped to the embedded visible error texture. So is the
+            // empty path of a water subset without a texture: the file format has no
+            // subset without a texture path.
             subset.texture = crate::SubsetTexture::Source(vfs.resolve_static_texture_sym_or_error(texture_path));
 
-            subset.has_alpha = geometry.has_alpha(&stream);
-            subset.has_uv_controller = geometry.has_uv_controller(&stream);
-            subset.emissive = material.map(average_emissive).unwrap_or(0.0);
+            // A dry space has only its shape: what its material says is of no use.
+            if !geometry.dry_space {
+                subset.has_alpha = geometry.has_alpha(&stream);
+                subset.has_uv_controller = geometry.has_uv_controller(&stream);
+                subset.water_look = water_look.clone();
+                subset.emissive = material.map(average_emissive).unwrap_or(0.0);
+            }
+            subset.water = subset_water;
 
             subsets.push(subset);
         }
@@ -437,11 +490,27 @@ impl DistantStatic {
         this.static_type = static_type;
         this.max_scale = max_scale;
         this.is_door = is_door;
+        this.water_rules = water.is_some();
         this.subsets = subsets;
         this.update_bounds();
 
         Some(this)
     }
+}
+
+/// Returns the look line that the water subsets of a mesh carry. An empty text is no look line.
+///
+/// The file format takes at most `WATER_LOOK_MAX_LENGTH` bytes of ASCII. A look line that does
+/// not fit is left out, with a warning. `origin` says where the look line comes from.
+fn stored_water_look(rel_path: &str, look: &str, origin: &str) -> Option<Arc<str>> {
+    if look.is_empty() {
+        return None;
+    }
+    if let Some(fault) = water_look_fault(look) {
+        warn!("{rel_path}: the look line {origin} {fault}. Distant water does not get the look");
+        return None;
+    }
+    Some(look.into())
 }
 
 #[cfg(test)]

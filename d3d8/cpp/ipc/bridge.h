@@ -27,12 +27,16 @@ constexpr DWORD VIS_FAR =      0x02;
 constexpr DWORD VIS_VERY_FAR = 0x04;
 constexpr DWORD VIS_GRASS =    0x08;
 constexpr DWORD VIS_LAND =     0x10;
+constexpr DWORD VIS_WATER =    0x20;
 constexpr DWORD VIS_STATIC = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 
 // ensure consistent layout between 32-bit and 64-bit processes
 #pragma pack(push, 4)
 struct RenderMesh {
     bool enabled, hasAlpha, animateUV;
+    // Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only,
+    // 3 = a dry space in water, which is never drawn. From 4 on the runtime's index of a look.
+    std::uint8_t water;
 
     ptr32<IDirect3DTexture9> tex;
     D3DXMATRIX transform;

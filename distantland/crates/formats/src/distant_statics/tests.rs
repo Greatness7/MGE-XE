@@ -66,6 +66,7 @@ fn subset(texture: &str, seed: u8, with_component: bool) -> PackedSubset {
         palette: vec![palette_entry(seed)],
         has_alpha: 1,
         has_uv_controller: 0,
+        water: 0,
         horizon_footprint: HorizonFootprint {
             max_z: 6.0,
             vertex_count: 3,
@@ -73,6 +74,7 @@ fn subset(texture: &str, seed: u8, with_component: bool) -> PackedSubset {
             footprint_xy: [[-1.0, -2.0], [4.0, -2.0], [4.0, 5.0], [0.0; 2], [0.0; 2], [0.0; 2]],
         },
         texture: texture.into(),
+        water_look: "".into(),
     }
 }
 
@@ -364,7 +366,26 @@ fn flags_horizon_and_component_semantics_are_validated() {
     let (_, original) = fixture();
 
     let mut bytes = original.clone();
-    rewrite_subset(&mut bytes, 0, |record| record.flags |= 4);
+    rewrite_subset(&mut bytes, 0, |record| record.flags |= 32);
+    assert_invalid(&bytes);
+
+    // The dry space bit alone is a dry space. With a water bit it is not valid.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags = (record.flags & !0b1100) | 0b1_0000);
+    assert_eq!(
+        deserialize_static_meshes(&bytes).unwrap()[0].subsets[0].water,
+        SUBSET_WATER_DRY_SPACE
+    );
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags = (record.flags & !0b1100) | 0b1_0100);
+    assert_invalid(&bytes);
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags |= 0b1_1100);
+    assert_invalid(&bytes);
+
+    // The sky-only bit of distant water without the water bit.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.flags = (record.flags & !0b1100) | 0b1000);
     assert_invalid(&bytes);
 
     let mut bytes = original.clone();
@@ -430,6 +451,117 @@ fn palette_ranges_are_validated_and_entries_round_trip() {
     });
     rewrite_subset(&mut bytes, 0, |record| {
         record.palette_count = UV_BOUND_PALETTE_CAP + 1;
+    });
+    assert_invalid(&bytes);
+}
+
+/// A water static with a look line first, and a static without one after it.
+fn look_fixture(look: &str) -> Vec<u8> {
+    let mut water = subset("water.dds", 1, false);
+    water.water = 1;
+    water.water_look = look.into();
+    let statics: PackedDistantStatics = [
+        ("water.nif".to_string(), distant_static(StaticType::StaticAuto, water)),
+        (
+            "rock.nif".to_string(),
+            distant_static(StaticType::StaticAuto, subset("rock.dds", 41, false)),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    serialize_static_meshes(&statics).unwrap()
+}
+
+fn read_subset(bytes: &[u8], index: usize) -> SubsetRecord {
+    let offset = header(bytes).subset_table_offset as usize + index * SUBSET_RECORD_SIZE;
+    bytemuck::pod_read_unaligned(&bytes[offset..offset + SUBSET_RECORD_SIZE])
+}
+
+#[test]
+fn water_look_round_trips_and_a_subset_without_one_has_zero_fields() {
+    let look = "flow=0,-140 speed=1.2 shader=tw_foam p0=0.4,0.5,1.5";
+    let bytes = look_fixture(look);
+    let header = header(&bytes);
+    let blob = header.texture_blob_offset..header.texture_blob_offset + header.texture_blob_size;
+
+    let with_look = read_subset(&bytes, 0);
+    assert_eq!(with_look.look_length as usize, look.len());
+    assert_eq!(with_look.reserved, 0);
+    assert!(blob.contains(&with_look.look_offset));
+    assert!(with_look.look_offset + u64::from(with_look.look_length) < blob.end);
+    let start = with_look.look_offset as usize;
+    assert_eq!(&bytes[start..start + look.len()], look.as_bytes());
+    assert_eq!(bytes[start + look.len()], 0);
+
+    let without_look = read_subset(&bytes, 1);
+    assert_eq!(
+        (without_look.look_offset, without_look.look_length, without_look.reserved),
+        (0, 0, 0)
+    );
+
+    let decoded = deserialize_static_meshes(&bytes).unwrap();
+    assert_eq!(decoded[0].subsets[0].water_look.as_ref(), look);
+    assert_eq!(decoded[1].subsets[0].water_look.as_ref(), "");
+}
+
+#[test]
+fn water_look_offset_length_termination_and_owner_are_validated() {
+    let look = "flow=0,-140";
+    let original = look_fixture(look);
+    let original_header = header(&original);
+    let blob_end = original_header.texture_blob_offset + original_header.texture_blob_size;
+    let record = read_subset(&original, 0);
+    let look_start = record.look_offset as usize;
+    let terminator = look_start + look.len();
+
+    // A look range before the blob, and one that ends after it.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.look_offset = 8);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.look_offset = blob_end - 4);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.look_offset = u64::MAX);
+    assert_invalid(&bytes);
+
+    // No NUL after the text: a shorter length ends inside the text, a changed byte removes it.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.look_length -= 1);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    bytes[terminator] = b'x';
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    bytes[look_start + 1] = 0;
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    bytes[look_start] = 0xe9;
+    assert_invalid(&bytes);
+
+    // An offset without a length, a length above the maximum, and a reserved field in use.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.look_length = 0);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.look_length = WATER_LOOK_MAX_LENGTH as u32 + 1);
+    assert_invalid(&bytes);
+
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 0, |record| record.reserved = 1);
+    assert_invalid(&bytes);
+
+    // A subset that is not water has no look.
+    let mut bytes = original.clone();
+    rewrite_subset(&mut bytes, 1, |other| {
+        other.look_offset = record.look_offset;
+        other.look_length = record.look_length;
     });
     assert_invalid(&bytes);
 }

@@ -178,6 +178,10 @@ impl Settings {
             "distant_land.water.blur_reflections" => bool_number(self.distant_land.water.blur_reflections),
             "distant_land.water.wave_height" => self.distant_land.water.wave_height.into(),
             "distant_land.water.caustics_intensity" => self.distant_land.water.caustics_intensity.into(),
+            "distant_land.water.volume_reflection_cells" => self.distant_land.water.volume_reflection_cells.into(),
+            "distant_land.water.volume_shadows" => bool_number(self.distant_land.water.volume_shadows),
+            "distant_land.water.volume_point_lights" => bool_number(self.distant_land.water.volume_point_lights),
+            "distant_land.water.volume_caustics" => bool_number(self.distant_land.water.volume_caustics),
             "distant_land.fog.exponential" => bool_number(self.distant_land.fog.exponential),
             "distant_land.fog.atmosphere_scattering" => bool_number(self.distant_land.fog.atmosphere_scattering),
             "distant_land.fog.above_water_start" => self.distant_land.fog.above_water_start.into(),
@@ -313,6 +317,14 @@ impl Settings {
             "distant_land.water.caustics_intensity" => {
                 self.distant_land.water.caustics_intensity = integer::<u8>(value, path)?
             }
+            "distant_land.water.volume_reflection_cells" => {
+                self.distant_land.water.volume_reflection_cells = finite_f32(value, path)?
+            }
+            "distant_land.water.volume_shadows" => self.distant_land.water.volume_shadows = number_bool(value, path)?,
+            "distant_land.water.volume_point_lights" => {
+                self.distant_land.water.volume_point_lights = number_bool(value, path)?
+            }
+            "distant_land.water.volume_caustics" => self.distant_land.water.volume_caustics = number_bool(value, path)?,
             "distant_land.fog.exponential" => self.distant_land.fog.exponential = number_bool(value, path)?,
             "distant_land.fog.atmosphere_scattering" => {
                 self.distant_land.fog.atmosphere_scattering = number_bool(value, path)?

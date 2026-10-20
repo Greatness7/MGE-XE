@@ -165,6 +165,35 @@ fn static_meshes_fingerprint_tracks_components() {
 }
 
 #[test]
+fn static_meshes_fingerprint_tracks_the_water_look() {
+    use crate::mge_xe::distant_statics::{PackedDistantStatic, PackedSubset};
+
+    let statics_with_look = |look: &str| -> crate::PackedDistantStatics {
+        let subset = PackedSubset {
+            water: 1,
+            water_look: Box::<str>::from(look),
+            texture: Box::<str>::from("water.dds"),
+            ..PackedSubset::default()
+        };
+        [(
+            "a.nif".to_string(),
+            PackedDistantStatic {
+                subsets: vec![subset],
+                ..PackedDistantStatic::default()
+            },
+        )]
+        .into_iter()
+        .collect()
+    };
+
+    let none = fingerprint_static_meshes_inputs(&statics_with_look(""));
+    let slow = fingerprint_static_meshes_inputs(&statics_with_look("speed=1"));
+    let fast = fingerprint_static_meshes_inputs(&statics_with_look("speed=2"));
+    assert_ne!(none, slow);
+    assert_ne!(slow, fast);
+}
+
+#[test]
 fn static_shard_assignment_matches_pinned_vectors() {
     let cases = [
         ("meshes\\f\\flora_tree_01.nif", 54),

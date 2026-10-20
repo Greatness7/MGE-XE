@@ -84,7 +84,7 @@ pub(crate) fn update_uv_bounds_from_maps(
             continue;
         }
         for subset in ds.subsets.iter_mut() {
-            if subset.has_uv_controller {
+            if subset.keeps_source_texture() {
                 continue;
             }
             let (atlas_kind, map) = if subset.has_alpha() {

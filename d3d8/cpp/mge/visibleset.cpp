@@ -144,3 +144,24 @@ void VisibleSet::Render(IDirect3DDevice9* device,
         effectPool->SetBool(*animate_uv_handle, false);
     }
 }
+
+void VisibleSet::RenderWater(IDirect3DDevice9* device,
+                             unsigned int vertex_size,
+                             const std::function<bool(const RenderMesh&)>& prepare) {
+    IDirect3DVertexBuffer9* last_buffer = nullptr;
+
+    visible_set.restart();
+    while (!visible_set.at_end()) {
+        const RenderMesh& mesh = visible_set.next();
+        if (mesh.faces <= 0 || mesh.water == 0 || !prepare(mesh)) {
+            continue;
+        }
+        if (last_buffer != mesh.vBuffer) {
+            device->SetIndices(mesh.iBuffer);
+            device->SetStreamSource(0, mesh.vBuffer, 0, vertex_size);
+            last_buffer = mesh.vBuffer;
+        }
+
+        device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, mesh.verts, 0, mesh.faces);
+    }
+}

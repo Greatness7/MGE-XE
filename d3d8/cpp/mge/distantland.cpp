@@ -285,6 +285,9 @@ void DistantLand::renderStage0() {
     // Release evicted merged statics before this frame's shadow/cull queries can copy them.
     evictResidencyAtStage0();
 
+    // The dry spaces of the last frame are not those of this one.
+    distantDrySpacesInView = false;
+
     // Update current cell and select distant static set
     selectDistantCell();
 
@@ -330,6 +333,7 @@ void DistantLand::renderStage0() {
 
             effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
 
+            distantWaterInView = false;
             if (!mwBridge->IsUnderwater(eyePos.z)) {
                 // Draw distant landscape
                 if (mwBridge->IsExterior()) {
@@ -346,12 +350,15 @@ void DistantLand::renderStage0() {
 
                     cullDistantStatics(&mwView, &distProj);
                     renderDistantStatics();
+                    // Water among the distant statics is drawn later, by flushWaterVolumes.
+                    findDistantWaterInView();
 
                     vsr.endAlphaToCoverage(device);
                     effect->EndPass();
                 }
                 else {
                     visDistantShared.RemoveAll();
+                    visWaterShared.RemoveAll();
                 }
             }
 
@@ -571,9 +578,24 @@ void DistantLand::renderStageBlend() {
         effect->SetFloat(ehAlphaRef, Configuration.DL.WaterCaustics);
         effect->CommitChanges();
 
+        // No caustics in a dry space: the floor of a boat that lies under the level of the
+        // sea. The dry spaces are counted against the depth of the scene.
+        const bool cutDrySpaces = hasDrySpaces();
+        if (cutDrySpaces) {
+            countDrySpaces();
+            // The count drew with a world matrix of its own; the caustics read the level of
+            // the water from theirs.
+            effect->SetMatrix(ehWorld, &m);
+        }
         effect->BeginPass(PASS_RENDERCAUSTICS);
+        if (cutDrySpaces) {
+            testOutsideDrySpaces();
+        }
         PostShaders::applyBlend();
         effect->EndPass();
+        if (cutDrySpaces) {
+            endDrySpaceCount();
+        }
     }
 
     // Blend MW/MGE
@@ -602,14 +624,28 @@ void DistantLand::renderStageWater() {
         return;
     }
 
+    // Inside a water volume whose surface mesh was drawn, that mesh is the water surface.
+    if (mwBridge->InWaterVolume() && waterVolumeDrawn) {
+        return;
+    }
+
     if (mwBridge->CellHasWater()) {
+        bool u = mwBridge->IsUnderwater(eyePos.z);
+        bool i = !mwBridge->IsExterior();
+
+        // A plane this far below the camera is past the end of the view at every angle, so
+        // the copy of the frame and the draw are left out. A mod can put the water of a cell
+        // that far down to keep it out of the way.
+        const float viewEnd = (i ? Configuration.DL.InteriorFogEnd : Configuration.DL.DrawDist) * kCellSize;
+        if (eyePos.z - mwBridge->WaterLevel() > 2.0f * viewEnd) {
+            return;
+        }
+
         // Save state block manually since we can change FVF/decl
         device->CreateStateBlock(D3DSBT_ALL, &stateSaved);
         effect->Begin(&passes, D3DXFX_DONOTSAVESTATE);
 
         // Draw water plane
-        bool u = mwBridge->IsUnderwater(eyePos.z);
-        bool i = !mwBridge->IsExterior();
 
         if (u || i) {
             // Set up clip plane at fog end for certain environments to save fillrate
@@ -620,9 +656,27 @@ void DistantLand::renderStageWater() {
         }
 
         // Switch to appropriate shader and render
-        effect->BeginPass(u ? PASS_RENDERUNDERWATER : PASS_RENDERWATER);
-        renderWaterPlane();
-        effect->EndPass();
+        effect->SetFloatArray(ehWaterPlaneTint, waterPlaneTint, 3);
+        const float level = mwBridge->WaterLevel();
+        if (!u && cameraInDrySpace && fabs(eyePos.z - level) < kDrySpaceLevelMargin) {
+            // The eye is in a dry space and at the level of the water. The waves put the
+            // plane now over the eye and now under it, and the side of the plane that the
+            // count is made for is not sure. The plane is edge-on and is left out.
+        } else if (!u && hasDrySpaces()) {
+            // The plane is not drawn inside a dry space, the hold of a boat: see
+            // countDrySpaces. The dry spaces are counted against the level of the plane, and
+            // the plane is drawn where the count says outside.
+            countDrySpaces(&level);
+            effect->BeginPass(PASS_RENDERWATER);
+            testOutsideDrySpaces(true);
+            renderWaterPlane();
+            effect->EndPass();
+            endDrySpaceCount();
+        } else {
+            effect->BeginPass(u ? PASS_RENDERUNDERWATER : PASS_RENDERWATER);
+            renderWaterPlane();
+            effect->EndPass();
+        }
 
         effect->End();
         stateSaved->Apply();
@@ -671,6 +725,7 @@ void DistantLand::setupCommonEffect(const D3DXMATRIX* view, const D3DXMATRIX* pr
     FixedFunctionShader::updatePplSceneState(
         proj, fogNearStart, fogNearEnd, nearFogCol);
     effect->SetFloat(ehNearViewRange, nearViewRange);
+    effect->SetFloat(ehWaterVolumeReflectRange, Configuration.WaterVolume.ReflectCells * kCellSize);
     effect->SetFloat(ehNiceWeather, niceWeather);
 
     if (ehOutscatter) {
@@ -828,6 +883,11 @@ void DistantLand::adjustFog() {
         fogNearStart = fogNearEnd * std::min(1.0f - mwBridge->getScenegraphFogDensity(), 0.99f);
         fogStart = fogNearStart;
         fogEnd = fogNearEnd;
+        // The shaders that fog by the exponential curve take these two. Without this they keep
+        // the values of the last cell that had distant land.
+        constexpr float expFogDistScale = 4.4f;
+        fogExpStart = fogStart / expFogDistScale;
+        fogExpDivisor = (fogEnd - fogExpStart) / expFogDistScale;
 
         if (doFogUpdate) {
             device->SetRenderState(D3DRS_FOGSTART, *(DWORD*)&fogNearStart);
@@ -1185,6 +1245,10 @@ void DistantLand::setView(const D3DMATRIX* m) {
     eyeVec.x = m->_13;
     eyeVec.y = m->_23;
     eyeVec.z = m->_33;
+
+    if (mwBridge->IsLoaded()) {
+        mwBridge->selectWaterVolume(eyePos.x, eyePos.y, eyePos.z);
+    }
 
     // Set sun disc position
     if (mwBridge->IsLoaded() && mwBridge->IntLikeExterior(true)) {

@@ -117,6 +117,8 @@ impl DistantStatic {
                 .collect();
             subset.has_alpha = subset32.has_alpha as u8;
             subset.has_uv_controller = subset32.has_uv_controller as u8;
+            subset.water = subset32.water.packed();
+            subset.water_look = subset32.water_look.as_deref().unwrap_or_default().into();
             subset.texture = subset32.texture.to_packed_path(vfs, subset32.has_alpha);
 
             ds.subsets.push(subset);

@@ -115,7 +115,12 @@ fn subset_digest<'a>(
     hash_bounding_box(&mut hasher, &subset.bounding_box);
     hash_bounding_sphere(&mut hasher, &subset.bounding_sphere);
     hasher.update(&[u8::from(subset.has_alpha != 0)]);
-    hasher.update(&[u8::from(subset.has_uv_controller != 0)]);
+    hasher.update(&[u8::from(subset.has_uv_controller != 0) | (subset.water << 1)]);
+    // Hashed for a subset with a look line alone: every other digest stays what it was.
+    if !subset.water_look.is_empty() {
+        hasher.update(b"water_look");
+        hash_str(&mut hasher, &subset.water_look);
+    }
     hasher.update(&horizon);
     hash_digest_multiset(&mut hasher, &mut triangles);
     hash_digest_multiset(&mut hasher, &mut components);

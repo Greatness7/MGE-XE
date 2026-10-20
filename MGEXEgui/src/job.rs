@@ -179,6 +179,11 @@ mod tests {
 
         assert!(!overrides.mesh_overrides.is_empty());
         assert!(!overrides.dynamic_vis.groups.is_empty());
+        // The names that mark distant water ship in this file and nowhere else.
+        assert_eq!(overrides.water_names.surface, ["watervolume"]);
+        assert_eq!(overrides.water_names.body, ["waterbody"]);
+        assert_eq!(overrides.water_names.plain_words, ["plain"]);
+        assert_eq!(overrides.water_names.sky_only_words, ["skyonly"]);
     }
 
     #[test]

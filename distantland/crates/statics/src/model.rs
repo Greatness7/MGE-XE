@@ -11,6 +11,7 @@ pub(crate) use process::{StaticMeshContext, update_bounds_with_context};
 pub use process::{optimize_statics, optimize_statics_keys};
 
 use std::mem::take;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Affine3A, Vec2, Vec3, Vec4};
@@ -180,9 +181,54 @@ pub struct Subset {
     pub uv_bounds: Vec<UvBound>,
     pub has_alpha: bool,
     pub has_uv_controller: bool,
+    /// Whether the subset is the surface of distant water, or a dry space in water.
+    pub water: SubsetWater,
+    /// Look line of the water mesh: the text after the `wv:` prefix. Only a subset that is drawn
+    /// as water has one. The runtime reads the keys in it, the generator does not.
+    pub water_look: Option<Arc<str>>,
     /// Average emissive material contribution packed into `PackedVertex.normal[3]`.
     pub emissive: f32,
     pub texture: SubsetTexture,
+}
+
+/// Whether a subset is the surface of distant water, and what that water reflects.
+///
+/// The runtime draws such a subset with its water shading instead of the subset's texture.
+/// A dry space is never drawn: the runtime draws no water inside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubsetWater {
+    /// An ordinary subset.
+    #[default]
+    None,
+    /// Water that reflects the sky and, near enough, what is on screen.
+    ReflectsScene,
+    /// Water that reflects the sky only.
+    SkyOnly,
+    /// A closed shape that holds no water, the inside of a boat.
+    DrySpace,
+}
+
+impl SubsetWater {
+    /// Returns whether the subset is the surface of water.
+    pub fn is_water(self) -> bool {
+        matches!(self, SubsetWater::ReflectsScene | SubsetWater::SkyOnly)
+    }
+
+    /// Returns whether the runtime keeps the subset apart from the ordinary statics: water,
+    /// which has a pass of its own, and a dry space, which no pass draws.
+    pub fn is_kept_apart(self) -> bool {
+        self != SubsetWater::None
+    }
+
+    /// The value written to `PackedSubset::water`.
+    pub fn packed(self) -> u8 {
+        match self {
+            SubsetWater::None => 0,
+            SubsetWater::ReflectsScene => 1,
+            SubsetWater::SkyOnly => 2,
+            SubsetWater::DrySpace => 3,
+        }
+    }
 }
 
 /// Returns whether the bit-distinct union of two subsets' bounds still fits the palette cap.
@@ -268,6 +314,8 @@ impl Default for Subset {
             uv_bounds: Vec::default(),
             has_alpha: false,
             has_uv_controller: false,
+            water: SubsetWater::None,
+            water_look: None,
             emissive: 0.0,
             texture: SubsetTexture::default(),
         }
@@ -289,9 +337,23 @@ pub struct DistantStatic {
     pub is_door: bool,
     /// Whether generated horizon footprints may be emitted for this synthetic static.
     pub horizon_footprint_eligible: bool,
+    /// Whether the water rules chose the shapes of this static: the mesh is water by its names
+    /// or by its mesh override. True also for a water mesh that keeps its own look.
+    pub water_rules: bool,
 }
 
 impl DistantStatic {
+    /// Returns whether any subset is the surface of distant water.
+    pub fn has_water(&self) -> bool {
+        self.subsets.iter().any(|subset| subset.water.is_water())
+    }
+
+    /// Returns whether the static stays a static of its own, out of the cell merges: one of
+    /// its subsets is water or a dry space, which the runtime must find as it is.
+    pub fn stays_alone(&self) -> bool {
+        self.subsets.iter().any(|subset| subset.water.is_kept_apart())
+    }
+
     pub fn update_bounds(&mut self) {
         update_bounds_with_context(self, &mut StaticMeshContext::default());
     }
@@ -474,12 +536,19 @@ impl Subset {
     /// The palette-cap test sits outside the empty-vertex short circuit deliberately: a
     /// contribution that culling emptied still unions its bounds into the destination, so
     /// skipping the test for it could push the destination past the cap.
+    /// Returns whether the subset keeps its own texture file: the atlas leaves it alone.
+    pub fn keeps_source_texture(&self) -> bool {
+        self.has_uv_controller || self.water.is_kept_apart()
+    }
+
     pub fn can_merge_with(&self, other: &Subset) -> bool {
         self.can_merge_vertices(other)
             && (self.vertices.is_empty()
                 || (self.is_opaque() == other.is_opaque()
                     && self.texture == other.texture
                     && self.has_uv_controller == other.has_uv_controller
+                    && self.water == other.water
+                    && self.water_look == other.water_look
                     && self.emissive == other.emissive))
             && uv_bound_union_fits(&self.uv_bounds, &other.uv_bounds)
     }
@@ -628,6 +697,8 @@ impl Subset {
     fn adopt_source_identity(&mut self, subset: &Subset, opaque: bool) {
         self.has_alpha = !opaque; // Ensure this as default() does not
         self.has_uv_controller = subset.has_uv_controller;
+        self.water = subset.water;
+        self.water_look = subset.water_look.clone();
         self.emissive = subset.emissive;
         self.texture = subset.texture;
         union_uv_bounds(&mut self.uv_bounds, &subset.uv_bounds);

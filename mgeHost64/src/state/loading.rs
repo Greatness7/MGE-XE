@@ -153,6 +153,7 @@ struct StaticsQtSummary {
     far_count: usize,
     very_far_count: usize,
     grass_count: usize,
+    water_count: usize,
     dynamic_vis_links: usize,
     generated_horizon_footprints_used: usize,
     generated_horizon_footprints_rejected_invalid: usize,
@@ -437,6 +438,7 @@ impl DistantLandState {
             qt_summary.far_count += world_summary.far_count;
             qt_summary.very_far_count += world_summary.very_far_count;
             qt_summary.grass_count += world_summary.grass_count;
+            qt_summary.water_count += world_summary.water_count;
             qt_summary.dynamic_vis_links += world_summary.dynamic_vis_links;
             qt_summary.generated_horizon_footprints_used += world_summary.generated_horizon_footprints_used;
             qt_summary.generated_horizon_footprints_rejected_invalid +=
@@ -454,11 +456,12 @@ impl DistantLandState {
             worldspace_count, instance_count, interior_worldspace_count, usage_bytes_read
         );
         info!(
-            "Distant load summary: quadtree.near_count={} quadtree.far_count={} quadtree.very_far_count={} quadtree.grass_count={} quadtree.dynamic_vis_links={} horizon.generated_used={} horizon.generated_rejected_invalid={} horizon.generated_rejected_transform={}",
+            "Distant load summary: quadtree.near_count={} quadtree.far_count={} quadtree.very_far_count={} quadtree.grass_count={} quadtree.water_count={} quadtree.dynamic_vis_links={} horizon.generated_used={} horizon.generated_rejected_invalid={} horizon.generated_rejected_transform={}",
             qt_summary.near_count,
             qt_summary.far_count,
             qt_summary.very_far_count,
             qt_summary.grass_count,
+            qt_summary.water_count,
             qt_summary.dynamic_vis_links,
             qt_summary.generated_horizon_footprints_used,
             qt_summary.generated_horizon_footprints_rejected_invalid,
@@ -557,7 +560,7 @@ impl DistantLandState {
                         enabled: 1,
                         has_alpha: 0,
                         animate_uv: 0,
-                        _padding0: 0,
+                        water: 0,
                         tex: terrain_sort_token,
                         transform: world,
                         verts: mesh.verts as i32,
@@ -700,12 +703,13 @@ fn init_distant_statics_qt(
     world_space.far_statics.set_box(box_size, box_center);
     world_space.very_far_statics.set_box(box_size, box_center);
     world_space.grass_statics.set_box(box_size, box_center);
+    world_space.water_statics.set_box(box_size, box_center);
 
     let mut summary = StaticsQtSummary::default();
     for used in used_statics {
         let stat = distant_statics.get::<DistantStatic>(used.static_ref);
         let mut radius = used.sphere.radius;
-        let (target_kind, target) = match stat.kind {
+        let static_tree = match stat.kind {
             STATIC_AUTO | STATIC_TREE | STATIC_BUILDING => {
                 if stat.kind == STATIC_BUILDING {
                     // Buildings use the whole-instance bounds for all subsets to match the legacy
@@ -713,23 +717,30 @@ fn init_distant_statics_qt(
                     radius *= 2.0;
                 }
                 if radius <= far_static_min_size {
-                    (StaticTreeKind::Near, &mut world_space.near_statics)
+                    StaticTreeKind::Near
                 } else if radius <= very_far_static_min_size {
-                    (StaticTreeKind::Far, &mut world_space.far_statics)
+                    StaticTreeKind::Far
                 } else {
-                    (StaticTreeKind::VeryFar, &mut world_space.very_far_statics)
+                    StaticTreeKind::VeryFar
                 }
             }
-            STATIC_GRASS => (StaticTreeKind::Grass, &mut world_space.grass_statics),
-            STATIC_NEAR => (StaticTreeKind::Near, &mut world_space.near_statics),
-            STATIC_FAR => (StaticTreeKind::Far, &mut world_space.far_statics),
-            STATIC_VERY_FAR => (StaticTreeKind::VeryFar, &mut world_space.very_far_statics),
+            STATIC_GRASS => StaticTreeKind::Grass,
+            STATIC_NEAR => StaticTreeKind::Near,
+            STATIC_FAR => StaticTreeKind::Far,
+            STATIC_VERY_FAR => StaticTreeKind::VeryFar,
             _ => continue,
         };
 
         let end_index = stat.first_subset_index + stat.num_subsets;
         for subset_index in stat.first_subset_index..end_index {
             let subset = distant_subsets.get::<DistantSubset>(subset_index);
+            // Water has a tree of its own, so that a query for statics never returns it. A dry
+            // space in water is in that tree too: no ordinary pass draws it.
+            let target_kind = if subset.water != 0 {
+                StaticTreeKind::Water
+            } else {
+                static_tree
+            };
             let resource = residency_resources
                 .get_mut(subset.resource_id as usize)
                 .ok_or_else(|| HostError::init(format!("Distant subset resource {} is out of range", subset.resource_id)))?;
@@ -763,7 +774,7 @@ fn init_distant_statics_qt(
                     enabled: 1,
                     has_alpha: (subset.has_alpha != 0) as u8,
                     animate_uv: (subset.has_uv_controller != 0) as u8,
-                    _padding0: 0,
+                    water: subset.water,
                     tex: subset.tex,
                     transform: used.transform,
                     verts: subset.verts,
@@ -785,7 +796,7 @@ fn init_distant_statics_qt(
                 quadtree_mesh.far_faces = 0;
                 quadtree_mesh.very_far_faces = 0;
             }
-            let mesh = target.insert_mesh(quadtree_mesh);
+            let mesh = world_space.tree_mut(target_kind).insert_mesh(quadtree_mesh);
             resource.center = bound_sphere.center;
             resource.mesh_refs.push(DynamicMeshRef {
                 world: world_space_index,
@@ -797,6 +808,7 @@ fn init_distant_statics_qt(
                 StaticTreeKind::Far => summary.far_count += 1,
                 StaticTreeKind::VeryFar => summary.very_far_count += 1,
                 StaticTreeKind::Grass => summary.grass_count += 1,
+                StaticTreeKind::Water => summary.water_count += 1,
             }
             if used.vis_index > 0
                 && let Some(group) = dynamic_vis_groups.get_mut(used.vis_index as usize)
@@ -820,5 +832,7 @@ fn init_distant_statics_qt(
     world_space.very_far_statics.calc_volume();
     world_space.grass_statics.optimize();
     world_space.grass_statics.calc_volume();
+    world_space.water_statics.optimize();
+    world_space.water_statics.calc_volume();
     Ok(summary)
 }

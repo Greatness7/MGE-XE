@@ -329,8 +329,38 @@ void MWBridge::SetWthrString(int wthr, int offset, char str[]) {
 
 //-----------------------------------------------------------------------------
 
+void MWBridge::setWaterVolumes(const WaterVolume* volumes, unsigned int count) {
+    if (volumes == nullptr) {
+        count = 0;
+    }
+    m_waterVolumes.assign(volumes, volumes + count);
+    if (m_waterVolumes.empty()) {
+        m_inWaterVolume = false;
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+void MWBridge::selectWaterVolume(float x, float y, float z) {
+    m_inWaterVolume = false;
+    for (const auto& v : m_waterVolumes) {
+        if (x < v.min[0] || x > v.max[0] || y < v.min[1] || y > v.max[1] || z < v.min[2] || z > v.max[2]) {
+            continue;
+        }
+        if (!m_inWaterVolume || v.max[2] > m_waterVolumeSurface) {
+            m_waterVolumeSurface = v.max[2];
+            m_inWaterVolume = true;
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 bool MWBridge::CellHasWater() {
     assert(m_loaded);
+    if (m_inWaterVolume) {
+        return true;
+    }
     auto cell = getInteriorCell();
     if (cell != nullptr) {
         return cell->getIsInterior() && cell->getHasWater();
@@ -342,6 +372,9 @@ bool MWBridge::CellHasWater() {
 
 bool MWBridge::IsUnderwater(float eyeZ) {
     assert(m_loaded);
+    if (m_cameraDry) {
+        return false;
+    }
     return (CellHasWater() && (eyeZ < WaterLevel() - 1.0f));
 }
 
@@ -528,6 +561,9 @@ bool MWBridge::IntHasWater() {
 
 float MWBridge::WaterLevel() {
     assert(m_loaded);
+    if (m_inWaterVolume) {
+        return m_waterVolumeSurface;
+    }
     auto cell = getInteriorCell();
     if (cell != nullptr && cell->getIsInterior() && cell->getHasWater() && !cell->getBehavesAsExterior()) {
         return cell->waterLevelOrRegion.waterLevel;
@@ -799,6 +835,18 @@ bool MWBridge::isPlayerAimingWeapon() {
 // getPlayerCell - Gets pointer to player cell
 void* MWBridge::getPlayerCell() {
     return dataHandler()->currentCell;
+}
+
+//-----------------------------------------------------------------------------
+
+bool MWBridge::getExteriorGrid(int& x, int& y) {
+    auto cell = dataHandler()->currentCell;
+    if (cell == nullptr || cell->getIsInterior()) {
+        return false;
+    }
+    x = cell->variantData.exterior.gridX;
+    y = cell->variantData.exterior.gridY;
+    return true;
 }
 
 //-----------------------------------------------------------------------------

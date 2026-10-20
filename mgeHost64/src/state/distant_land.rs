@@ -6,7 +6,7 @@ use tracing::{trace, warn};
 use crate::abi::{
     CellName, D3dxVector3, D3dxVector4, DynVisFlag, EscapedName, PlanResidencyParameters, RenderMesh, ResidencyCommit,
     ResidencyCommitState, ResidencyPlan, ResidencyPlanAction, SetHorizonConfigParameters, VIS_FAR, VIS_GRASS, VIS_LAND,
-    VIS_NEAR, VIS_VERY_FAR, ViewFrustum, VisibleSetSort,
+    VIS_NEAR, VIS_VERY_FAR, VIS_WATER, ViewFrustum, VisibleSetSort,
 };
 use crate::config::Configuration;
 use crate::error::HostError;
@@ -34,6 +34,7 @@ pub enum StaticTreeKind {
     Far,
     VeryFar,
     Grass,
+    Water,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +61,8 @@ pub struct WorldSpace {
     pub far_statics: QuadTree,
     pub very_far_statics: QuadTree,
     pub grass_statics: QuadTree,
+    /// Subsets that are distant water or a dry space in water, whatever the size of their static.
+    pub water_statics: QuadTree,
 }
 
 impl WorldSpace {
@@ -69,6 +72,7 @@ impl WorldSpace {
             StaticTreeKind::Far => &mut self.far_statics,
             StaticTreeKind::VeryFar => &mut self.very_far_statics,
             StaticTreeKind::Grass => &mut self.grass_statics,
+            StaticTreeKind::Water => &mut self.water_statics,
         }
     }
 }
@@ -783,6 +787,17 @@ impl DistantLandState {
         if set_flags & VIS_GRASS != 0 {
             collect_quadtree_meshes(
                 &world_space.grass_statics,
+                sink,
+                view_frustum,
+                view_sphere,
+                None,
+                None,
+                &mut HorizonCullStats::default(),
+            )?;
+        }
+        if set_flags & VIS_WATER != 0 {
+            collect_quadtree_meshes(
+                &world_space.water_statics,
                 sink,
                 view_frustum,
                 view_sphere,

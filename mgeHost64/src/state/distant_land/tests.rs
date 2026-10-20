@@ -13,7 +13,7 @@ fn add_visible_mesh(tree: &mut QuadTree, tex: u32, v_buffer: u32, x: f32) -> Mes
             enabled: 1,
             has_alpha: 0,
             animate_uv: 0,
-            _padding0: 0,
+            water: 0,
             tex,
             transform: D3dxMatrix::identity(),
             verts: 3,
@@ -47,7 +47,7 @@ fn sentinel_mesh(tex: u32, v_buffer: u32) -> RenderMesh {
         enabled: 1,
         has_alpha: 0,
         animate_uv: 0,
-        _padding0: 0,
+        water: 0,
         tex,
         transform: D3dxMatrix::identity(),
         verts: 3,
@@ -1060,6 +1060,23 @@ fn horizon_culling_applies_to_all_static_ranges() {
 
     assert_eq!(baseline_meshes.len(), 3);
     assert!(culled_meshes.is_empty());
+}
+
+#[test]
+fn water_has_a_bucket_of_its_own() {
+    let mut state = static_bucket_state(Configuration::default());
+    let world_space = &mut state.world_spaces[0];
+    world_space.water_statics.set_box(20000.0, D3dxVector2::default());
+    add_visible_mesh(&mut world_space.water_statics, 40, 4, 8192.0);
+    world_space.water_statics.calc_volume();
+
+    // A query for statics does not return the water, and a query for water returns only it.
+    let statics = collect_precise_meshes(&state, VIS_NEAR | VIS_FAR | VIS_VERY_FAR);
+    assert_eq!(statics.len(), 3);
+    assert!(statics.iter().all(|mesh| mesh.v_buffer != 4));
+    let water = collect_precise_meshes(&state, VIS_WATER);
+    assert_eq!(water.len(), 1);
+    assert_eq!(water[0].v_buffer, 4);
 }
 
 #[test]

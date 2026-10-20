@@ -6,17 +6,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use smallvec::SmallVec;
 use uncased::Uncased;
 
 use crate::mge_xe::distant_statics::StaticType;
+use crate::nif::{look_line_without_prefix, water_look_fault};
 use crate::vfs::normalize_mesh_override_key;
 use distantland_foundation::identity::FileIdentity;
 use tracing::{info, warn};
 
-use super::overrides::{DynamicVisKind, OverridesBuilder, StaticOverride};
+use super::overrides::{DynamicVisKind, OverridesBuilder, StaticOverride, WaterNames};
 
 /// Maximum dynamic-visibility ranges per group, fixed by the `usage.data` format.
 const MAX_RANGES: usize = 8;
@@ -161,6 +163,57 @@ struct DistantLandMetadata {
     statics: BTreeMap<String, StaticEntry>,
     /// Dynamic-visibility group declarations.
     dynamic_visibility: Vec<DynamicVisibilityEntry>,
+    /// Names that mark water meshes.
+    water: Option<WaterSection>,
+}
+
+/// The newest `water.version` this generator reads.
+const WATER_RULES_VERSION: i64 = 1;
+
+/// The `[tools.mge-xe.distantland.water]` table: which names in a mesh mark distant water.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct WaterSection {
+    /// Version of the rules. A file with a version this generator does not know is left out.
+    version: i64,
+    /// Name prefixes of the objects that are the surface of the water.
+    surface_names: Vec<String>,
+    /// Name prefixes of the objects that hold the body of the water.
+    body_names: Vec<String>,
+    /// Name prefixes of the objects that mark a dry space in water. An empty list: none does.
+    mask_names: Vec<String>,
+    /// Words in the surface name that keep the mesh's own look.
+    plain_words: Vec<String>,
+    /// Words in the surface name for water that reflects the sky only.
+    sky_only_words: Vec<String>,
+}
+
+impl WaterSection {
+    /// Converts to [`WaterNames`], or warns and returns `None` for an unknown version.
+    fn to_names(&self, source: &str) -> Option<WaterNames> {
+        if !(1..=WATER_RULES_VERSION).contains(&self.version) {
+            warn!(
+                "{source}: water rules have version {}; this generator reads versions 1 to {WATER_RULES_VERSION}. \
+                 The water names are left out",
+                self.version
+            );
+            return None;
+        }
+        let lowercased = |names: &[String]| -> Vec<String> {
+            names
+                .iter()
+                .map(|name| name.trim().to_ascii_lowercase())
+                .filter(|name| !name.is_empty())
+                .collect()
+        };
+        Some(WaterNames {
+            surface: lowercased(&self.surface_names),
+            body: lowercased(&self.body_names),
+            mask: lowercased(&self.mask_names),
+            plain_words: lowercased(&self.plain_words),
+            sky_only_words: lowercased(&self.sky_only_words),
+        })
+    }
 }
 
 impl DistantLandMetadata {
@@ -192,6 +245,10 @@ impl DistantLandMetadata {
             if let Some((key, kind)) = entry.to_group(&source) {
                 builder.insert_dynamic_vis(key, kind);
             }
+        }
+
+        if let Some(names) = self.water.as_ref().and_then(|water| water.to_names(&source)) {
+            builder.set_water_names(names);
         }
     }
 }
@@ -235,6 +292,16 @@ struct StaticEntry {
     reduction: Option<i64>,
     /// Classifies the mesh as if its object had no script.
     ignore_script: bool,
+    /// Says that the mesh is distant water (`true`) or is not (`false`), whatever its names say.
+    water: Option<bool>,
+    /// The colour of the water of a water mesh: red, green and blue from 0 to 1.
+    water_color: Option<[f32; 3]>,
+    /// The look line of a water mesh, with or without the `wv:` prefix. It replaces the look
+    /// line in the mesh.
+    wv: Option<String>,
+    /// Says whether the dry spaces of the mesh go into the distant land. `false` leaves their
+    /// shapes out.
+    dry_space: Option<bool>,
 }
 
 impl StaticEntry {
@@ -243,6 +310,10 @@ impl StaticEntry {
         let mut result = StaticOverride {
             ignore: self.ignore,
             no_script: self.ignore_script,
+            water: self.water,
+            water_color: self.water_color.map(|color| color.map(|part| part.clamp(0.0, 1.0))),
+            water_look: self.wv.as_deref().and_then(|wv| registered_water_look(wv, mesh, source)),
+            dry_space: self.dry_space,
             ..StaticOverride::default()
         };
         if let Some(static_type) = self.static_type {
@@ -259,6 +330,19 @@ impl StaticEntry {
         }
         result
     }
+}
+
+/// Returns the look line of a `wv` key, without the prefix and the white space at its ends.
+///
+/// A look line that the file format does not take is left out with a warning: the mesh entry
+/// is then as it is without the key.
+fn registered_water_look(wv: &str, mesh: &str, source: &str) -> Option<Arc<str>> {
+    let look = look_line_without_prefix(wv);
+    if let Some(fault) = water_look_fault(look) {
+        warn!("{source}: '{mesh}' has a wv look line that {fault}. The key is left out");
+        return None;
+    }
+    Some(look.into())
 }
 
 /// Clamps a percentage field to `0..=100`, warning when the value was out of range.

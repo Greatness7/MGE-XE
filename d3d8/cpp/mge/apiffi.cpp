@@ -12,6 +12,9 @@
 // cpp\exports.def so ffi.load("d3d8") can resolve them.
 
 #include "configuration.h"
+#include "distantland.h"
+#include "mwbridge.h"
+#include "waterlook.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,6 +82,33 @@ extern "C" {
         default: return;
         }
         g_horizonDirty = true;
+    }
+
+    // Replaces the set of water volumes. `volumes` is `count` boxes of six floats each:
+    // min x, y, z then max x, y, z. Called on the main thread by the mod that owns the volumes.
+    void MGE_WaterVolumesSet(const MWBridge::WaterVolume* volumes, unsigned int count) {
+        MWBridge::get()->setWaterVolumes(volumes, count);
+    }
+
+    // Sets the look of a slot, which a surface names in the specular power of its material
+    // (100000 + slot). A null look clears the slot. Called on the main thread by the mod that
+    // owns the volumes.
+    void MGE_WaterLookSet(unsigned int slot, const WaterLook* look) {
+        WaterLooks::set(slot, look);
+    }
+
+    // Replaces the dry spaces: closed meshes inside which there is no water. `corners` is
+    // three points of three floats for each of `triangles` triangles, in the world. Called on
+    // the main thread by the mod that owns the volumes, when the set changes.
+    void MGE_WaterMasksSet(const float* corners, unsigned int triangles) {
+        DistantLand::setWaterMasks(corners, triangles);
+    }
+
+    // Says whether the camera is in a dry space. There it is not under water, however deep
+    // under the surface it is. Called on the main thread when that changes.
+    void MGE_WaterDrySet(int dry) {
+        MWBridge::get()->setCameraDry(dry != 0);
+        DistantLand::cameraInDrySpace = dry != 0;
     }
 
 }

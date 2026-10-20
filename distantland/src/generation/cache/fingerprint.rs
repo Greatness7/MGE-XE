@@ -144,8 +144,14 @@ fn fingerprint_static_mesh_input(key: &str, static_mesh: &crate::mge_xe::distant
         hash_pod(&mut hasher, &(subset.palette.len() as u64));
         hasher.update(cast_slice(&subset.palette));
         hasher.update(&[subset.has_alpha]);
-        hasher.update(&[subset.has_uv_controller]);
+        hasher.update(&[subset.has_uv_controller | (subset.water << 1)]);
         hash_bytes(&mut hasher, subset.texture.as_ref().as_bytes());
+        // Written for a subset with a look line alone, so that the fingerprint of every other
+        // static stays what it was before subsets could have one.
+        if !subset.water_look.is_empty() {
+            hasher.update(b"water_look");
+            hash_bytes(&mut hasher, subset.water_look.as_bytes());
+        }
     }
     *hasher.finalize().as_bytes()
 }

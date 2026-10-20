@@ -163,6 +163,208 @@ Draws MGE's water plane (`vbWater`/`ibWater`, radial grid) with
 depth-based shore fade.
 Interiors/underwater set a clip plane at the interior fog end to save fillrate.
 
+Water volumes are bodies of water that a mod places apart from the cell's water. Their
+surfaces are ordinary game meshes whose material carries a marker in the specular power:
+99998 (reflects the sky and what is on screen) or 99997 (reflects the sky only). `SetMaterial`
+recognises the marker, `DrawIndexedPrimitive` holds the draw (`renderWaterVolume`), and
+`flushWaterVolumes` draws all held surfaces after StageBlend and after each Stage 2, from one
+copy of the frame, with `PASS_RENDERWATERVOLUME`, whose pixel shader is the standard water
+shader (`XE Mod Water Standard.fx`); the marker reaches it as a value of the look. The
+shading reuses the water plane's ripples, fog and specular. It follows the normal of the mesh
+(`WaterVolumeVS`): the ripples are tilted to it, and the reflection and the Fresnel term are
+taken from it, so a surface can face any way. A mesh without normals faces up. The planar
+reflection is replaced by the analytic sky colour plus an optional screen-space march. The
+march reflects only what is on screen: the reflection of a thing ends where the thing leaves
+the view. Along a ray the march knows three cases: the ray is in the open, it met a
+surface (it is a little behind what is on screen there), or a thing nearer to the eye hides
+it (it is far behind). A hidden ray goes on, to what it meets when it is in the open again;
+it does not stop at the thing that hides it, which would leave the water beside a post, an
+arch or the end of a boat without the reflection of what is behind them. The depth of the
+scene is read for the ray as it is (`sampDepthPoint`), not smoothed: between a thing and what
+is behind it a smoothed depth is that of a surface that is not there, and the reflection
+would sparkle along the edge of the thing. The
+emissive colour of the marked material is the colour of the water (`waterVolumeTint`, set for
+each held draw); black is the usual colour. A distant water subset has that colour in its
+vertex colour, written by the generator.
+
+The water of the cell has a colour of its own, by the same rule: the emissive colour of the
+game's water material (the one marked with 99999), read in `SetMaterial` into `waterPlaneTint`
+and used by `WaterPS`. A mod sets it from Lua on the material of the game's water node. The
+two colours are apart: each surface has its own material.
+
+The first flush of a frame also draws the distant statics whose subsets carry the water flag
+(`RenderMesh::water`), with `PASS_RENDERWATERVOLUME_DISTANT`: the distant vertex shader
+gives the pixel shader the same vertex as a surface near the player, so the standard water
+shader, or the one of a mod, draws both. A distant subset has the look of its mesh: the
+generator copies the look line (`wv:` string data) into the subset record, the loader reads
+it with `WaterLooks::parse` and gives each different look an index, and the subset carries
+`WaterLooks::firstDistantLook` plus that index in its water byte, which the host passes
+through. `VisibleSet` leaves those meshes out of every other
+pass (colour, depth, shadow, reflection). `shadeWaterVolume` clips them nearer than
+`waterVolumeHandoff`, where the game draws the real mesh. `flushWaterVolumes` sets that
+depth for each mesh: `nearViewRange` for a mesh whose reference is in one of the loaded cells
+(the cell of the player and the eight around it), and zero for any other mesh, because the
+game has no mesh to draw in its place. The flush draws the surfaces near the player first and
+the distant water after them: the game draws a mesh in full when a part of it is nearer than
+its view distance, and there the depth test leaves the distant mesh out. The screen-space march fades out at
+`distant_land.water.volume_reflection_cells`; a value of zero turns the march off for the
+surfaces near the camera as well.
+
+`renderStageWater` leaves the water plane of the cell out, with its copy of the frame, when
+the plane is more than twice the view distance below the camera. A mod that needs the water
+flag on a dry interior puts the level that far down.
+
+A surface can have a look beyond its colour: the drift, speed and size of its ripples,
+glow, opacity, clarity (over how many units of water what is under the surface fades
+into the colour of deep water), whether the vertex colour of the mesh tints it, and a colour that it reflects
+in place of the sky (`WaterLook` in `waterlook.h`). Without that colour a surface reflects
+the sky outdoors and the light of the room in an interior, as `clearReflection` takes it for
+the water of the cell.
+
+A held surface keeps the stencil test and the depth test of its mesh (`NiStencilProperty`,
+`NiZBufferProperty`): `renderWaterVolume` reads them from the device and the flush sets them
+again for the draw, after the states of the pass. So a mesh can show its water only through
+a mask that another of its shapes wrote into the stencil buffer, and at any depth: the water
+in a well, under the ground. The shadow scenes that use the stencil buffer come later. A
+surface without the depth test tells the shader so (`look.noDepthTest`): the depth of the
+scene is then that of the ground over the water, and the water is taken as deep. Such a
+surface is not held: `renderWaterVolume` draws it at once, in its place among the draws of
+its mesh, so that what the mesh draws after it covers it, as the wall of a well covers the
+rim of its water.
+
+### Light on water volumes
+
+Three options, each a setting that is off by default and a define of the main effect
+(`WATER_VOLUME_SHADOWS`, `WATER_VOLUME_LIGHTS`, `WATER_VOLUME_CAUSTICS`, set in `initShader`),
+so that the water shading has no code for one that is off. All three are in
+`shadeWaterVolumeRippled`, and so in every water shader that calls the standard shading.
+
+- Shadows: `flushWaterVolumes` binds the shadow atlas to the texture place of the planar
+  reflection, which the volume passes do not use, and sets the cascade matrices (or matrices
+  that map every place outside the atlas, in a cell without weather or with shadows off).
+  `volumeSunlight` gives the share of the sun at the surface point; it scales the glint of
+  the sun and darkens the depth colour a little. The result is in `WaterShade.sun`.
+- Point lights: when the game submits the surface, `renderWaterVolume` copies up to four of
+  the point lights that are on for that draw (`takePointLights`, from the proxy's
+  `LightState`, decoded as the fixed-function replacement decodes them), and the flush sets
+  them for the draw. The shading adds the mirror image of each light in the ripples, in the
+  hue of the light, with the game's falloff. Distant water has no lights.
+- Caustics: the formula of `XE Mod Caustics.fx`, applied to the frame behind the surface
+  where the bed is read, for surfaces that face up, scaled by the sun at the point. The
+  strength is that of the water of the cell, and zero in a cell without weather.
+
+### Dry spaces
+
+A mod reports closed meshes inside which there is no water (`MGE_WaterMasksSet`, the
+triangles in the world; with True Water a shape named `WaterMask`), and whether the camera
+is in one (`MGE_WaterDrySet`; `IsUnderwater` is then false). Water is not drawn inside them.
+Whether a pixel of a water surface is inside is counted in one bit of the stencil buffer:
+a quad over the screen sets the bit to zero, every face of the dry spaces turns it over, and
+after the draw the bit is set to zero again (`countDrySpaces`, `endDrySpaceCount`).
+
+The mod knows only the meshes that the game has loaded. For the others the distant land
+carries the dry spaces. The generator keeps each shape with a mask name as a subset of its
+distant static that is a dry space (`SubsetWater::DrySpace`, flag bit 4 of the subset record;
+see `distantland/docs/architecture/statics.md`). The loader gives such a subset the water
+byte `WaterLooks::drySpace`, so the host puts it in the tree of the distant water and no
+ordinary pass gets it. `cullDistantStatics` fills `visWaterShared` once a frame, in
+`renderStage0`, and `findDistantWaterInView` then says whether a dry space is in it
+(`distantDrySpacesInView`). `countDrySpaces` draws those subsets after the triangles of the
+mod (`countDistantDrySpaces`), into the same bit: with the pass of the distant water
+(`PASS_RENDERWATERVOLUME_DISTANT`), the vertices of a distant static, the matrix of each mesh
+and the projection of the distant land. The wave height, the handoff depth and the plain mix
+that `beginDrySpacePass` sets hold for that pass too.
+
+A boat near the player is in both places: the mod reports its dry space, and its distant
+static can still be in the tree. Two counts of the same faces leave the bit as it was. So a
+distant dry space is counted only when its reference lies outside the loaded cells, the cell
+of the player and the eight around it (`LoadedCells`, the same rule that sets
+`waterVolumeHandoff` for distant water). In an interior, under water, in a cached frame and
+without distant statics there are no distant dry spaces.
+
+- Held water volume surfaces and distant water (`flushWaterVolumes`): the surfaces write
+  their depth, and the faces behind that depth are counted. An odd count is inside, wherever
+  the eye is. Distant water takes part only when the flush draws it.
+- The water plane of the cell (`renderStageWater`): the faces on the far side of the level of
+  the water are counted, with a clip plane and without the depth. An odd count is inside,
+  wherever the eye is. With the eye in a dry space and within `kDrySpaceLevelMargin` of the
+  level, the plane is left out: it is edge-on, and its waves put it now over the eye and now
+  under it.
+- The caustics (`renderStageBlend`): the faces in front of the depth of the scene are
+  counted. An odd count is inside when the eye is outside, and the other way round when the
+  eye is in a dry space. The faces behind are not used here: the floor of a boat lies in a
+  face of its dry space, and which side of it the depth falls on is not sure.
+
+Known limits: the count of the faces in front misses a face that the near plane cuts, so
+for a few frames, as the eye passes a face of a dry space, the caustics can show inside it.
+The counts of the faces behind miss a face beyond the far plane of the game's view, at the
+end of the view distance. The depth that a cut surface wrote stays in the depth buffer.
+
+### Stencil bits
+
+The count sets its bit to zero itself and leaves the other bits alone, so it does not need
+a free bit; it needs one that no mesh tests later in the frame. What is in the buffer, found
+by test in the game on 2026-10-07 (each bit in turn used for a count that did not yet set it
+to zero, looking at the body of the player outdoors), and from meshes of mods:
+
+| Bits | Who sets them | How it is known |
+| --- | --- | --- |
+| `0x01`, `0x04`, `0x08`, `0x40` (together `0x4d`) | The game, on the pixels of the player's body outdoors | With each of these four the water was drawn over the body; with each of the other four it was not. The values themselves were not read back |
+| a count, 0 to 255 | The game's shadow scenes, which `MGEProxyDevice` knows by `stencilRef <= 1` | The game's code, see below |
+| `0xf4` (low byte of the reference 500) | Meshes of mods that draw through a mask: a shape writes 500, other shapes test for it, with all bits. The wells of "Water In Wells", the shield of "Darksun's Eclipse" | The meshes |
+| `0x02` | The dry space count (`kDrySpaceBit`) | Not a bit of 500, so the count does not change what those meshes test |
+
+What the game does with the stencil buffer, from its code (Morrowind.exe, addresses of the
+English 1.6.1820 build):
+
+- The only thing that writes it is the shadow manager (`init` at 0x434260, `render` at
+  0x4352A0, called from the main scene render at 0x41C400 after the world and before the
+  water). For each light that casts shadows it clears the stencil buffer, draws the shadow
+  volumes twice, the faces of one winding with "add one where the depth test fails" and the
+  faces of the other with "take one away where the depth test fails", and then draws a dark
+  quad over the screen where the value is not zero. Reference 0, mask all bits. The renderer
+  maps the two actions to the saturating ones (table in the render state at +0x178:
+  keep, zero, replace, add, take away, invert), so the value is a count from 0 to 255: in how
+  many shadow volumes the visible point lies.
+- The game then draws the shadow casters again, without a stencil test, which hides the dark
+  quad on them. So the body of an actor keeps the count of its own shadow volumes in the
+  buffer. That is the value on the body of the player.
+- Nothing reads the value after the dark quad. The buffer is cleared with the frame, before
+  each light, and before the first person scene.
+- The other stencil properties that the game makes (the water node, mirrored body parts, the
+  collision bounds view) are not enabled: they only set which side of a face is drawn.
+
+So no bit is free by rule: a count of 2 or 3 sets bit `0x02`. That the test found it clear
+on the body, with `0x40` set, is not explained; it holds for the scene of the test. For that
+reason the dry space count sets its bit to zero first. It does not clear the whole buffer:
+that would take the mask from a mesh of a mod that tests for it later in the frame.
+
+A mesh that writes a stencil reference with bit `0x02` set and tests for it after the water
+is drawn loses that bit where a dry space is in the scene. A surface with a stencil test of
+its own is not cut by dry spaces; while the faces of a dry space are counted in front of it,
+between the two zero passes, its test sees the bit, so such a surface behind a dry space is
+not drawn. A mod reports looks through the `MGE_WaterLookSet` export, one per slot, and
+marks a surface with its slot in the specular power of the material, `100000 + slot`; the two
+old markers stay valid. `SetMaterial` reads the slot, the held draw carries it, and
+`flushWaterVolumes` sets `waterVolumeFlow` and `waterVolumeMix` for each draw from the slot's
+look. The shader (`WaterSurfaceLook`) drifts the ripple coordinates by the flow turned into
+the world, scales the ripple time by the speed, and mixes glow and the frame behind the
+surface by the opacity. A slot stands for a look, so every surface with the same look shares
+it.
+
+A look can name a water shader of a mod, `Data Files\shaders\water\<name>.fx`. When the main
+effect is compiled, `findWaterShaders` lists the files, and `CoreModInclude` writes an include
+of each into `XE Water Shaders.fx` and a pass for each into `XE Water Shader Passes.fx`; both
+files are empty on disk. The passes come after the last fixed pass
+(`PASS_WATERSHADER_FIRST`). `flushWaterVolumes` asks `waterShaderPass` for the pass of each
+held draw and gives it the free values of the look and the base texture of the mesh. When the
+effect does not compile with the water shaders, it is compiled without them and each failing
+file is named in the log. The contract is in `docs/water-shaders.md`.
+
+A mod can also tell MGE which volume the camera is in, through the `MGE_WaterVolumesSet`
+export: while the camera is inside one, `CellHasWater()` and `WaterLevel()` describe that
+volume, which gives the underwater view and fog at the right height.
+
 ## 5. Post-processing and frame completion
 
 At `BeginScene` of the first UI scene (`isFrameComplete` not yet set):

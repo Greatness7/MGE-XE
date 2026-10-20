@@ -159,3 +159,17 @@ statics = {
     'f\act_bm_stone_water_01.nif' = { type = "far", ignore_script = true },
     'f\act_bm_stone_wind_01.nif' = { type = "far", ignore_script = true },
 }
+
+# Names that mark distant water. Names are prefixes and case-insensitive. A mesh
+# is water when an object in it has a surface name or a body name. Everything
+# under a body name is left out, because the game hides it. A word in the first
+# surface name chooses the look: a plain word keeps the mesh's own look, a
+# sky-only word gives water that reflects the sky only. Metadata shipped beside
+# an active plugin can replace this table; a later table replaces it whole.
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+body_names = ["WaterBody"]
+mask_names = ["WaterMask"]
+plain_words = ["plain"]
+sky_only_words = ["skyonly"]

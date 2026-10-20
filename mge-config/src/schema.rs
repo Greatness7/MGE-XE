@@ -515,6 +515,14 @@ pub struct WaterSettings {
     pub blur_reflections: bool,
     pub wave_height: u8,
     pub caustics_intensity: u8,
+    /// How far from the eye, in cells, distant water volumes reflect what is on screen.
+    pub volume_reflection_cells: f32,
+    /// The shadows of the shadow map fall on water volumes.
+    pub volume_shadows: bool,
+    /// The point lights of the game show on water volumes.
+    pub volume_point_lights: bool,
+    /// Caustics on what is under the surface of a water volume.
+    pub volume_caustics: bool,
 }
 
 impl Default for WaterSettings {
@@ -528,6 +536,10 @@ impl Default for WaterSettings {
             blur_reflections: false,
             wave_height: 50,
             caustics_intensity: 50,
+            volume_reflection_cells: 8.0,
+            volume_shadows: false,
+            volume_point_lights: false,
+            volume_caustics: false,
         }
     }
 }

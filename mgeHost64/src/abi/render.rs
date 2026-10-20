@@ -34,8 +34,10 @@ pub struct RenderMesh {
     pub has_alpha: u8,
     /// Non-zero when the subset animates UV coordinates.
     pub animate_uv: u8,
-    /// Reserved for ABI alignment.
-    pub _padding0: u8,
+    /// Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only,
+    /// 3 = a dry space in water, which is never drawn. From 4 on the runtime's index of a look.
+    /// The host asks only whether the value is zero.
+    pub water: u8,
     /// Texture handle used for sorting and rendering.
     pub tex: u32,
     /// World transform applied by the client.
@@ -92,8 +94,12 @@ pub struct DistantSubset {
     pub has_alpha: u8,
     /// Non-zero when the subset animates UV coordinates.
     pub has_uv_controller: u8,
+    /// Distant water: 0 = not water, 1 = reflects the sky and the scene, 2 = reflects the sky only,
+    /// 3 = a dry space in water, which is never drawn. From 4 on the runtime's index of a look.
+    /// The host asks only whether the value is zero.
+    pub water: u8,
     /// Reserved for ABI alignment.
-    pub _padding0: [u8; 2],
+    pub _padding0: u8,
     /// Vertex-buffer handle.
     pub vbuffer: u32,
     /// Index-buffer handle.

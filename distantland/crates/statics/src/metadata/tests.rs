@@ -242,6 +242,58 @@ ranges = [[1, 1]]
 }
 
 #[test]
+fn configured_toml_source_sets_the_water_names_and_plugin_metadata_replaces_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let global = dir.path().join("global.toml");
+    fs::write(
+        &global,
+        r#"
+[tools.mge-xe.distantland]
+exclude_objects = ["x"]
+
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+body_names = ["WaterBody"]
+plain_words = ["plain"]
+sky_only_words = ["skyonly"]
+"#,
+    )
+    .unwrap();
+
+    let silent = dir.path().join("Silent-metadata.toml");
+    fs::write(&silent, "[tools.mge-xe.distantland]\nexclude_objects = [\"y\"]\n").unwrap();
+    let pond = dir.path().join("Pond-metadata.toml");
+    fs::write(
+        &pond,
+        "[tools.mge-xe.distantland.water]\nversion = 1\nsurface_names = [\"Pond\"]\n",
+    )
+    .unwrap();
+    let merged = |plugin_metadata: &[&Path]| {
+        let mut builder = OverridesBuilder::new();
+        apply_override_source_with_identity(&global, &mut builder).unwrap();
+        for path in plugin_metadata {
+            apply_plugin_metadata_with_identity(path, &mut builder).unwrap();
+        }
+        builder.finish()
+    };
+
+    // A plugin metadata file without the table leaves the names of the global file.
+    let names = merged(&[&silent]).water_names;
+    assert_eq!(names.surface, ["watervolume"]);
+    assert_eq!(names.body, ["waterbody"]);
+    assert_eq!(names.plain_words, ["plain"]);
+    assert_eq!(names.sky_only_words, ["skyonly"]);
+
+    // A plugin metadata file with the table replaces the whole table.
+    let names = merged(&[&silent, &pond]).water_names;
+    assert_eq!(names.surface, ["pond"]);
+    assert!(names.body.is_empty());
+    assert!(names.plain_words.is_empty());
+    assert!(names.sky_only_words.is_empty());
+}
+
+#[test]
 fn metadata_matches_equivalent_ovr() {
     let ovr = b"\
 meshes\\foo\\rock.nif = very_far reduction_50
@@ -334,4 +386,154 @@ ranges = [[50, 100]]
     assert_eq!(overrides.dynamic_vis.groups.len(), 1);
     assert_eq!(overrides.dynamic_vis.scripts["script_a"], 1);
     assert_eq!(overrides.dynamic_vis.scripts["script_b"], 1);
+}
+
+#[test]
+fn water_table_and_water_key_map_to_overrides() {
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+body_names = ["WaterBody"]
+plain_words = ["plain"]
+sky_only_words = ["SkyOnly"]
+
+[tools.mge-xe.distantland.statics]
+'x\ex_pond.nif' = { water = true, water_color = [0.25, 0.5, 2.0] }
+'wv\not_water.nif' = { water = false }
+'foo\rock.nif' = { type = "far" }
+"#;
+    let overrides = parse_and_apply(text);
+
+    assert_eq!(overrides.water_names.surface, ["watervolume"]);
+    assert_eq!(overrides.water_names.body, ["waterbody"]);
+    assert_eq!(overrides.water_names.plain_words, ["plain"]);
+    assert_eq!(overrides.water_names.sky_only_words, ["skyonly"]);
+    assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water, Some(true));
+    // A part of a colour is held between 0 and 1.
+    assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water_color, Some([0.25, 0.5, 1.0]));
+    assert_eq!(overrides.mesh_overrides["wv\\not_water.nif"].water, Some(false));
+    assert_eq!(overrides.mesh_overrides["wv\\not_water.nif"].water_color, None);
+    assert_eq!(overrides.mesh_overrides["foo\\rock.nif"].water, None);
+}
+
+#[test]
+fn mask_names_and_the_dry_space_key_map_to_overrides() {
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+mask_names = ["WaterMask", " Dry "]
+
+[tools.mge-xe.distantland.statics]
+'x\boat.nif' = { dry_space = false }
+'x\ship.nif' = { dry_space = true }
+'x\raft.nif' = { type = "far" }
+"#;
+    let overrides = parse_and_apply(text);
+
+    assert_eq!(overrides.water_names.mask, ["watermask", "dry"]);
+    assert_eq!(overrides.mesh_overrides["x\\boat.nif"].dry_space, Some(false));
+    assert_eq!(overrides.mesh_overrides["x\\ship.nif"].dry_space, Some(true));
+    assert_eq!(overrides.mesh_overrides["x\\raft.nif"].dry_space, None);
+
+    // An empty list, and a table without the key, name no dry space.
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+mask_names = []
+"#;
+    assert!(parse_and_apply(text).water_names.mask.is_empty());
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 1
+surface_names = ["WaterVolume"]
+"#;
+    assert!(parse_and_apply(text).water_names.mask.is_empty());
+}
+
+#[test]
+fn water_table_of_an_unknown_version_is_left_out() {
+    let text = r#"
+[tools.mge-xe.distantland.water]
+version = 99
+surface_names = ["WaterVolume"]
+
+[tools.mge-xe.distantland.statics]
+'x\ex_pond.nif' = { water = true }
+"#;
+    let overrides = parse_and_apply(text);
+
+    assert!(overrides.water_names.surface.is_empty());
+    // The mesh entries of the same file still count.
+    assert_eq!(overrides.mesh_overrides["x\\ex_pond.nif"].water, Some(true));
+}
+
+#[test]
+fn wv_key_maps_to_the_look_line_of_the_mesh_override() {
+    let too_long = "x".repeat(256);
+    let text = format!(
+        r#"
+[tools.mge-xe.distantland.statics]
+'x\pond.nif' = {{ water = true, wv = "flow=0,-140 glow=0.3" }}
+'x\prefix.nif' = {{ wv = " WV: opacity=vertex  " }}
+'x\empty.nif' = {{ wv = "" }}
+'x\prefix_only.nif' = {{ wv = "wv:" }}
+'x\no_key.nif' = {{ water = true }}
+'x\too_long.nif' = {{ water = true, wv = "{too_long}" }}
+'x\not_ascii.nif' = {{ water = true, wv = "shader=caf\u00e9" }}
+"#
+    );
+    let overrides = parse_and_apply(&text);
+    let look = |mesh: &str| overrides.mesh_overrides[mesh].water_look.as_deref();
+
+    assert_eq!(look("x\\pond.nif"), Some("flow=0,-140 glow=0.3"));
+    // The prefix and the white space at the ends are taken away.
+    assert_eq!(look("x\\prefix.nif"), Some("opacity=vertex"));
+    // An empty look line is a look line: it takes the look line of the mesh away.
+    assert_eq!(look("x\\empty.nif"), Some(""));
+    assert_eq!(look("x\\prefix_only.nif"), Some(""));
+    assert_eq!(look("x\\no_key.nif"), None);
+    // A look line that the file format does not take is left out. The rest of the entry stays.
+    assert_eq!(look("x\\too_long.nif"), None);
+    assert_eq!(look("x\\not_ascii.nif"), None);
+    assert_eq!(overrides.mesh_overrides["x\\too_long.nif"].water, Some(true));
+    assert_eq!(overrides.mesh_overrides["x\\not_ascii.nif"].water, Some(true));
+}
+
+#[test]
+fn wv_key_takes_a_look_line_of_255_bytes() {
+    let longest = "x".repeat(255);
+    let text = format!("[tools.mge-xe.distantland.statics]\n'x\\pond.nif' = {{ wv = \"wv: {longest}\" }}\n");
+    let overrides = parse_and_apply(&text);
+    assert_eq!(
+        overrides.mesh_overrides["x\\pond.nif"].water_look.as_deref(),
+        Some(longest.as_str())
+    );
+}
+
+#[test]
+fn a_later_mesh_entry_replaces_the_look_line_with_the_whole_entry() {
+    let apply = |builder: &mut OverridesBuilder, label: &str, entry: &str| {
+        let text = format!("[tools.mge-xe.distantland.statics]\n'x\\pond.nif' = {{ {entry} }}\n");
+        let metadata = parse_distantland_section(&text).expect("parse").expect("section");
+        builder.begin_source(label);
+        metadata.apply(builder);
+    };
+
+    let mut builder = OverridesBuilder::new();
+    apply(&mut builder, "A-metadata.toml", "water = true, wv = \"speed=2\"");
+    apply(&mut builder, "B-metadata.toml", "water = true, wv = \"speed=3\"");
+    let overrides = builder.finish();
+    assert_eq!(overrides.mesh_overrides["x\\pond.nif"].water_look.as_deref(), Some("speed=3"));
+
+    // An entry is one value, as for the other keys: a later entry without the key has no look
+    // line.
+    let mut builder = OverridesBuilder::new();
+    apply(&mut builder, "A-metadata.toml", "water = true, wv = \"speed=2\"");
+    apply(&mut builder, "B-metadata.toml", "water = true");
+    let overrides = builder.finish();
+    assert_eq!(overrides.mesh_overrides["x\\pond.nif"].water, Some(true));
+    assert_eq!(overrides.mesh_overrides["x\\pond.nif"].water_look, None);
 }

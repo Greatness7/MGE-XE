@@ -140,23 +140,23 @@ namespace StaticMeshesBin {
             header.static_table_offset = SerializedHeaderSize;                 // 160
             header.static_table_size = 2ull * SerializedStaticRecordSize;      // 104
             header.subset_table_offset = 264;                                  // 160 + 104
-            header.subset_table_size = 2ull * SerializedSubsetRecordSize;      // 304
-            header.component_table_offset = 568;                               // 264 + 304, 8-aligned
+            header.subset_table_size = 2ull * SerializedSubsetRecordSize;      // 336
+            header.component_table_offset = 600;                               // 264 + 336, 8-aligned
             header.component_table_size = 0;
             header.component_count = 0;
             header.palette_count = 1;                                          // the regular subset
-            header.palette_table_offset = 568;                                 // empty component table
+            header.palette_table_offset = 600;                                 // empty component table
             header.palette_table_size = 1ull * SerializedPaletteRecordSize;    // 16
-            header.texture_blob_offset = 584;                                  // 568 + 16
+            header.texture_blob_offset = 616;                                  // 600 + 16
             header.texture_blob_size = 4;                                      // "a\0b\0"
-            header.geometry_blob_offset = 592;                                 // 8-aligned, after texture blob
+            header.geometry_blob_offset = 624;                                 // 8-aligned, after texture blob
             header.geometry_blob_size = 132;                                   // (3*20 + 6) * 2
             header.grass_vertex_stride = GrassVertexStride;
             header.reserved = 0;
             return header;
         }
 
-        const std::uint64_t kFileSize = 724;   // geometry_blob_offset + geometry_blob_size
+        const std::uint64_t kFileSize = 756;   // geometry_blob_offset + geometry_blob_size
 
         void run_header_validation_test() {
             auto header = build_valid_header();

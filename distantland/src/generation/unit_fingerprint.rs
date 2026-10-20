@@ -24,7 +24,7 @@ use crate::mge_xe::distant_statics::StaticType;
 use crate::statics::atlas::sizing::{AtlasDomain, SizingPlan, SourceTextureInfo};
 use crate::terrain::package::TerrainGateInputs;
 use crate::usage::StableRefKey;
-use crate::{AtlasTextureSet, DistantStatics, GenerationSettings, IndexSet, TerrainAtlasLayout, UsageInfo, Vfs};
+use crate::{AtlasTextureSet, DistantStatics, GenerationSettings, IndexSet, TerrainAtlasLayout, UsageInfo, Vfs, WaterNames};
 
 /// Builds all statics-domain state before atlas lowering and merge mutation destroy logical inputs.
 pub(crate) fn build_static_state(
@@ -80,6 +80,11 @@ pub(crate) fn build_static_state(
                 for subset in &distant_static.subsets {
                     writer.write_bool(subset.has_alpha);
                     writer.write_bool(subset.has_uv_controller);
+                    // Written for water and for a dry space alone, so that the fingerprint of
+                    // every other mesh stays what it was before subsets could be either.
+                    if subset.water.is_kept_apart() {
+                        writer.write_u8(subset.water.packed());
+                    }
                     match subset.texture.source_sym().and_then(|sym| vfs.texture_key_for_sym(sym)) {
                         Some(texture) => {
                             writer.write_bool(true);
@@ -88,6 +93,12 @@ pub(crate) fn build_static_state(
                         }
                         None => writer.write_bool(false),
                     }
+                }
+                // The names choose the shapes of a water mesh, and two choices can have the
+                // same summary above. Written for a mesh that the water rules apply to alone,
+                // so that the fingerprint of every other mesh stays what it was.
+                if distant_static.water_rules {
+                    write_water_names(&mut writer, &projections.overrides.water_names);
                 }
             }
             None => writer.write_u8(absent_mesh_status(
@@ -258,8 +269,10 @@ fn build_merge_units(
             let Some(distant_static) = distant_statics.get(reference.id.as_ref()) else {
                 continue;
             };
+            // The same members as the merge has: water and a static with a dry space stay alone.
             if distant_static.static_type == StaticType::StaticGrass
                 || distant_static.bounding_sphere.radius * reference.scale < 32.0
+                || distant_static.stays_alone()
             {
                 continue;
             }
@@ -691,6 +704,21 @@ fn absent_mesh_status(has_resolution: bool, has_content: bool) -> u8 {
         (true, true) => 2,
         (true, false) => 3,
         (false, _) => 4,
+    }
+}
+
+fn write_water_names(writer: &mut CanonicalWriter, names: &WaterNames) {
+    for list in [
+        &names.surface,
+        &names.body,
+        &names.mask,
+        &names.plain_words,
+        &names.sky_only_words,
+    ] {
+        writer.write_u64(list.len() as u64);
+        for name in list {
+            writer.write_str(name);
+        }
     }
 }
 

@@ -17,13 +17,16 @@ pub const VIS_VERY_FAR: Dword = 0x04;
 pub const VIS_GRASS: Dword = 0x08;
 /// Includes distant landscape tiles in a visible-set query.
 pub const VIS_LAND: Dword = 0x10;
+/// Includes the distant statics that are water, and the dry spaces in water, in a visible-set
+/// query. They are kept apart from the static-detail buckets, so that no ordinary pass draws them.
+pub const VIS_WATER: Dword = 0x20;
 /// Convenience mask covering all static-detail visibility buckets.
 pub const VIS_STATIC: Dword = VIS_NEAR | VIS_FAR | VIS_VERY_FAR;
 
 /// Bit in `mge_flags` that enables distant-land rendering.
 pub const USE_DISTANT_LAND: Dword = 1 << 17;
 /// On-disk distant-land asset version expected by this host build.
-pub const MGE_DL_VERSION: u8 = 18;
+pub const MGE_DL_VERSION: u8 = 21;
 /// Terrain file magic for `terrain.bin`.
 pub const TERRAIN_FILE_MAGIC: [u8; 8] = *b"XELAND02";
 /// Terrain file version.

@@ -91,6 +91,14 @@ interiors = "Wnętrza"
 dynamic_ripples = "Dynamiczne zmarszczki na wodzie"
 wave_height = "Wysokość fal"
 caustics = "Jasność kaustyki"
+volume_reflection = "Odbicia w zbiornikach wody"
+volume_light = "Światło na zbiornikach wody"
+volume_shadows = "Cienie"
+volume_shadows_tip = "Cienie odległego terenu padają na zbiorniki wody: w cieniu woda nie ma odblasku słońca i jest nieco ciemniejsza. Wymaga cieni. Domyślnie wyłączone: kosztuje czas klatki tam, gdzie zbiornik wody jest na ekranie."
+volume_point_lights = "Lampy i ogniska"
+volume_point_lights_tip = "Lampy i ogniska z gry odbijają się w zbiornikach wody w pobliżu gracza. Domyślnie wyłączone: kosztuje czas klatki tam, gdzie zbiornik wody jest na ekranie."
+volume_caustics = "Kaustyki"
+volume_caustics_tip = "Rysuje świetlny wzór fal na tym, co znajduje się pod powierzchnią zbiornika wody, z intensywnością kaustyk ustawioną powyżej. Tylko na zewnątrz. Domyślnie wyłączone: kosztuje czas klatki tam, gdzie zbiornik wody jest na ekranie."
 
 sky_tip = "Uwzględnia niebo w odbiciach wody."
 landscape_tip = "Uwzględnia odległy krajobraz w odbiciach wody."
@@ -100,6 +108,7 @@ interiors_tip = "Włącza odbicia w wygenerowanych odległych wnętrzach. Wymaga
 dynamic_ripples_tip = "Włącza dynamiczną symulację fal i umożliwia regulację ich wysokości."
 wave_height_tip = "Ustawia wysokość fal w jednostkach Morrowinda. Dostępne przy włączonych dynamicznych falach."
 caustics_tip = "Ustawia intensywność podwodnej kaustyki. 0% wyłącza efekt; wartość domyślna to 50%."
+volume_reflection_tip = "Ustawia, do jakiej odległości od kamery (w komórkach) odległy zbiornik wody odbija to, co widać na ekranie. Dalej odbija tylko niebo. 0 wyłącza te odbicia dla wszystkich zbiorników wody, także bliskich; wartość domyślna to 8."
 
 [distant.lighting]
 title = "Oświetlenie i cienie"

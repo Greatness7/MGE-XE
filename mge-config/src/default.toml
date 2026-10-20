@@ -132,6 +132,18 @@ blur_reflections = false
 # Wave and caustics percentages, clamped to 0..250 and 0..100.
 wave_height = 50
 caustics_intensity = 50
+# Water volumes among the distant statics reflect what is on screen out to this many cells from
+# the eye. Farther away they reflect the sky only. 0 gives the sky only everywhere. 0..64.
+volume_reflection_cells = 8.0
+# Light on water volumes. Each is off unless it is set, because it costs frame time where a
+# water volume is on screen; the water shading has no code for one that is off.
+# The shadows of distant land fall on the surface: no glint of the sun in a shadow.
+volume_shadows = false
+# The lamps and fires of the game glint in the surface.
+volume_point_lights = false
+# The light pattern of ripples on what is under the surface, with the strength of
+# caustics_intensity.
+volume_caustics = false
 
 # Fog modes and start/end distances in exterior cells.
 [distant_land.fog]

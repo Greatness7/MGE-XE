@@ -10,6 +10,35 @@
   use no longer scales with the size of your mod list.
 - Grass rendering is new enabled in interiors. The interface now auto-detects interior grass mods. ([#21](https://github.com/Greatness7/MGE-XE/issues/21))
 - The `mgeXE.toml` file now automatically updates itself to include new settings as they released.
+- Water volumes: mods can place bodies of water at any height, apart from the cell's own water.
+  Their surfaces are drawn with the water shading, near the player and in distant land. Meshes
+  are marked as water by the names in them, which the default statics classifiers set, or
+  through plugin metadata; see the mod metadata guide. Distant land must be generated again.
+  A water volume can have a colour: the emissive colour of its material, and a look of its own:
+  flowing ripples, their speed and size, glow, opacity, clarity (how fast the water hides
+  what is under it), and a tint from the vertex
+  colours of the mesh, which the mod that owns the volume reports through `MGE_WaterLookSet`.
+  A mod can also ship a water shader of its own for its surfaces
+  (`Data Files\shaders\water\<name>.fx`); see `docs/water-shaders.md`. The look and the
+  shader of a mesh apply in distant land too. The `wv` key of a mesh entry in plugin
+  metadata gives a look to a mesh that cannot be edited. A water shader also gets the second
+  texture of the mesh (a decal, a detail or a dark map). In an interior a water volume
+  reflects the light of the room in place of the sky, and a look can give that colour itself.
+  A water volume keeps the stencil test and the depth test of its mesh, so that a mesh can
+  show its water through a mask: the water in a well. A mod can report closed shapes inside
+  which there is no water, the hold of a boat under the water line (`MGE_WaterMasksSet`):
+  water volumes, the water of the cell and the caustics are not drawn inside them.
+  Distant land carries these dry spaces too, for a boat that the game has not loaded: the
+  generator keeps a shape named `WaterMask` with its distant static. The `dry_space` key of a
+  mesh entry, or an empty `mask_names` list, switches that off. Distant land must be
+  generated again (`MGE_DL_VERSION` 21).
+  A water shader of a mod can give ripples of its own to the standard shading, from a normal
+  map or along a flow map (`shadeWaterVolumeRippled`). Three new settings, off by default,
+  put light on water volumes: the shadows of distant land, the glint of the lamps and fires
+  of the game, and caustics under the surface (`distant_land.water.volume_shadows`,
+  `volume_point_lights`, `volume_caustics`).
+- The water of a cell can have a colour: the emissive colour of the game's water material,
+  which a mod can set from Lua.
 
 ### Changed
 
@@ -24,6 +53,8 @@
 - Fixed malformed assets causing crashes or render incorrectly with `indexed_skinning` enabled.
 - Fixed distant land generation failing on mods that place cells very far from the world origin.
 - Fixed enabling per-pixel lighting not updating light attenuation values to `Morrowind.ini`.
+- Fixed the fog on water in an interior that has no distant land: the exponential fog kept
+  the values of the last cell that had distant land.
 - Fixed several inherited (MGE XE) bugs related to water ripple logic.
 
 ## v0.20.3 beta

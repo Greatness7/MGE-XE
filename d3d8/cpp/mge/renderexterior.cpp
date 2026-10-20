@@ -229,6 +229,7 @@ void DistantLand::cullDistantStatics(const D3DXMATRIX* view, const D3DXMATRIX* p
     const float veryFarStaticEnd = Configuration.DL.VeryFarStaticEnd * kCellSize;
 
     visDistantShared.RemoveAll();
+    visWaterShared.RemoveAll();
 
     zf = std::min(nearStaticEnd, cullDist);
     if (zn < zf) {
@@ -256,6 +257,10 @@ void DistantLand::cullDistantStatics(const D3DXMATRIX* view, const D3DXMATRIX* p
         ViewFrustum range_frustum(&ds_viewproj);
         viewsphere.w = zf * cornerRay;
         ipcClient.getVisibleMeshes(visDistantSharedId, range_frustum, viewsphere, VIS_VERY_FAR, nearStaticEnd, farStaticEnd);
+        // Water is drawn as far as the largest statics, whatever its size.
+        if (distantWaterLoaded) {
+            ipcClient.getVisibleMeshesCoarse(visWaterSharedId, range_frustum, VIS_WATER);
+        }
     }
 
     ipcClient.sortVisibleSet(visDistantSharedId, VisibleSetSort::ByState);

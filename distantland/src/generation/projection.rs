@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -17,7 +18,7 @@ use crate::usage::ObjectKind;
 use crate::vfs::normalize;
 use crate::{
     DistantReference, DynamicVisKind, GenerationSettings, InteriorMetadata, ObjectDefinition, StaticOverride,
-    StaticOverrides, UsageInfo,
+    StaticOverrides, UsageInfo, WaterNames,
 };
 
 /// Cell coordinates used to partition exterior reference and landscape projections.
@@ -357,6 +358,8 @@ pub(crate) struct OverrideStateProjection {
     pub(crate) interiors: BTreeMap<String, bool>,
     /// Dynamic-visibility groups and lookup tables.
     pub(crate) dynamic_visibility: DynamicVisibilityProjection,
+    /// Names that mark water meshes. They enter the fingerprint of a water mesh alone.
+    pub(crate) water_names: WaterNames,
 }
 
 impl From<&StaticOverrides> for OverrideStateProjection {
@@ -378,12 +381,13 @@ impl From<&StaticOverrides> for OverrideStateProjection {
                 .map(|(key, enabled)| (key.as_str().to_ascii_lowercase(), *enabled))
                 .collect(),
             dynamic_visibility: DynamicVisibilityProjection::from(value),
+            water_names: value.water_names.clone(),
         }
     }
 }
 
 /// One per-mesh override.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MeshOverrideProjection {
     /// Excludes the mesh by default.
     pub(crate) ignore: bool,
@@ -395,6 +399,14 @@ pub(crate) struct MeshOverrideProjection {
     pub(crate) simplify: Option<u32>,
     /// Treats the mesh as scriptless.
     pub(crate) no_script: bool,
+    /// Says whether the mesh is distant water, whatever its names say.
+    pub(crate) water: Option<bool>,
+    /// Raw bits of the colour of the water of a water mesh.
+    pub(crate) water_color: Option<[u32; 3]>,
+    /// The look line of a water mesh that replaces the look line in the mesh.
+    pub(crate) water_look: Option<Arc<str>>,
+    /// Says whether the dry spaces of the mesh go into the distant land.
+    pub(crate) dry_space: Option<bool>,
 }
 
 impl From<&StaticOverride> for MeshOverrideProjection {
@@ -405,6 +417,10 @@ impl From<&StaticOverride> for MeshOverrideProjection {
             density: value.density.to_bits(),
             simplify: value.simplify.map(f32::to_bits),
             no_script: value.no_script,
+            water: value.water,
+            water_color: value.water_color.map(|color| color.map(f32::to_bits)),
+            water_look: value.water_look.clone(),
+            dry_space: value.dry_space,
         }
     }
 }
@@ -422,6 +438,27 @@ impl CanonicalWrite for MeshOverrideProjection {
             None => writer.write_bool(false),
         }
         writer.write_bool(self.no_script);
+        // The water fields are written only when set, so that an override without them keeps
+        // the fingerprint it had before they existed. They are the last fields, and the colour,
+        // the look line and the dry space key each start with a tag of their own that is not a
+        // boolean, so the encoding stays unambiguous.
+        if let Some(water) = self.water {
+            writer.write_bool(water);
+        }
+        if let Some(color) = self.water_color {
+            writer.write_u8(2);
+            for part in color {
+                writer.write_u32(part);
+            }
+        }
+        if let Some(look) = &self.water_look {
+            writer.write_u8(3);
+            writer.write_str(look);
+        }
+        if let Some(dry_space) = self.dry_space {
+            writer.write_u8(4);
+            writer.write_bool(dry_space);
+        }
     }
 }
 

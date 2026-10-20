@@ -15,6 +15,12 @@
 #include "XE Mod Grass.fx"
 #include "XE Mod Sky.fx"
 #include "XE Mod Water.fx"
+#include "XE Mod Water Volume.fx"
+// Each water shader names its pixel shader WaterShaderPS
+#define WaterShaderPS WaterStandardPS
+#include "XE Mod Water Standard.fx"
+#undef WaterShaderPS
+#include "XE Water Shaders.fx"
 #include "XE Mod Caustics.fx"
 
 //------------------------------------------------------------
@@ -478,5 +484,38 @@ Technique T0 {
         VertexShader = compile vs_3_0 RenderShadowsFFEIndexedVS();
         PixelShader = compile ps_3_0 RenderShadowsPS();
     }
+    //------------------------------------------------------------
+    // Used for rendering the surface meshes of water volumes
+    Pass P15 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = none;
+
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 WaterVolumeVS();
+        PixelShader = compile ps_3_0 WaterStandardPS();
+    }
+    //------------------------------------------------------------
+    // Used for rendering water volumes among the distant statics
+    Pass P16 {
+        ZEnable = true;
+        ZWriteEnable = true;
+        ZFunc = LessEqual;
+        StencilEnable = false;
+        CullMode = none;
+
+        AlphaBlendEnable = false;
+        AlphaTestEnable = false;
+
+        VertexShader = compile vs_3_0 WaterVolumeDistantVS();
+        PixelShader = compile ps_3_0 WaterStandardPS();
+    }
+    //------------------------------------------------------------
+    // Used for rendering water volumes with the water shader of a mod, near and distant
+#include "XE Water Shader Passes.fx"
     //------------------------------------------------------------
 }

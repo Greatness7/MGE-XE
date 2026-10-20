@@ -197,6 +197,7 @@ public:
     static VisibleSet visLandShared;
     static VisibleSet visDistantShared;
     static VisibleSet visGrassShared;
+    static VisibleSet visWaterShared;
     static VisibleSet visExtraShared;
     static IPC::VecView<IPC::DynVisFlag> dynVisFlagsShared;
     static IPC::VecView<IPC::ResidencyPlan> residencyPlanShared;
@@ -205,6 +206,7 @@ public:
     static IPC::VecId visLandSharedId;
     static IPC::VecId visDistantSharedId;
     static IPC::VecId visGrassSharedId;
+    static IPC::VecId visWaterSharedId;
     static IPC::VecId visExtraSharedId;
     static IPC::VecId dynVisFlagsSharedId;
     static IPC::VecId residencyPlanSharedId;
@@ -279,6 +281,15 @@ public:
     static D3DXHANDLE ehFogStart, ehFogRange;
     static D3DXHANDLE ehFogNearStart, ehFogNearRange;
     static D3DXHANDLE ehNearViewRange;
+    static D3DXHANDLE ehWaterVolumeReflectRange;
+    static D3DXHANDLE ehWaterVolumeHandoff, ehWaterVolumeSky, ehWaterVolumeClarity;
+    static D3DXHANDLE ehWaterVolumeCaustics, ehWaterVolumeLightPos, ehWaterVolumeLightCol, ehWaterVolumeLightFalloff;
+    static D3DXHANDLE ehWaterVolumeTint;
+    static D3DXHANDLE ehWaterPlaneTint;
+    static D3DXHANDLE ehWaterVolumeFlow;
+    static D3DXHANDLE ehWaterVolumeParams;
+    static D3DXHANDLE ehMeshTex0, ehMeshTex1;
+    static D3DXHANDLE ehWaterVolumeMix;
     static D3DXHANDLE ehWindVec;
     static D3DXHANDLE ehNiceWeather;
     static D3DXHANDLE ehTime;
@@ -400,6 +411,52 @@ public:
     static void clearReflection();
     static void simulateDynamicWaves();
     static void renderWaterPlane();
+    static bool renderWaterVolume(const RenderedState* rs, bool reflectsScene, const D3DCOLORVALUE& tint, unsigned int lookSlot, const LightState* lights);
+    // The pass of the water shader of a mod with this name (Data Files\shaders\water\<name>.fx)
+    // for a surface near the player, or -1 when there is none or it did not compile. The pass
+    // after it is the one for a surface from the distant land.
+    static int waterShaderPass(const char* name);
+    static void flushWaterVolumes(bool withDistant);
+    static void discardWaterVolumes();
+    // The dry spaces that a mod reports: water volumes are not drawn inside them.
+    static void setWaterMasks(const float* corners, unsigned int triangles);
+    static bool hasDrySpaces();
+    // Turns the dry space bit of the stencil buffer over for every face of the dry spaces in
+    // front of the depth that is there; with a level, for every face on the far side of the
+    // level plane at that height, whatever the depth is. The effect must be begun,
+    // with no pass open.
+    static void countDrySpaces(const float* level = nullptr, bool behindDepth = false);
+    // Sets the dry space bit back to zero over the whole screen, after the draw that tested
+    // it. The effect must be begun, with no pass open.
+    static void endDrySpaceCount();
+    static void zeroDrySpaceBit();
+    // Draws the dry spaces of the distant statics for the count: see countDrySpaces.
+    static void countDistantDrySpaces(const std::function<void(const D3DXMATRIX&)>& setCountStates);
+    // The pass that the dry space count draws with, set up so that it moves no vertex and
+    // does no more work than it must. begin gives the wave height to put back at the end.
+    static float beginDrySpacePass();
+    static void endDrySpacePass(float waveHeight);
+    // Sets the stencil test that lets a water surface through only outside the dry spaces.
+    // countedBehind: the count was that of the faces behind the surface (the level count).
+    static void testOutsideDrySpaces(bool countedBehind = false);
+    static bool cameraInDrySpace;
+    // How near the level of the water an eye in a dry space must be for the water plane to be left out
+    static constexpr float kDrySpaceLevelMargin = 40.0f;
+    // A surface mesh of a water volume was taken this frame.
+    static bool waterVolumeDrawn;
+    // The colour of the water of the cell: the emissive colour of the game's water material.
+    // Black for the usual colour. It has nothing to do with the colours of water volumes.
+    static float waterPlaneTint[3];
+    // The loaded distant statics have water or dry spaces among them. Without any, no frame
+    // asks for them.
+    static bool distantWaterLoaded;
+    // Distant statics that are water are in view this frame, in visWaterShared.
+    static bool distantWaterInView;
+    // Dry spaces of distant statics are in view this frame, in visWaterShared, and the game
+    // has not loaded their cells. renderStage0 sets it; it holds until the next frame.
+    static bool distantDrySpacesInView;
+    // Looks through visWaterShared after the cull and sets the two values above.
+    static void findDistantWaterInView();
 
     static void renderDepth();
     static void renderDepthAdditional();

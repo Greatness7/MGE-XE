@@ -1,6 +1,7 @@
 use super::*;
 use crate::generation::identity::ContentIdentity;
 use crate::generation::units::{MergeUnitKey, TerrainCellUnitKey, TerrainChunkUnitKey};
+use crate::statics::atlas::sizing::TextureAxisCaps;
 
 #[test]
 fn missing_resolution_and_content_markers_are_distinct() {
@@ -290,4 +291,202 @@ fn merge_units_follow_the_terrain_detail_that_sets_their_cull_margin() {
         merge_unit_fingerprint(&settings, &[((0, 0), 1)]),
         "the detail preset sets the cull margin, so it changes merged geometry"
     );
+}
+
+/// A mesh with two shapes, `PoolA` and `PoolB`, that differ in the colour of their material
+/// alone: the bounds, the texture and the flags of the two are the same.
+fn build_two_pool_nif() -> Vec<u8> {
+    use glam::{Vec2, Vec3};
+    use tes3::nif::*;
+
+    let mut stream = NiStream::new();
+    let texture = stream.insert(NiSourceTexture {
+        source: TextureSource::External("pool.dds".into()),
+        ..NiSourceTexture::default()
+    });
+    let mut texture_map = Map::default();
+    texture_map.texture = texture;
+    let texturing = stream.insert(NiTexturingProperty {
+        texture_maps: vec![Some(TextureMap::Map(texture_map))],
+        ..NiTexturingProperty::default()
+    });
+
+    let mut root = NiNode::default();
+    for (name, emissive_color) in [("PoolA", Vec3::X), ("PoolB", Vec3::Y)] {
+        let material = stream.insert(NiMaterialProperty {
+            emissive_color,
+            ..NiMaterialProperty::default()
+        });
+        let mut data = NiTriShapeData::default();
+        data.vertices = vec![Vec3::ZERO, Vec3::X, Vec3::Y];
+        data.normals = vec![Vec3::Z; 3];
+        data.uv_sets = vec![Vec2::ZERO, Vec2::X, Vec2::Y];
+        data.triangles = vec![[0, 1, 2]];
+        data.update_center_radius();
+        let data = stream.insert(data);
+
+        let mut shape = NiTriShape::default();
+        shape.name = name.into();
+        shape.geometry_data = data.cast();
+        shape.properties.push(texturing.cast());
+        shape.properties.push(material.cast());
+        root.children.push(stream.insert(shape).cast());
+    }
+    let root = stream.insert(root);
+    stream.roots.push(root.cast());
+    stream.save_bytes().expect("serialize test nif")
+}
+
+#[test]
+fn water_names_that_choose_another_shape_change_the_fingerprint_of_a_water_mesh() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("meshes")).unwrap();
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("meshes").join("pools.nif"), build_two_pool_nif()).unwrap();
+    std::fs::write(root.join("textures").join("pool.dds"), b"dds").unwrap();
+    let vfs = Vfs {
+        ini_path: root.join("Morrowind.ini"),
+        data_dirs: vec![root.to_path_buf()],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[root.to_path_buf()]).unwrap(),
+    };
+
+    let settings = GenerationSettings::default();
+    let usage = UsageInfo::default();
+    // The static of the mesh and its fingerprint, with this body name in the water names.
+    let mesh_unit = |body_name: Option<&str>| {
+        let mut overrides = crate::StaticOverrides::default();
+        overrides.water_names.body = body_name.into_iter().map(str::to_owned).collect();
+        let distant_static =
+            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, &overrides)
+                .distant_static
+                .expect("static of the mesh");
+        let mut distant_statics: DistantStatics = Default::default();
+        distant_statics.insert("pools.nif".to_owned(), distant_static.clone());
+
+        let source_info = HashMap::new();
+        let state = build_static_state(
+            &settings,
+            &Projections::capture(&usage, &settings, &overrides),
+            &ContentIdentityCollector::default(),
+            &usage,
+            &distant_statics,
+            &vfs,
+            &AtlasTextureSet::default(),
+            &source_info,
+            &SizingPlan::baseline(TextureAxisCaps::uniform(1024), &source_info),
+        );
+        assert_eq!(state.units.mesh.entries.len(), 1);
+        (distant_static, state.units.mesh.entries[0].1)
+    };
+
+    // Each body name leaves one shape out, and the other shape is the water.
+    let (without_a, fingerprint_without_a) = mesh_unit(Some("poola"));
+    let (without_b, fingerprint_without_b) = mesh_unit(Some("poolb"));
+    for water in [&without_a, &without_b] {
+        assert_eq!(water.subsets.len(), 1);
+        assert!(water.has_water());
+    }
+
+    // Everything that the fingerprint took from the static before is the same for the two.
+    assert_eq!(without_a.bounding_sphere.center, without_b.bounding_sphere.center);
+    assert_eq!(without_a.bounding_sphere.radius, without_b.bounding_sphere.radius);
+    assert_eq!(without_a.bounding_box.min, without_b.bounding_box.min);
+    assert_eq!(without_a.bounding_box.max, without_b.bounding_box.max);
+    let (subset_a, subset_b) = (&without_a.subsets[0], &without_b.subsets[0]);
+    assert_eq!(subset_a.has_alpha, subset_b.has_alpha);
+    assert_eq!(subset_a.has_uv_controller, subset_b.has_uv_controller);
+    assert_eq!(subset_a.water, subset_b.water);
+    assert_eq!(subset_a.texture, subset_b.texture);
+    // The output is not the same: the two shapes have water of different colours.
+    assert_ne!(subset_a.vertices[0].color, subset_b.vertices[0].color);
+
+    assert_ne!(fingerprint_without_a, fingerprint_without_b);
+    assert_eq!(fingerprint_without_a, mesh_unit(Some("poola")).1);
+
+    // The names do not enter the fingerprint of a mesh that they do not make water.
+    let (ordinary, fingerprint_ordinary) = mesh_unit(None);
+    assert_eq!(ordinary.subsets.len(), 2);
+    assert!(!ordinary.has_water());
+    assert_eq!(fingerprint_ordinary, mesh_unit(Some("lake")).1);
+}
+
+#[test]
+fn the_dry_space_names_and_the_dry_space_key_change_the_fingerprint_of_a_mesh() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("meshes")).unwrap();
+    std::fs::create_dir_all(root.join("textures")).unwrap();
+    std::fs::write(root.join("meshes").join("pools.nif"), build_two_pool_nif()).unwrap();
+    std::fs::write(root.join("textures").join("pool.dds"), b"dds").unwrap();
+    let vfs = Vfs {
+        ini_path: root.join("Morrowind.ini"),
+        data_dirs: vec![root.to_path_buf()],
+        active_plugins: vec![],
+        archives: vec![],
+        maps: crate::vfs::directory_map::build_directory_map(&[root.to_path_buf()]).unwrap(),
+    };
+
+    let settings = GenerationSettings::default();
+    let usage = UsageInfo::default();
+    // The static of the mesh and its fingerprint, with this mask name in the water names and
+    // this dry space key in the mesh entry.
+    let mesh_unit = |mask_name: Option<&str>, dry_space: Option<bool>| {
+        let mut overrides = crate::StaticOverrides::default();
+        overrides.water_names.mask = mask_name.into_iter().map(str::to_owned).collect();
+        if dry_space.is_some() {
+            overrides.mesh_overrides.insert(
+                "pools.nif".to_owned(),
+                crate::StaticOverride {
+                    dry_space,
+                    ..Default::default()
+                },
+            );
+        }
+        let distant_static =
+            crate::DistantStatic::from_nif_with_identity("pools.nif", &vfs, 1.0, 0.0, false, 1.0, false, &overrides)
+                .distant_static
+                .expect("static of the mesh");
+        let mut distant_statics: DistantStatics = Default::default();
+        distant_statics.insert("pools.nif".to_owned(), distant_static.clone());
+
+        let source_info = HashMap::new();
+        let state = build_static_state(
+            &settings,
+            &Projections::capture(&usage, &settings, &overrides),
+            &ContentIdentityCollector::default(),
+            &usage,
+            &distant_statics,
+            &vfs,
+            &AtlasTextureSet::default(),
+            &source_info,
+            &SizingPlan::baseline(TextureAxisCaps::uniform(1024), &source_info),
+        );
+        assert_eq!(state.units.mesh.entries.len(), 1);
+        (distant_static, state.units.mesh.entries[0].1)
+    };
+
+    // Without a mask name the mesh is two ordinary shapes.
+    let (ordinary, fingerprint_ordinary) = mesh_unit(None, None);
+    assert_eq!(ordinary.subsets.len(), 2);
+    assert!(!ordinary.stays_alone());
+
+    // With the name one shape is a dry space, and the static stays out of the merges.
+    let (with_b, fingerprint_with_b) = mesh_unit(Some("poolb"), None);
+    assert_eq!(with_b.subsets.len(), 2);
+    assert!(with_b.stays_alone() && !with_b.has_water());
+    assert_ne!(fingerprint_ordinary, fingerprint_with_b);
+    assert_eq!(fingerprint_with_b, mesh_unit(Some("poolb"), None).1);
+
+    // Another name chooses another shape.
+    assert_ne!(fingerprint_with_b, mesh_unit(Some("poola"), None).1);
+
+    // The key of the mesh entry leaves the dry space out.
+    let (refused, fingerprint_refused) = mesh_unit(Some("poolb"), Some(false));
+    assert_eq!(refused.subsets.len(), 1);
+    assert!(!refused.stays_alone());
+    assert_ne!(fingerprint_refused, fingerprint_with_b);
+    assert_ne!(fingerprint_refused, fingerprint_ordinary);
 }

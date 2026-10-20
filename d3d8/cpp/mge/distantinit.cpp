@@ -113,6 +113,7 @@ IPC::VecId DistantLand::subsetsHostVecId = IPC::InvalidVector;
 VisibleSet DistantLand::visLandShared;
 VisibleSet DistantLand::visDistantShared;
 VisibleSet DistantLand::visGrassShared;
+VisibleSet DistantLand::visWaterShared;
 VisibleSet DistantLand::visExtraShared;
 IPC::VecView<IPC::DynVisFlag> DistantLand::dynVisFlagsShared;
 IPC::VecView<IPC::ResidencyPlan> DistantLand::residencyPlanShared;
@@ -121,6 +122,7 @@ IPC::VecView<IPC::ResidencyCommit> DistantLand::residencyCommitShared;
 IPC::VecId DistantLand::visLandSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visDistantSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visGrassSharedId = IPC::InvalidVector;
+IPC::VecId DistantLand::visWaterSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::visExtraSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::dynVisFlagsSharedId = IPC::InvalidVector;
 IPC::VecId DistantLand::residencyPlanSharedId = IPC::InvalidVector;
@@ -270,6 +272,21 @@ D3DXHANDLE DistantLand::ehFogRange;
 D3DXHANDLE DistantLand::ehFogNearStart;
 D3DXHANDLE DistantLand::ehFogNearRange;
 D3DXHANDLE DistantLand::ehNearViewRange;
+D3DXHANDLE DistantLand::ehWaterVolumeReflectRange;
+D3DXHANDLE DistantLand::ehWaterVolumeHandoff;
+D3DXHANDLE DistantLand::ehWaterVolumeSky;
+D3DXHANDLE DistantLand::ehWaterVolumeClarity;
+D3DXHANDLE DistantLand::ehWaterVolumeCaustics;
+D3DXHANDLE DistantLand::ehWaterVolumeLightPos;
+D3DXHANDLE DistantLand::ehWaterVolumeLightCol;
+D3DXHANDLE DistantLand::ehWaterVolumeLightFalloff;
+D3DXHANDLE DistantLand::ehWaterVolumeTint;
+D3DXHANDLE DistantLand::ehWaterPlaneTint;
+D3DXHANDLE DistantLand::ehWaterVolumeFlow;
+D3DXHANDLE DistantLand::ehWaterVolumeParams;
+D3DXHANDLE DistantLand::ehMeshTex0;
+D3DXHANDLE DistantLand::ehMeshTex1;
+D3DXHANDLE DistantLand::ehWaterVolumeMix;
 D3DXHANDLE DistantLand::ehWindVec;
 D3DXHANDLE DistantLand::ehNiceWeather;
 D3DXHANDLE DistantLand::ehTime;
@@ -506,6 +523,12 @@ bool DistantLand::initIpcVectors() {
     visGrassSharedId = grassVec.id();
     visGrassShared.SetVector((IpcClientVector(grassVec)));
 
+    auto maybeWaterVec = ipcClient.allocVecBlocking<RenderMesh>(1, 200000, 1);
+    if (!maybeWaterVec.has_value()) return false;
+    auto& waterVec = maybeWaterVec.value();
+    visWaterSharedId = waterVec.id();
+    visWaterShared.SetVector((IpcClientVector(waterVec)));
+
     auto maybeExtraVec = ipcClient.allocVecBlocking<RenderMesh>(1, 200000, 1);
     if (!maybeExtraVec.has_value()) return false;
     auto& extraVec = maybeExtraVec.value();
@@ -593,9 +616,79 @@ static const string shaderCoreModPrefix = "XE Mod";
 static const string pathCoreShaders = "Data Files\\shaders\\core\\";
 static const string pathCoreMods = "Data Files\\shaders\\core-mods\\";
 
+// The water shaders of mods: one file each in Data Files\shaders\water, with a pixel shader
+// named WaterShaderPS that takes the place of the standard one for the surfaces whose look
+// names the file. MGE writes an include and a pass for each file into the main effect, through
+// two include files that are empty on disk.
+static const string pathWaterShaders = "Data Files\\shaders\\water\\";
+static const string includeWaterShaders = "XE Water Shaders.fx";
+static const string includeWaterShaderPasses = "XE Water Shader Passes.fx";
+static const string prefixWaterShaderInclude = "water\\";
+
+// The names of the files that were found, lower case and without the extension, in the order
+// of their passes; and the ones that are part of the effect that is in use.
+static vector<string> waterShadersFound;
+static vector<string> waterShadersActive;
+
+static void findWaterShaders() {
+    waterShadersFound.clear();
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA((pathWaterShaders + "*.fx").c_str(), &entry);
+    if (search == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    do {
+        string name(entry.cFileName);
+        name.resize(name.length() - 3);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        waterShadersFound.push_back(name);
+    } while (FindNextFileA(search, &entry));
+    FindClose(search);
+    std::sort(waterShadersFound.begin(), waterShadersFound.end());
+}
+
+int DistantLand::waterShaderPass(const char* name) {
+    if (name == nullptr || name[0] == '\0') {
+        return -1;
+    }
+    for (size_t i = 0; i < waterShadersActive.size(); ++i) {
+        if (_stricmp(waterShadersActive[i].c_str(), name) == 0) {
+            return PASS_WATERSHADER_FIRST + 2 * static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 struct CoreModInclude : public ID3DXInclude {
     vector<string> modsFound;
     std::optional<string> testSingleMod;
+    // The water shaders to write into the effect; none for a compile without them.
+    vector<string> waterShaders;
+
+    // The text MGE writes in place of the two empty include files.
+    string waterShaderText(bool passes) const {
+        string text;
+        for (size_t i = 0; i < waterShaders.size(); ++i) {
+            const string n = std::to_string(i);
+            if (passes) {
+                // The pass for a surface near the player, then the one for the distant land.
+                for (const char* vertexShader : { "WaterVolumeVS", "WaterVolumeDistantVS" }) {
+                    text += "    Pass {\n"
+                        "        ZEnable = true;\n        ZWriteEnable = true;\n        ZFunc = LessEqual;\n"
+                        "        StencilEnable = false;\n        CullMode = none;\n"
+                        "        AlphaBlendEnable = false;\n        AlphaTestEnable = false;\n"
+                        "        VertexShader = compile vs_3_0 " + string(vertexShader) + "();\n"
+                        "        PixelShader = compile ps_3_0 WaterShaderPS_" + n + "();\n    }\n";
+                }
+            } else {
+                // Each file names its pixel shader WaterShaderPS; the define gives each a name of its own.
+                text += "#define WaterShaderPS WaterShaderPS_" + n + "\n"
+                    "#include \"" + prefixWaterShaderInclude + waterShaders[i] + ".fx\"\n"
+                    "#undef WaterShaderPS\n";
+            }
+        }
+        return text;
+    }
 
     STDMETHOD(Open)(D3DXINCLUDE_TYPE IncludeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID *ppData, UINT *pBytes) {
         string filename(pFileName), shaderPath = filename;
@@ -603,8 +696,19 @@ struct CoreModInclude : public ID3DXInclude {
         char *buffer = nullptr;
         HANDLE h;
 
+        if (!waterShaders.empty() && (filename == includeWaterShaders || filename == includeWaterShaderPasses)) {
+            const string text = waterShaderText(filename == includeWaterShaderPasses);
+            buffer = new char[text.length()];
+            memcpy(buffer, text.data(), text.length());
+            *ppData = buffer;
+            *pBytes = static_cast<UINT>(text.length());
+            return S_OK;
+        }
+
         // Check if it uses the core shader path prefix, if not, add the prefix
-        if (filename.compare(0, pathCoreShaders.length(), pathCoreShaders) != 0) {
+        if (filename.compare(0, prefixWaterShaderInclude.length(), prefixWaterShaderInclude) == 0) {
+            shaderPath = pathWaterShaders + filename.substr(prefixWaterShaderInclude.length());
+        } else if (filename.compare(0, pathCoreShaders.length(), pathCoreShaders) != 0) {
             shaderPath = pathCoreShaders + filename;
         }
 
@@ -674,6 +778,14 @@ static bool createCoreEffectWithMods(const char *name, IDirect3DDevice9* device,
     CoreModInclude includer;
     HRESULT hr;
 
+    // The water shaders of mods are part of the main effect.
+    const bool withWaterShaders = _stricmp(name, "XE Main.fx") == 0;
+    if (withWaterShaders) {
+        findWaterShaders();
+        waterShadersActive.clear();
+        includer.waterShaders = waterShadersFound;
+    }
+
     // Try all core shader macros together first. On failure, test each one to report the
     // offending mod, then fall back to compiling without core mods.
     hr = D3DXCreateEffectFromFile(device, path.c_str(), &*features.begin(), &includer, coreShaderCompileFlags|D3DXFX_LARGEADDRESSAWARE, effectPool, pEffect, &errors);
@@ -683,7 +795,44 @@ static bool createCoreEffectWithMods(const char *name, IDirect3DDevice9* device,
                 LOG::logline("-- Using core mod %s", m.c_str());
             }
         }
+        if (withWaterShaders) {
+            waterShadersActive = includer.waterShaders;
+            for (auto& w : waterShadersActive) {
+                LOG::logline("-- Using water shader %s%s.fx", pathWaterShaders.c_str(), w.c_str());
+            }
+        }
         return true;
+    } else if (withWaterShaders && !waterShadersFound.empty()) {
+        // A water shader of a mod can be what fails. Name each one that does not compile, and
+        // go on without water shaders: their surfaces then have the standard shading.
+        if (errors) {
+            errors->Release();
+        }
+        includer.modsFound.clear();
+        includer.waterShaders.clear();
+        hr = D3DXCreateEffectFromFile(device, path.c_str(), &*features.begin(), &includer, coreShaderCompileFlags|D3DXFX_LARGEADDRESSAWARE, effectPool, pEffect, &errors);
+        if (hr == D3D_OK) {
+            LOG::logline("!! Core shader %s failed to compile with the water shaders of mods. They are disabled. Checking for errors...", name);
+            StatusOverlay::setStatus("Water shader error. Water shaders of mods are disabled for this session. Check mgeXE.log for error details.", StatusOverlay::PriorityError);
+            for (const auto& w : waterShadersFound) {
+                ID3DXEffect *testEffect;
+                includer.modsFound.clear();
+                includer.waterShaders = { w };
+                hr = D3DXCreateEffectFromFile(device, path.c_str(), &*features.begin(), &includer, D3DXSHADER_OPTIMIZATION_LEVEL0|D3DXSHADER_NO_PRESHADER|D3DXFX_LARGEADDRESSAWARE, effectPool, &testEffect, &errors);
+                if (hr == D3D_OK) {
+                    testEffect->Release();
+                } else {
+                    LOG::logline("!! Water shader %s%s.fx failed to compile. Disable or remove it until it is fixed.", pathWaterShaders.c_str(), w.c_str());
+                    logShaderError(errors);
+                }
+            }
+            return true;
+        }
+        LOG::logline("!! Core shader %s failed to compile with core-mods. All core-mods are disabled. Checking for errors...", name);
+        StatusOverlay::setStatus("Shader core mod error. Core mods are disabled for this session. Check mgeXE.log for error details.", StatusOverlay::PriorityError);
+        if (errors) {
+            errors->Release();
+        }
     } else {
         LOG::logline("!! Core shader %s failed to compile with core-mods. All core-mods are disabled. Checking for errors...", name);
         StatusOverlay::setStatus("Shader core mod error. Core mods are disabled for this session. Check mgeXE.log for error details.", StatusOverlay::PriorityError);
@@ -754,6 +903,9 @@ static const D3DXMACRO macroExpFog = { "USE_EXPFOG", "" };
 static const D3DXMACRO macroScattering = { "USE_SCATTERING", "" };
 static const D3DXMACRO macroFilterReflection = { "FILTER_WATER_REFLECTION", "" };
 static const D3DXMACRO macroDynamicRipples = { "DYNAMIC_RIPPLES", "" };
+static const D3DXMACRO macroWaterVolumeShadows = { "WATER_VOLUME_SHADOWS", "" };
+static const D3DXMACRO macroWaterVolumeLights = { "WATER_VOLUME_LIGHTS", "" };
+static const D3DXMACRO macroWaterVolumeCaustics = { "WATER_VOLUME_CAUSTICS", "" };
 static const D3DXMACRO macroTerminator = { 0, 0 };
 
 bool DistantLand::initShader() {
@@ -781,6 +933,16 @@ bool DistantLand::initShader() {
     }
     if (Configuration.MGEFlags & DYNAMIC_RIPPLES) {
         features.push_back(macroDynamicRipples);
+    }
+    // Light on water volumes: each option is code in the water shading only when it is on.
+    if (Configuration.WaterVolume.Shadows) {
+        features.push_back(macroWaterVolumeShadows);
+    }
+    if (Configuration.WaterVolume.PointLights) {
+        features.push_back(macroWaterVolumeLights);
+    }
+    if (Configuration.WaterVolume.Caustics) {
+        features.push_back(macroWaterVolumeCaustics);
     }
     features.push_back(macroTerminator);
 
@@ -848,6 +1010,21 @@ bool DistantLand::initShader() {
     ehFogNearStart = effect->GetParameterByName(0, "nearFogStart");
     ehFogNearRange = effect->GetParameterByName(0, "nearFogRange");
     ehNearViewRange = effect->GetParameterByName(0, "nearViewRange");
+    ehWaterVolumeReflectRange = effect->GetParameterByName(0, "waterVolumeReflectRange");
+    ehWaterVolumeHandoff = effect->GetParameterByName(0, "waterVolumeHandoff");
+    ehWaterVolumeSky = effect->GetParameterByName(0, "waterVolumeSky");
+    ehWaterVolumeClarity = effect->GetParameterByName(0, "waterVolumeClarity");
+    ehWaterVolumeCaustics = effect->GetParameterByName(0, "waterVolumeCaustics");
+    ehWaterVolumeLightPos = effect->GetParameterByName(0, "waterVolumeLightPos");
+    ehWaterVolumeLightCol = effect->GetParameterByName(0, "waterVolumeLightCol");
+    ehWaterVolumeLightFalloff = effect->GetParameterByName(0, "waterVolumeLightFalloff");
+    ehWaterVolumeTint = effect->GetParameterByName(0, "waterVolumeTint");
+    ehWaterPlaneTint = effect->GetParameterByName(0, "waterPlaneTint");
+    ehWaterVolumeFlow = effect->GetParameterByName(0, "waterVolumeFlow");
+    ehWaterVolumeParams = effect->GetParameterByName(0, "waterVolumeParams");
+    ehMeshTex0 = effect->GetParameterByName(0, "texMesh0");
+    ehMeshTex1 = effect->GetParameterByName(0, "texMesh1");
+    ehWaterVolumeMix = effect->GetParameterByName(0, "waterVolumeMix");
     ehWindVec = effect->GetParameterByName(0, "windVec");
     ehNiceWeather = effect->GetParameterByName(0, "niceWeather");
     ehTime = effect->GetParameterByName(0, "time");

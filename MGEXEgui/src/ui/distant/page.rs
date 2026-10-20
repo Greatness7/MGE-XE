@@ -180,6 +180,30 @@ fn water_card(ui: &mut Ui, settings: &mut WaterSettings, enablement: DistantEnab
             ),
             t!("distant.water.caustics_tip"),
         );
+        tooltip(
+            spin_row(
+                ui,
+                t!("distant.water.volume_reflection").as_ref(),
+                true,
+                egui::DragValue::new(&mut settings.volume_reflection_cells)
+                    .range(0.0..=64.0)
+                    .speed(0.25),
+            ),
+            t!("distant.water.volume_reflection_tip"),
+        );
+        caption_row(ui, t!("distant.water.volume_light").as_ref());
+        tooltip(
+            ui.checkbox(&mut settings.volume_shadows, t!("distant.water.volume_shadows")),
+            t!("distant.water.volume_shadows_tip"),
+        );
+        tooltip(
+            ui.checkbox(&mut settings.volume_point_lights, t!("distant.water.volume_point_lights")),
+            t!("distant.water.volume_point_lights_tip"),
+        );
+        tooltip(
+            ui.checkbox(&mut settings.volume_caustics, t!("distant.water.volume_caustics")),
+            t!("distant.water.volume_caustics_tip"),
+        );
     });
 }
 

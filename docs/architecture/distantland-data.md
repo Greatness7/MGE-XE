@@ -71,7 +71,7 @@ the fixed `Data Files\distantland\terrain.bin`:
 face-count mechanism end-to-end.
 
 `XESTAT06` v6 has a 160-byte header, `static_count` 52-byte static records (type, bounds,
-subset range), `subset_count` 152-byte subset records, a component table, a 16-byte-per-entry
+subset range), `subset_count` 168-byte subset records, a component table, a 16-byte-per-entry
 UV-bound palette table, a texture-path string table, then the geometry blob (16-bit indices).
 Both vertex layouts are 20 bytes and the stride is still selected per static via
 `grass_vertex_stride`: for regular statics `position.w` is an ordinal into the subset's palette,
@@ -93,7 +93,8 @@ and reserved bytes. v5 appends:
 | 132 | `component_count: u32` | Total component records across all subsets. |
 
 `SubsetRecord` still carries bounds, texture path offset, flags
-`hasAlpha`/`hasUVController`, vertex/face counts, geometry offsets, and the 56-byte
+`hasAlpha`/`hasUVController` and the two distant water bits (bit 2 water, bit 3 water that
+reflects the sky only), vertex/face counts, geometry offsets, and the 56-byte
 `HorizonFootprint` at offset 80. v5 appends `first_component_index: u32` at offset 136
 and `component_count: u32` at offset 140. A component-less subset is valid and means all
 tiers draw the full subset.

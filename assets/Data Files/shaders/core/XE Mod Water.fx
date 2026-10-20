@@ -163,7 +163,7 @@ float4 WaterPS(in WaterVertOut IN): COLOR0
 
     // Define fog
     float4 fog = fogColourWater(EyeVec, dist);
-    float3 depthColor = fogApply(depthBaseColor, fog);
+    float3 depthColor = fogApply(waterDepthBase(depthBaseColor, waterPlaneTint), fog);
 
     // Calculate water normal
     float3 normal = getFinalWaterNormal(IN.texcoords.xy, IN.texcoords.zw, dist, IN.pos.xy);
@@ -189,6 +189,7 @@ float4 WaterPS(in WaterVertOut IN): COLOR0
         // Get distorted depth
         depth = max(0, tex2Dproj(sampDepth, newscrpos).r - IN.screenpos.w);
         depth /= dot(EyeVec, float3(view[0][2], view[1][2], view[2][2]));
+        refracted *= waterTransmission(waterPlaneTint, depth);
 
         // Small scale shoreline animation
         depth += 300 * (0.95 - normal.z);
