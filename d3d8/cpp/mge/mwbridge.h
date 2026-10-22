@@ -71,6 +71,9 @@ public:
 
     void GetSunDir(float& x, float& y, float& z);
     BYTE GetSunVis();
+    // The TES3 radius a point light's D3D attenuation was derived from, or 0
+    // when the coefficients do not encode one.
+    float pointLightRadius(float constant, float linear, float quadratic);
     void setSunriseSunset(float rise_time, float rise_dur, float set_time, float set_dur);
 
     DWORD IntCurCellAddr();

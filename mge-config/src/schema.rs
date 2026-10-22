@@ -43,6 +43,8 @@ pub const FOG_INTERIOR_START_RANGE: (f32, f32) = (-0.9, 299.9);
 pub const FOG_INTERIOR_END_RANGE: (f32, f32) = (0.1, 300.0);
 // Same span as the per-weather wind factors it stands in for.
 pub const GRASS_INTERIOR_WIND_RANGE: (f32, f32) = (0.0, 1.0);
+// Multiples of a light's radius; below 1 a light would reach zero inside its own radius.
+pub const PER_PIXEL_LIGHT_FADE_RADIUS_RANGE: (f32, f32) = (1.0, 5.0);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -471,6 +473,8 @@ pub struct DistantLandSettings {
     pub shadows: ShadowSettings,
     pub per_pixel_lighting: bool,
     pub per_pixel_mode: PerPixelMode,
+    pub per_pixel_light_fade: bool,
+    pub per_pixel_light_fade_radius: f32,
     pub horizon: HorizonSettings,
     pub weather: WeatherSet,
 }
@@ -498,6 +502,8 @@ impl Default for DistantLandSettings {
             shadows: ShadowSettings::default(),
             per_pixel_lighting: false,
             per_pixel_mode: PerPixelMode::Always,
+            per_pixel_light_fade: false,
+            per_pixel_light_fade_radius: 1.75,
             horizon: HorizonSettings::default(),
             weather: WeatherSet::default(),
         }

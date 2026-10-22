@@ -14,6 +14,7 @@ shared float3 lightSunDirection;
 shared float4 lightPosition[6];
 shared float4 lightFalloffQuadratic[2], lightFalloffLinear[2];
 shared float lightFalloffConstant;
+shared float4 lightFadeInvRadius[2];
 shared matrix texgenTransform;
 shared float4 bumpMatrix;
 shared float2 bumpLumiScaleBias;
@@ -95,6 +96,13 @@ float4 calcLighting4(float4 lightvec[3*LGs], int group, float3 normal) {
     // Attenuation
     float4 att = 1.0 / (lightFalloffQuadratic[group] * dist2 + lightFalloffConstant);
     // (slower) float4 att = 1.0 / (lightFalloffQuadratic[group] * dist2 + lightFalloffLinear[group] * dist + lightFalloffConstant);
+
+    // Fade to zero over the last quarter of each light's cutoff distance.
+    // An inverse radius of 0 leaves the light unchanged.
+    float4 fade = saturate(4 * dist * lightFadeInvRadius[group] - 3);
+    fade = 1 - fade * fade;
+    att *= fade * fade;
+
     return (lambert + lightAmbient[group]) * att;
 }
 

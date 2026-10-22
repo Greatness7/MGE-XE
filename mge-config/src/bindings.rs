@@ -191,6 +191,8 @@ impl Settings {
             "distant_land.shadows.map_resolution" => self.distant_land.shadows.map_resolution.into(),
             "distant_land.per_pixel_lighting" => bool_number(self.distant_land.per_pixel_lighting),
             "distant_land.per_pixel_mode" => self.distant_land.per_pixel_mode.runtime_value().into(),
+            "distant_land.per_pixel_light_fade" => bool_number(self.distant_land.per_pixel_light_fade),
+            "distant_land.per_pixel_light_fade_radius" => self.distant_land.per_pixel_light_fade_radius.into(),
             "distant_land.horizon.culling" => bool_number(self.distant_land.horizon.culling),
             "distant_land.horizon.height_bias" => self.distant_land.horizon.height_bias.into(),
             "distant_land.horizon.object_bias" => self.distant_land.horizon.object_bias.into(),
@@ -330,6 +332,10 @@ impl Settings {
             "distant_land.per_pixel_mode" => {
                 self.distant_land.per_pixel_mode = PerPixelMode::from_runtime(integer::<u32>(value, path)?)
                     .ok_or_else(|| format!("{path} has unknown runtime enum value {value}"))?
+            }
+            "distant_land.per_pixel_light_fade" => self.distant_land.per_pixel_light_fade = number_bool(value, path)?,
+            "distant_land.per_pixel_light_fade_radius" => {
+                self.distant_land.per_pixel_light_fade_radius = finite_f32(value, path)?
             }
             "distant_land.horizon.culling" => self.distant_land.horizon.culling = number_bool(value, path)?,
             "distant_land.horizon.height_bias" => self.distant_land.horizon.height_bias = finite_f32(value, path)?,

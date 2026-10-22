@@ -22,8 +22,18 @@ static constexpr uint64_t DXVK_MORROWIND_CAP_PPL_DRAW_V2 = 1ull << 2;
 // outright rather than inferred from the packet version: a build could speak
 // V2 packets while its ordinary fixed-function path still stopped at 8.
 static constexpr uint64_t DXVK_MORROWIND_CAP_EXPANDED_LIGHT_LIMIT = 1ull << 3;
+// DrawPplV1 also accepts DxvkMorrowindPplDrawV3. A build advertising this
+// still accepts version 2 packets.
+static constexpr uint64_t DXVK_MORROWIND_CAP_PPL_DRAW_V3 = 1ull << 4;
+// The ordinary fixed-function path fades a light to zero over the last
+// quarter of D3DLIGHT9::Range, where D3D9 specifies a step. Stated outright
+// for the same reason as the expanded light limit: it describes the ordinary
+// path, which no packet version speaks for. A client that writes a finite
+// Range to a renderer without this gets the step, on every vertex past it.
+static constexpr uint64_t DXVK_MORROWIND_CAP_SOFT_LIGHT_RANGE = 1ull << 5;
 
 static constexpr uint32_t DXVK_MORROWIND_PPL_STRUCT_VERSION = 2;
+static constexpr uint32_t DXVK_MORROWIND_PPL_STRUCT_VERSION_V3 = 3;
 static constexpr uint32_t DXVK_MORROWIND_PPL_MAX_STAGES = 6;
 
 enum DxvkMorrowindPplFlags : uint32_t {
@@ -111,6 +121,22 @@ static_assert(sizeof(DxvkMorrowindPplStageV1) == 32,
     "Unexpected Morrowind PPL stage ABI size");
 static_assert(sizeof(DxvkMorrowindPplDrawV1) == 1956,
     "Unexpected Morrowind PPL draw ABI size");
+
+// Version 3 appends to the version 2 packet, which stays a valid prefix: the
+// client passes &base to DrawPplV1, with base.structSize and
+// base.structVersion describing the whole struct.
+struct DxvkMorrowindPplDrawV3 {
+    DxvkMorrowindPplDrawV1 base;
+
+    // Reciprocal of each point light's cutoff distance. The light fades to
+    // zero over the last quarter of that distance; 0 disables the fade.
+    float lightFadeInvRadius[DXVK_MORROWIND_PPL_MAX_LIGHTS];
+};
+
+static_assert(std::is_standard_layout<DxvkMorrowindPplDrawV3>::value,
+    "Morrowind PPL draw V3 ABI must be standard layout");
+static_assert(sizeof(DxvkMorrowindPplDrawV3) == 2084,
+    "Unexpected Morrowind PPL draw V3 ABI size");
 
 // The packet layout is a function of the light count, but the client
 // negotiates on the capability bit and the struct version. A build that

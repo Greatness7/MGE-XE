@@ -2,9 +2,12 @@
 #include "ffeshader.h"
 #include "camerarelative.h"
 #include "configuration.h"
+#include "mwbridge.h"
 #include "support/log.h"
+#include "tes3/nitypes.h"
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -23,6 +26,21 @@ using std::unordered_map;
 // D3DXSHADER_NO_PRESHADER folds the math back into the shader, where it is a handful of
 // extra instructions on constant registers.
 static const DWORD MGE_FFE_COMPILE_FLAGS = D3DXSHADER_OPTIMIZATION_LEVEL3 | D3DXSHADER_NO_PRESHADER;
+
+// Record radii below this still fade over a usable distance. OpenMW applies
+// the same floor.
+static constexpr float kMinFadeRadius = 16.0f;
+
+// Morrowind retests an object's lights only after it moves 64 units, and a
+// light carried by an actor only after that actor does. Attaching lights this
+// far beyond their fade radius covers both moving at once plus a frame of fast
+// movement, so a light is never attached or detached while it reaches the object.
+static constexpr int kLightAttachMargin = 160;
+
+// One cell, the upper bound lightFadeCutoff applies. No light record comes near
+// it; it is there to keep a malformed coefficient from reaching the int cast in
+// lightAttachRadius or from lighting the whole cell.
+static constexpr float kMaxFadeRadius = 8192.0f;
 
 DecodedPointLight decodeMorrowindPointLight(
     const D3DCOLORVALUE& diffuse,
@@ -73,6 +91,7 @@ D3DXHANDLE FixedFunctionShader::ehMaterialDiffuse, FixedFunctionShader::ehMateri
 D3DXHANDLE FixedFunctionShader::ehLightSceneAmbient, FixedFunctionShader::ehLightSunDiffuse, FixedFunctionShader::ehLightDiffuse;
 D3DXHANDLE FixedFunctionShader::ehLightSunDirection, FixedFunctionShader::ehLightPosition, FixedFunctionShader::ehLightAmbient;
 D3DXHANDLE FixedFunctionShader::ehLightFalloffQuadratic, FixedFunctionShader::ehLightFalloffLinear, FixedFunctionShader::ehLightFalloffConstant;
+D3DXHANDLE FixedFunctionShader::ehLightFadeInvRadius;
 D3DXHANDLE FixedFunctionShader::ehTexgenTransform, FixedFunctionShader::ehBumpMatrix, FixedFunctionShader::ehBumpLumiScaleBias;
 
 float FixedFunctionShader::sunMultiplier, FixedFunctionShader::ambMultiplier;
@@ -83,6 +102,7 @@ std::mutex FixedFunctionShader::compileMutex;
 unordered_map<FixedFunctionShader::ShaderKey, ID3DXBuffer*, FixedFunctionShader::ShaderKey::hasher> FixedFunctionShader::precompiled;
 
 IDxvkMorrowindPplInterop1* FixedFunctionShader::m_morrowindInterop = nullptr;
+bool FixedFunctionShader::m_nativePplFade = false;
 FixedFunctionShader::PplSceneState FixedFunctionShader::m_pplSceneState = {};
 unsigned long long FixedFunctionShader::m_nativePplDraws = 0;
 unsigned long long FixedFunctionShader::m_nativePplUnavailable = 0;
@@ -130,6 +150,7 @@ bool FixedFunctionShader::init(IDirect3DDevice* d, ID3DXEffectPool* pool) {
     device = d;
     constantPool = pool;
     indexedSkinningShadersCompatible = false;
+    m_nativePplFade = false;
     m_pplSceneState = PplSceneState();
     m_nativePplDraws = 0;
     m_nativePplUnavailable = 0;
@@ -156,10 +177,14 @@ bool FixedFunctionShader::init(IDirect3DDevice* d, ID3DXEffectPool* pool) {
                 m_morrowindInterop->Release();
                 m_morrowindInterop = nullptr;
             } else {
+                m_nativePplFade = (capabilities & DXVK_MORROWIND_CAP_PPL_DRAW_V3) != 0;
                 LOG::logline(
                     "-- Native PPL packets armed (caps 0x%08lx%08lx)",
                     static_cast<unsigned long>(capabilities >> 32),
                     static_cast<unsigned long>(capabilities));
+                if (Configuration.PerPixelLightFade && !m_nativePplFade) {
+                    LOG::logline("-- Native PPL packets predate the light fade; only legacy draws will fade");
+                }
             }
         }
     }
@@ -213,6 +238,7 @@ bool FixedFunctionShader::init(IDirect3DDevice* d, ID3DXEffectPool* pool) {
     ehLightFalloffQuadratic = effect->GetParameterByName(0, "lightFalloffQuadratic");
     ehLightFalloffLinear = effect->GetParameterByName(0, "lightFalloffLinear");
     ehLightFalloffConstant = effect->GetParameterByName(0, "lightFalloffConstant");
+    ehLightFadeInvRadius = effect->GetParameterByName(0, "lightFadeInvRadius");
     ehTexgenTransform = effect->GetParameterByName(0, "texgenTransform");
     ehBumpMatrix = effect->GetParameterByName(0, "bumpMatrix");
     ehBumpLumiScaleBias = effect->GetParameterByName(0, "bumpLumiScaleBias");
@@ -355,6 +381,55 @@ void FixedFunctionShader::precacheAsync() {
     });
 }
 
+float FixedFunctionShader::lightFadeCutoff(float recoveredRadius) {
+    if (!Configuration.PerPixelLightFade || recoveredRadius <= 0) {
+        return 0.0f;
+    }
+
+    // A zero fade radius would divide to infinity in the shader, saturate the
+    // fade to one and extinguish every point light. The schema clamps the
+    // multiplier to [1, 5], but nothing between there and here rechecks it, and
+    // the failure would be total rather than local. The upper bound is one cell:
+    // the recovered radius is a division, so a coefficient outside what the
+    // engine can produce would yield an enormous one, and past INT_MAX the cast
+    // in lightAttachRadius is undefined.
+    const float fadeRadius = Configuration.PerPixelLightFadeRadius * std::max(recoveredRadius, kMinFadeRadius);
+    return fadeRadius > 0 ? std::min(fadeRadius, kMaxFadeRadius) : 0.0f;
+}
+
+// Whether every renderer currently drawing lit objects fades the lights.
+bool FixedFunctionShader::lightFadeActive() {
+    if (!Configuration.PerPixelLightFade || !(Configuration.MGEFlags & USE_FFESHADER)) {
+        return false;
+    }
+
+    // Native packets to a renderer without the version 3 packet do not fade.
+    if (m_morrowindInterop && !m_nativePplFade) {
+        return false;
+    }
+
+    // Interiors-only per-pixel lighting leaves exteriors to fixed-function lighting.
+    return !(Configuration.PerPixelLightFlags == 1 && !MWBridge::get()->IntCurCellAddr());
+}
+
+int __cdecl FixedFunctionShader::lightAttachRadius(const NI::PointLight* light, int radius) {
+    if (!light || !lightFadeActive()) {
+        return radius;
+    }
+
+    // The fade uses this same recovered radius, and not the one the engine
+    // passed, so the two agree even where the recovery is wrong. A light the
+    // fade cannot place has no cutoff and keeps the engine's own reach.
+    const float cutoff = lightFadeCutoff(MWBridge::get()->pointLightRadius(
+        light->constantAttenuation, light->linearAttenuation, light->quadraticAttenuation));
+    if (cutoff <= 0) {
+        return radius;
+    }
+
+    const int attach = static_cast<int>(std::ceil(cutoff)) + kLightAttachMargin;
+    return std::max(radius, attach);
+}
+
 void FixedFunctionShader::updateLighting(float sunMult, float ambMult) {
     sunMultiplier = sunMult;
     ambMultiplier = ambMult;
@@ -429,6 +504,10 @@ void FixedFunctionShader::buildPplDrawData(
             out->lightAmbient[pointLightCount] = decoded.ambient;
             out->lightFalloffLinear[pointLightCount] = decoded.attenuation.y;
             out->lightFalloffQuadratic[pointLightCount] = decoded.attenuation.z;
+            const float fadeCutoff = lightFadeCutoff(light->radius);
+            if (fadeCutoff > 0) {
+                out->lightFadeInvRadius[pointLightCount] = 1.0f / fadeCutoff;
+            }
 
             ++pointLightCount;
         } else if (light->type == D3DLIGHT_DIRECTIONAL) {
@@ -504,6 +583,7 @@ void FixedFunctionShader::renderMorrowindLegacy(
     effectFFE->SetFloatArray(ehLightFalloffQuadratic, data.lightFalloffQuadratic, MGE_LEGACY_PPL_MAX_LIGHTS);
     effectFFE->SetFloatArray(ehLightFalloffLinear, data.lightFalloffLinear, MGE_LEGACY_PPL_MAX_LIGHTS);
     effectFFE->SetFloat(ehLightFalloffConstant, data.lightFalloffConstant);
+    effectFFE->SetFloatArray(ehLightFadeInvRadius, data.lightFadeInvRadius, MGE_LEGACY_PPL_MAX_LIGHTS);
 
     if (data.key.usesBumpmap) {
         effectFFE->SetFloatArray(ehBumpMatrix, data.bumpMatrix, 4);
@@ -576,13 +656,13 @@ void FixedFunctionShader::renderMorrowind(
     // Decide the renderer before packing: the native packet takes 32 point
     // lights, the legacy effect exactly 8. Every early-out of the native path
     // has to be settled here, so that an unsupported draw packs once.
-    DxvkMorrowindPplDrawV1 packet;
+    DxvkMorrowindPplDrawV3 packet;
     bool useNative = false;
 
     if (Configuration.EnableNativePplPackets) {
         if (!m_morrowindInterop || !m_pplSceneState.initialized) {
             ++m_nativePplUnavailable;
-        } else if (!encodeNativePplKey(key, &packet)) {
+        } else if (!encodeNativePplKey(key, &packet.base)) {
             ++m_nativePplUnsupported;
             if (!m_loggedNativePplUnsupported) {
                 m_loggedNativePplUnsupported = true;
@@ -719,6 +799,7 @@ void FixedFunctionShader::release() {
         m_morrowindInterop->Release();
         m_morrowindInterop = nullptr;
     }
+    m_nativePplFade = false;
     m_pplSceneState = PplSceneState();
 
     for (auto& kv : precompiled) {

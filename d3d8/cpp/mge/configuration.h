@@ -116,6 +116,9 @@ struct ConfigurationStruct {
     bool EnableIndexedSkinning;
     // Camera-relative rendering of the Morrowind near scene (see camerarelative.h).
     bool EnableCameraRelativeRendering;
+    // Per-pixel point lights fade to zero before this multiple of their radius.
+    bool PerPixelLightFade;
+    float PerPixelLightFadeRadius;
 
     struct {
         float zoom, zoomRate, zoomRateTarget;

@@ -10,6 +10,7 @@
 #include "tes3/tes3types.h"
 #include "assert.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -455,6 +456,85 @@ void MWBridge::GetSunDir(float& x, float& y, float& z) {
 BYTE MWBridge::GetSunVis() {
     assert(m_loaded);
     return weatherController()->shTriSunBase->modelData->color[0].a;
+}
+
+//-----------------------------------------------------------------------------
+
+// Both of the engine's derivations start from an integer radius, so the right
+// inversion comes back as one, to within the rounding of a float that went
+// through a division and a square root. The allowance is capped: left to grow
+// with the radius it would pass any wrong reading that came out large enough.
+static bool isIntegerRadius(float radius) {
+    const float allowance = std::min(0.01f + 1e-5f * radius, 0.1f);
+    return std::fabs(radius - std::round(radius)) <= allowance;
+}
+
+// Inverts the two ways Morrowind derives point-light attenuation from a radius.
+// The coefficients reach D3D unchanged, so each inversion is exact up to
+// rounding, but the coefficients do not always say which one applies; see the
+// first branch. A radius that cannot be recovered is returned as 0 and does
+// not fade.
+float MWBridge::pointLightRadius(float constant, float linear, float quadratic) {
+    using namespace TES3::Address;
+    float radius = 0.0f;
+
+    // EntityLight::createLightOnReference copies the INI constant as-is, which is
+    // what identifies its lights. OutQuadInLin enables the linear term indoors
+    // and the quadratic term outdoors, whatever their own flags say. Which of
+    // the two the light was created in is not tested here, and need not be: the
+    // term the engine skipped was left at zero, so the coefficient guards below
+    // reject that branch on their own.
+    const auto flags = globalAt<unsigned int>(LightAttenuation_Flags);
+    const bool quadraticInLinear = globalAt<BYTE>(LightAttenuation_QuadraticInLinear) != 0;
+    const float iniConstant = (flags & 1) ? globalAt<float>(LightAttenuation_ConstantValue) : 0.0f;
+
+    const int quadraticMethod = globalAt<int>(LightAttenuation_QuadraticMethod);
+    const float quadraticValue = globalAt<float>(LightAttenuation_QuadraticValue);
+    const int linearMethod = globalAt<int>(LightAttenuation_LinearMethod);
+    const float linearValue = globalAt<float>(LightAttenuation_LinearValue);
+
+    if (constant == iniConstant
+     && quadratic > 0 && quadraticValue > 0 && quadraticMethod != 0
+     && ((flags & 4) || quadraticInLinear)) {
+        // Method 1 divides by the radius before the multiplier is applied.
+        radius = quadraticMethod == 1
+            ? quadraticValue / quadratic
+            : std::sqrt(quadraticValue / quadratic)
+                / globalAt<float>(LightAttenuation_QuadraticRadiusMultiplier);
+
+        // With no INI constant, a body light from setLightEffectFalloff has this
+        // same shape: constant 0, linear 0, quadratic positive. That is every
+        // spell and projectile light and every light an actor carries, torches
+        // included. Read as a record light, its radius comes out
+        // sqrt(quadraticValue / 10) times too long under method 2, and
+        // quadraticValue * r / 10 times under method 1, which puts a torch out
+        // at the one-cell cap: attached to every node in reach, and first in
+        // each node's list, which the engine sorts by distance less radius.
+        // Usually only one reading comes back as an integer. When both do, as
+        // they always will for a quadraticValue of 10, the record reading
+        // stands: the longer one costs slots but changes no pixel, while a
+        // record light read short would visibly shrink. A record light is
+        // never taken for a body light, since its own reading is an integer.
+        if (constant == 0 && linear == 0) {
+            const float bodyRadius = std::sqrt(10.0f / quadratic);
+            if (isIntegerRadius(bodyRadius) && !isIntegerRadius(radius)) {
+                radius = bodyRadius;
+            }
+        }
+    } else if (constant == iniConstant
+     && linear > 0 && linearValue > 0 && linearMethod != 0
+     && ((flags & 2) || quadraticInLinear)) {
+        radius = (linearMethod == 2 ? std::sqrt(linearValue / linear) : linearValue / linear)
+            / globalAt<float>(LightAttenuation_LinearRadiusMultiplier);
+    } else if (constant == 0 && linear == 0 && quadratic > 0) {
+        // MobileObject::setLightEffectFalloff: spell and projectile lights, and
+        // through EntityLight::setupInternalLight every light an actor carries.
+        // Reached directly whenever the INI has a constant or no quadratic term,
+        // which covers the stock INI and the one MGE recommends.
+        radius = std::sqrt(10.0f / quadratic);
+    }
+
+    return radius > 0 ? radius : 0.0f;
 }
 
 //-----------------------------------------------------------------------------

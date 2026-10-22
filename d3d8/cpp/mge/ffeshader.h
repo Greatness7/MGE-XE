@@ -15,6 +15,10 @@
 // the native packet maximum.
 static constexpr uint32_t MGE_LEGACY_PPL_MAX_LIGHTS = 8;
 
+namespace NI {
+    struct PointLight;
+}
+
 
 
 struct RenderedState {
@@ -67,6 +71,7 @@ struct LightState {
             D3DVECTOR falloff;  // constant, linear, quadratic
             D3DVECTOR ambient;  // for directional lights
         };
+        float radius;           // recovered TES3 radius, 0 if unknown
     };
 
     D3DCOLORVALUE globalAmbient;
@@ -150,6 +155,8 @@ class FixedFunctionShader {
         float lightFalloffQuadratic[DXVK_MORROWIND_PPL_MAX_LIGHTS];
         float lightFalloffLinear[DXVK_MORROWIND_PPL_MAX_LIGHTS];
         float lightFalloffConstant;
+        // Reciprocal cutoff distance per light; 0 when the light does not fade.
+        float lightFadeInvRadius[DXVK_MORROWIND_PPL_MAX_LIGHTS];
 
         float bumpMatrix[4];
         float bumpLumiScaleBias[2];
@@ -200,11 +207,14 @@ class FixedFunctionShader {
     static D3DXHANDLE ehLightSceneAmbient, ehLightSunDiffuse, ehLightSunDirection;
     static D3DXHANDLE ehLightDiffuse, ehLightAmbient, ehLightPosition;
     static D3DXHANDLE ehLightFalloffQuadratic, ehLightFalloffLinear, ehLightFalloffConstant;
+    static D3DXHANDLE ehLightFadeInvRadius;
     static D3DXHANDLE ehTexgenTransform, ehBumpMatrix, ehBumpLumiScaleBias;
 
     static float sunMultiplier, ambMultiplier;
 
     static IDxvkMorrowindPplInterop1* m_morrowindInterop;
+    // The renderer accepts version 3 packets, which carry the light fade.
+    static bool m_nativePplFade;
     static PplSceneState m_pplSceneState;
     static unsigned long long m_nativePplDraws;
     static unsigned long long m_nativePplUnavailable;
@@ -227,12 +237,14 @@ class FixedFunctionShader {
     static bool renderMorrowindNative(
         const RenderedState* rs,
         const PplDrawData& data,
-        DxvkMorrowindPplDrawV1& packet);
+        DxvkMorrowindPplDrawV3& packet);
     static bool encodeNativePplKey(
         const ShaderKey& source,
         DxvkMorrowindPplDrawV1* destination);
 
     static ID3DXEffect* generateMWShader(const ShaderKey& sk);
+
+    static bool lightFadeActive();
 
 public:
     static bool supportsIndexedSkinningShaders() { return indexedSkinningShadersCompatible; }
@@ -252,4 +264,13 @@ public:
 
     static void renderMorrowind(const RenderedState* rs, const FragmentState* frs, LightState* lightrs);
     static void release();
+
+    // The radius the engine attaches a light to objects within, given its record
+    // radius. Installed by MWPatches::patchLightAttachRadius.
+    static int __cdecl lightAttachRadius(const NI::PointLight* light, int radius);
+
+    // The distance at which a light's fade reaches zero, or 0 when it does not
+    // fade. The one definition the shader reciprocal, the attach radius and the
+    // fixed-function D3D Range all come from.
+    static float lightFadeCutoff(float recoveredRadius);
 };

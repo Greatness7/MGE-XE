@@ -1,4 +1,5 @@
 #include "ffeshader.h"
+#include "configuration.h"
 #include "support/log.h"
 
 #include <cstring>
@@ -106,7 +107,8 @@ bool FixedFunctionShader::encodeNativePplKey(
 bool FixedFunctionShader::renderMorrowindNative(
     const RenderedState* rs,
     const PplDrawData& data,
-    DxvkMorrowindPplDrawV1& packet) {
+    DxvkMorrowindPplDrawV3& fadePacket) {
+    DxvkMorrowindPplDrawV1& packet = fadePacket.base;
     packet.lightSlotCount = data.pointLightCount;
 
     packet.primitiveType = rs->primType;
@@ -141,6 +143,13 @@ bool FixedFunctionShader::renderMorrowindNative(
 
     memcpy(packet.bumpMatrix, data.bumpMatrix, sizeof(packet.bumpMatrix));
     memcpy(packet.bumpLumiScaleBias, data.bumpLumiScaleBias, sizeof(packet.bumpLumiScaleBias));
+
+    // Without the fade the version 2 prefix goes out alone, as before.
+    if (m_nativePplFade && Configuration.PerPixelLightFade) {
+        packet.structSize = sizeof(fadePacket);
+        packet.structVersion = DXVK_MORROWIND_PPL_STRUCT_VERSION_V3;
+        memcpy(fadePacket.lightFadeInvRadius, data.lightFadeInvRadius, sizeof(fadePacket.lightFadeInvRadius));
+    }
 
     HRESULT hr = m_morrowindInterop->DrawPplV1(&packet);
     if (hr == S_OK) {

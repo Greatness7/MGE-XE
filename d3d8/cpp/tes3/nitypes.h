@@ -237,6 +237,24 @@ struct Node : AVObject {
 };
 static_assert(sizeof(Node) == 0xB0, "NI::Node failed size validation");
 
+struct DynamicEffect : AVObject {
+    unsigned char pad_90[0x18];  // 0x90
+};
+static_assert(sizeof(DynamicEffect) == 0xA8, "NI::DynamicEffect failed size validation");
+
+struct Light : DynamicEffect {
+    unsigned char pad_A8[0x28];  // 0xA8
+};
+static_assert(sizeof(Light) == 0xD0, "NI::Light failed size validation");
+
+struct PointLight : Light {
+    float constantAttenuation;   // 0xD0
+    float linearAttenuation;     // 0xD4
+    float quadraticAttenuation;  // 0xD8
+};
+static_assert(sizeof(PointLight) == 0xDC, "NI::PointLight failed size validation");
+static_assert(offsetof(PointLight, constantAttenuation) == 0xD0, "NI::PointLight::constantAttenuation failed offset validation");
+
 struct Property : ObjectNET {
     unsigned short flags;  // 0x14
     unsigned short pad_16;  // 0x16

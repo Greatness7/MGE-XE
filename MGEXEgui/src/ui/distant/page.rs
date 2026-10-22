@@ -4,7 +4,8 @@ use eframe::egui::{self, Align, DragValue, Layout, RichText, Ui};
 use mge_config::{
     DRAW_DISTANCE_RANGE, DistantLandSettings, FAR_STATIC_END_RANGE, FOG_ABOVE_END_RANGE, FOG_ABOVE_START_RANGE,
     FOG_BELOW_END_RANGE, FOG_BELOW_START_RANGE, FOG_INTERIOR_END_RANGE, FOG_INTERIOR_START_RANGE, FogSettings, GuiSettings,
-    NEAR_STATIC_END_RANGE, STATIC_MIN_SIZE_RANGE, Settings, VERY_FAR_STATIC_END_RANGE, WaterSettings,
+    NEAR_STATIC_END_RANGE, PER_PIXEL_LIGHT_FADE_RADIUS_RANGE, STATIC_MIN_SIZE_RANGE, Settings, VERY_FAR_STATIC_END_RANGE,
+    WaterSettings,
 };
 use rust_i18n::t;
 
@@ -44,6 +45,7 @@ struct DistantEnablement {
     exponential_fog: bool,
     sun_shadows: bool,
     per_pixel: bool,
+    light_fade: bool,
 }
 
 impl DistantEnablement {
@@ -67,6 +69,7 @@ impl DistantEnablement {
             exponential_fog: distant.fog.exponential,
             sun_shadows: distant.shadows.enabled,
             per_pixel: distant.per_pixel_lighting,
+            light_fade: distant.per_pixel_lighting && distant.per_pixel_light_fade,
         }
     }
 }
@@ -240,6 +243,27 @@ fn lighting_and_shadows_card(
         if let Some(response) = mode_combo {
             tooltip(response, t!("distant.lighting.mode_tip"));
         }
+        // The fade only exists inside the per-pixel shader, so the whole row
+        // follows that checkbox; the multiplier additionally follows its own.
+        ui.add_enabled_ui(enablement.per_pixel, |ui| {
+            let (fade_checkbox, fade_spinner) = check_row(
+                ui,
+                &mut settings.per_pixel_light_fade,
+                t!("distant.lighting.light_fade").as_ref(),
+                |ui| {
+                    spinner_width(ui, SPIN_W);
+                    ui.add_enabled(
+                        enablement.light_fade,
+                        DragValue::new(&mut settings.per_pixel_light_fade_radius)
+                            .range(PER_PIXEL_LIGHT_FADE_RADIUS_RANGE.0..=PER_PIXEL_LIGHT_FADE_RADIUS_RANGE.1)
+                            .speed(0.05)
+                            .fixed_decimals(2),
+                    )
+                },
+            );
+            tooltip(fade_checkbox, t!("distant.lighting.light_fade_tip"));
+            tooltip(fade_spinner, t!("distant.lighting.light_fade_radius_tip"));
+        });
         right_aligned(ui, |ui| {
             if tooltip(
                 ui.button(t!("distant.lighting.settings")),

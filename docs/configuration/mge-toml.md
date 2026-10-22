@@ -230,7 +230,7 @@ registry, or structured Rust model owns them:
 - shader chain and all structured input collections.
 
 `d3d8/crates/config-contract-test` exports the real C++ binding table and verifies all
-131 rows against the Rust schema on the i686 target, including uniqueness,
+134 rows against the Rust schema on the i686 target, including uniqueness,
 storage widths, buffer capacities, `DONT_SAVE`, and default values.
 
 ## `Morrowind.ini`

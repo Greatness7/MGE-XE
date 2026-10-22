@@ -119,6 +119,13 @@ very_far_static_min_size = 800.0
 # Enable fixed-function replacement lighting and select its scope.
 per_pixel_lighting = false
 per_pixel_mode = "always"
+# Fade each per-pixel point light to zero before a multiple of its radius,
+# instead of letting it reach infinitely far. The fade covers the last
+# quarter of that distance. 1.75 matches OpenMW. Lights are also attached to
+# objects out to that distance, so they no longer pop on and off as actors
+# and carried lights move. Works best with expanded_light_limit.
+per_pixel_light_fade = false
+per_pixel_light_fade_radius = 1.75
 
 # Water reflection, simulation, and effect strengths.
 [distant_land.water]

@@ -62,6 +62,12 @@ const iniSetting iniSettings[] = {
     NUM(Configuration.EnableCameraRelativeRendering, t_bool, "render.camera_relative", 0),
     NUM(Configuration.HDRReactionSpeed, t_float, "render.hdr_reaction_time", 0),
     NUM(Configuration.PerPixelLightFlags, t_uint32, "distant_land.per_pixel_mode", 0),
+    NUM(Configuration.PerPixelLightFade, t_bool, "distant_land.per_pixel_light_fade", 0),
+    NUM(
+        Configuration.PerPixelLightFadeRadius,
+        t_float,
+        "distant_land.per_pixel_light_fade_radius",
+        0),
 
     NUM(Configuration.SSFormat, t_uint8, "render.screenshot_format", DONT_SAVE),
     BUFFER(Configuration.SSDir, t_string, "render.screenshot_directory"),

@@ -30,6 +30,19 @@ inline constexpr uintptr_t ui_id_MenuLoading_label = 0x7D4204;
 
 inline constexpr uintptr_t ui_MenuBarter_haggleAmount = 0x7D287C;
 
+// Morrowind.ini [LightAttenuation], parsed once at startup. Only
+// EntityLight::createLightOnReference turns them into light coefficients.
+// Flags: 1 UseConstant, 2 UseLinear, 4 UseQuadratic.
+inline constexpr uintptr_t LightAttenuation_Flags = 0x7CB1C0;
+inline constexpr uintptr_t LightAttenuation_LinearMethod = 0x7CB1C4;
+inline constexpr uintptr_t LightAttenuation_QuadraticMethod = 0x7CB1C8;
+inline constexpr uintptr_t LightAttenuation_LinearValue = 0x7CB1CC;
+inline constexpr uintptr_t LightAttenuation_QuadraticValue = 0x7CB1D0;
+inline constexpr uintptr_t LightAttenuation_ConstantValue = 0x7CB1D4;
+inline constexpr uintptr_t LightAttenuation_QuadraticInLinear = 0x7CB1D8;
+inline constexpr uintptr_t LightAttenuation_LinearRadiusMultiplier = 0x7CB1DC;
+inline constexpr uintptr_t LightAttenuation_QuadraticRadiusMultiplier = 0x7CB1E0;
+
 //-----------------------------------------------------------------------------
 // Statics and virtual tables
 //-----------------------------------------------------------------------------
@@ -111,11 +124,24 @@ inline constexpr uintptr_t patch_resolveDuringInit[4] = {
 // Only the signed imm8 operand is rewritten, which caps the limit at 127.
 inline constexpr uintptr_t patch_localEffectsLimit = 0x6C8FF0;
 
+// Every call that passes a light's record radius on to game_dynamicLightTest,
+// which attaches the light to objects within that radius. The retest in
+// DataHandler::updateDynamicLightingForReference reuses the radius the test
+// stored, so it needs no patch of its own.
+inline constexpr uintptr_t patch_lightAttachPointLight[4] = {
+    0x485BF0, 0x485C2A, 0x4D2C07, 0x4EB9E4,
+};
+inline constexpr uintptr_t patch_lightAttachHelper[2] = {
+    0x485DD8, 0x485E2D,
+};
+
 //-----------------------------------------------------------------------------
 // Functions
 //-----------------------------------------------------------------------------
 
 inline constexpr uintptr_t NI_Camera_click = 0x6CC7B0;
+inline constexpr uintptr_t game_updateDynamicLightingForPointLight = 0x4D2C20;
+inline constexpr uintptr_t game_updateLightHelper2 = 0x4D32F0;
 inline constexpr uintptr_t WorldController_resolveScriptInternalIDs = 0x40FC40;
 
 inline constexpr uintptr_t AudioController_setMusicVolume = 0x403A10;

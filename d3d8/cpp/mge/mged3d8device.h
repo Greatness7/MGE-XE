@@ -41,4 +41,7 @@ private:
     // Set at construction from the DXVK expanded-light-limit capability, and
     // re-evaluated whenever fullscreen Alt-Tab recreates the device.
     bool expandedLightLimitSupported;
+    // Likewise, from the soft-light-range capability. Gates the fade cutoff
+    // that uploadLight writes into D3DLIGHT8::Range.
+    bool softLightRangeSupported;
 };

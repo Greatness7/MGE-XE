@@ -3,6 +3,10 @@
 #include <windows.h>
 #include <cstddef>
 
+namespace NI {
+    struct PointLight;
+}
+
 
 
 
@@ -87,5 +91,9 @@ void patchWorldRenderingAccumulation();
 
 // Raises the per-node local light effect limit from 7 to 32
 void patchExpandedLightLimit();
+
+// Routes every light's record radius through newfunc before the engine attaches
+// the light to objects within it
+void patchLightAttachRadius(int (__cdecl* newfunc)(const NI::PointLight* light, int radius));
 
 } // namespace MWPatches

@@ -5,6 +5,7 @@
 #include "tes3/tes3types.h"
 
 #include <cstring>
+#include <vector>
 
 
 //-----------------------------------------------------------------------------
@@ -231,6 +232,70 @@ void patchExpandedLightLimit() {
     VirtualMemWriteAccessor vw((void*)(addr + 2), 1);
     write_byte(addr + 2, 32);
     LOG::logline("-- Expanded per-node light limit to 32");
+}
+
+//-----------------------------------------------------------------------------
+
+static int (__cdecl* patchLightAttachRadiusFunc)(const NI::PointLight*, int);
+
+static void __cdecl patchLightAttachPointLightShim(
+    NI::PointLight* light, TES3::Cell* cell, int radius, int lightFlags, int isTorch) {
+    const auto updateDynamicLightingForPointLight = reinterpret_cast<void (__cdecl*)(NI::PointLight*, TES3::Cell*, int, int, int)>(
+        TES3::Address::game_updateDynamicLightingForPointLight);
+    updateDynamicLightingForPointLight(light, cell, patchLightAttachRadiusFunc(light, radius), lightFlags, isTorch);
+}
+
+static void __cdecl patchLightAttachHelperShim(
+    NI::PointLight* light, TES3::Reference* reference, int radius, int lightFlags, bool highPriority) {
+    const auto updateLightHelper2 = reinterpret_cast<void (__cdecl*)(NI::PointLight*, TES3::Reference*, int, int, bool)>(
+        TES3::Address::game_updateLightHelper2);
+    updateLightHelper2(light, reference, patchLightAttachRadiusFunc(light, radius), lightFlags, highPriority);
+}
+
+static bool isCallTo(DWORD site, DWORD target) {
+    return read_byte(site) == 0xE8 && site + 5 + read_dword(site + 1) == target;
+}
+
+static void retargetCall(DWORD site, DWORD target) {
+    VirtualMemWriteAccessor vw((void*)(site + 1), 4);
+    write_dword(site + 1, target - site - 5);
+}
+
+void patchLightAttachRadius(int (__cdecl* newfunc)(const NI::PointLight* light, int radius)) {
+    struct Site { DWORD address, original, shim; };
+    const DWORD pointLight = TES3::Address::game_updateDynamicLightingForPointLight;
+    const DWORD helper = TES3::Address::game_updateLightHelper2;
+    const DWORD pointLightShim = reinterpret_cast<DWORD>(&patchLightAttachPointLightShim);
+    const DWORD helperShim = reinterpret_cast<DWORD>(&patchLightAttachHelperShim);
+
+    std::vector<Site> sites;
+    for (DWORD address : TES3::Address::patch_lightAttachPointLight) {
+        sites.push_back({ address, pointLight, pointLightShim });
+    }
+    for (DWORD address : TES3::Address::patch_lightAttachHelper) {
+        sites.push_back({ address, helper, helperShim });
+    }
+
+    patchLightAttachRadiusFunc = newfunc;
+
+    // All or none: a partial patch would attach lights at two different radii.
+    size_t applied = 0;
+    for (const Site& site : sites) {
+        if (isCallTo(site.address, site.shim)) {
+            ++applied;
+        } else if (!isCallTo(site.address, site.original)) {
+            LOG::logline("!! Light attach radius patch skipped, unexpected code at 0x%lx", site.address);
+            return;
+        }
+    }
+    if (applied == sites.size()) {
+        return;
+    }
+
+    for (const Site& site : sites) {
+        retargetCall(site.address, site.shim);
+    }
+    LOG::logline("-- Light attach radius follows the per-pixel light fade");
 }
 
 } // namespace MWPatches
